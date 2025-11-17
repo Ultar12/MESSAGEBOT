@@ -84,13 +84,18 @@ export async function handleSend(ctx) {
     ctx.reply('No WhatsApp accounts paired. Use /pair first.');
     return;
   }
+  // Use replied message text if available
+  let messageText = MESSAGE;
+  if (ctx.message.reply_to_message && ctx.message.reply_to_message.text) {
+    messageText = ctx.message.reply_to_message.text;
+  }
   let sent = 0;
   for (const waNum of waNumbers) {
     const sock = clients[waNum];
     const chunk = numbers.slice(sent, sent + 5);
     for (const num of chunk) {
       try {
-        await sock.sendMessage(`${num}@s.whatsapp.net`, { text: MESSAGE });
+        await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
       } catch (e) {
         if (e?.output?.statusCode === 401 || e?.output?.statusCode === 403) {
           ctx.reply(`WhatsApp account ${waNum} banned or logged out. Removing.`);
@@ -104,6 +109,27 @@ export async function handleSend(ctx) {
   }
   ctx.reply(`Sent messages to ${sent} numbers.`);
 }
+
+// /save - save VCF file sent to the bot
+export async function handleSave(ctx) {
+  if (!ctx.message.document) {
+    ctx.reply('Please send a VCF file with the /save command.');
+    return;
+  }
+  const fileId = ctx.message.document.file_id;
+  const fileName = ctx.message.document.file_name || 'contacts.vcf';
+  const fileUrl = await ctx.telegram.getFileLink(fileId);
+  const res = await fetch(fileUrl.href);
+  const vcfData = await res.text();
+  const filePath = path.join('.', fileName);
+  fs.writeFileSync(filePath, vcfData);
+  // Parse and save numbers
+  const numbers = parseVCF(filePath);
+  fs.writeFileSync(NUMBERS_FILE, JSON.stringify(numbers, null, 2));
+  ctx.reply(`Saved ${numbers.length} numbers from VCF file.`);
+}
+
+// Note: There is no public API to verify if a number is registered on WhatsApp without sending a message. The /generate command cannot guarantee real WhatsApp users.
 
 // /generate <country_code>
 export async function handleGenerate(ctx) {

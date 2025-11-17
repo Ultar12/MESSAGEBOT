@@ -1,0 +1,9 @@
+services:
+  telegram-whatsapp-bot:
+    build: .
+    startCommand: npm start
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+    autoDeploy: true
+    plan: free

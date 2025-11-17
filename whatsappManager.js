@@ -32,39 +32,43 @@ await loadAllClients();
 
 // /pair or /pair <number>
 export async function handlePair(ctx) {
-  const args = ctx.message.text.split(' ');
-  let number = args[1];
-  if (!number) {
-    number = `wa_${Date.now()}`;
-  }
-  const sessionPath = path.join(SESSIONS_DIR, number);
-  if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath);
-  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-  const sock = makeWASocket({ auth: state, printQRInTerminal: false });
-  sock.ev.on('creds.update', saveCreds);
-  let pairingCodeSent = false;
-  sock.ev.on('connection.update', async ({ pairingCode, connection, lastDisconnect }) => {
-    if (pairingCode && !pairingCodeSent) {
-      pairingCodeSent = true;
-      ctx.reply(`WhatsApp Pairing Code for ${number}:\n\n${pairingCode}\n\nOpen WhatsApp > Linked Devices > Link a Device > Enter this code.`);
-    }
-    if (connection === 'close') {
-      if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
-        ctx.reply(`WhatsApp account ${number} logged out and removed.`);
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-        delete clients[number];
-      }
-    }
-    if (connection === 'open') {
-      ctx.reply(`WhatsApp account ${number} paired successfully!`);
-      clients[number] = sock;
-    }
-  });
-  // Trigger pairing code generation
   try {
-    await sock.requestPairingCode(number);
-  } catch (e) {
-    ctx.reply('Failed to generate pairing code.');
+    const args = ctx.message.text.split(' ');
+    let number = args[1];
+    if (!number) {
+      number = `wa_${Date.now()}`;
+    }
+    const sessionPath = path.join(SESSIONS_DIR, number);
+    if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    const sock = makeWASocket({ auth: state, printQRInTerminal: false });
+    sock.ev.on('creds.update', saveCreds);
+    let pairingCodeSent = false;
+    sock.ev.on('connection.update', async ({ pairingCode, connection, lastDisconnect }) => {
+      if (pairingCode && !pairingCodeSent) {
+        pairingCodeSent = true;
+        ctx.reply(`WhatsApp Pairing Code for ${number}:\n\n${pairingCode}\n\nOpen WhatsApp > Linked Devices > Link a Device > Enter this code.`);
+      }
+      if (connection === 'close') {
+        if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
+          ctx.reply(`WhatsApp account ${number} logged out and removed.`);
+          fs.rmSync(sessionPath, { recursive: true, force: true });
+          delete clients[number];
+        }
+      }
+      if (connection === 'open') {
+        ctx.reply(`WhatsApp account ${number} paired successfully!`);
+        clients[number] = sock;
+      }
+    });
+    // Trigger pairing code generation
+    try {
+      await sock.requestPairingCode(number);
+    } catch (e) {
+      ctx.reply('Failed to generate pairing code: ' + (e.message || e));
+    }
+  } catch (err) {
+    ctx.reply('Error during WhatsApp pairing: ' + (err.message || err));
   }
 }
 

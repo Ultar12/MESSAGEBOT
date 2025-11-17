@@ -9,7 +9,6 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.0",
     "telegraf": "^4.12.2",
-    "vcf": "^3.0.0",
     "dotenv": "^16.0.3"
   }
 }

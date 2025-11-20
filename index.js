@@ -1,21 +1,21 @@
-// This is your updated code for deployment.
-// It reads the token from a secret environment variable.
-import { useMultiFileAuthState, makeWASocket, DisconnectReason } from '@whiskeysockets/baileys';
+import { 
+    useMultiFileAuthState, 
+    makeWASocket, 
+    DisconnectReason, 
+    fetchLatestBaileysVersion, 
+    Browsers,
+    delay
+} from '@whiskeysockets/baileys';
 import TelegramBot from 'node-telegram-bot-api';
 import fs from 'fs';
 import path from 'path';
+import pino from 'pino';
+import { Boom } from '@hapi/boom';
 
-// --- CONFIG ---
-// [! FIX !] Read the token from the server's environment variables.
-// On Render, you will set this in the "Environment" tab.
+// --- CONFIGURATION ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-
-const SESSIONS_DIR = process.env.SESSIONS_DIR || './sessions'; // Allow session path to be set by environment
+const SESSIONS_DIR = process.env.SESSIONS_DIR || './sessions';
 const NUMBERS_FILE = './numbers.json';
-const WA_VERSION = [2, 3000, 1025190524]; // Your version fix
-
-// --- GLOBALS ---
-const clients = {}; 
 
 // Check for token
 if (!TELEGRAM_TOKEN) {
@@ -23,209 +23,239 @@ if (!TELEGRAM_TOKEN) {
     process.exit(1);
 }
 
-// Create sessions directory if it doesn't exist
-if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR);
+// Create sessions directory
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
-// --- 1. INITIALIZE TELEGRAM BOT ---
+// --- GLOBALS ---
+const clients = {}; 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-console.log('✅ Telegram bot started with polling...');
+console.log('✅ Telegram bot started...');
 
-// --- 2. LOAD ALL EXISTING SESSIONS ON STARTUP ---
-async function loadAllClients() {
-  console.log('Loading all existing clients...');
-  const folders = fs.readdirSync(SESSIONS_DIR)
-                    .filter(f => fs.statSync(path.join(SESSIONS_DIR, f)).isDirectory());
-  
-  console.log(`Found ${folders.length} session folders.`);
-  for (const folder of folders) {
+// --- GLOBAL ERROR HANDLING (From Script B) ---
+// This prevents the bot from crashing on random socket errors
+const ignoredErrors = [
+    'Socket connection timeout',
+    'EKEYTYPE',
+    'item-not-found',
+    'rate-overlimit',
+    'Connection Closed',
+    'Timed Out',
+    'Value not found'
+];
+
+process.on('uncaughtException', (err) => {
+    const msg = String(err);
+    if (ignoredErrors.some(e => msg.includes(e))) return;
+    console.error('Unhandled Exception:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+    const msg = String(reason);
+    if (ignoredErrors.some(e => msg.includes(e))) return;
+    console.error('Unhandled Rejection:', reason);
+});
+
+// --- HELPER: GET RANDOM BROWSER ---
+const getRandomBrowser = () => {
+    const browserOptions = [
+        Browsers.macOS('Safari'),
+        Browsers.macOS('Chrome'),
+        Browsers.windows('Firefox'),
+        Browsers.ubuntu('Chrome'),
+        Browsers.windows('Edge'),
+    ];
+    return browserOptions[Math.floor(Math.random() * browserOptions.length)];
+};
+
+// --- CORE: START WHATSAPP CLIENT ---
+async function startClient(folder, chatId = null) {
     const sessionPath = path.join(SESSIONS_DIR, folder);
+    
     try {
-      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-      const sock = makeWASocket({ 
-          auth: state, 
-          printQRInTerminal: false,
-          version: WA_VERSION 
-      });
+        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+        const { version } = await fetchLatestBaileysVersion();
 
-      sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
-        if (connection === 'close') {
-          const shouldLogout = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut;
-          console.log(`Client ${folder} disconnected. Reason: ${lastDisconnect?.error}`);
-          if (shouldLogout) {
-            console.log(`Client ${folder} was logged out. Removing session.`);
-            if (fs.existsSync(sessionPath)) {
-              fs.rmSync(sessionPath, { recursive: true, force: true });
+        const sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: "silent" }), // Silence internal logs
+            browser: getRandomBrowser(), // Spoof browser to avoid bans
+            version,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 0,
+            keepAliveIntervalMs: 10000,
+            emitOwnEvents: true,
+            retryRequestDelayMs: 250
+        });
+
+        // Save credentials whenever they update
+        sock.ev.on('creds.update', saveCreds);
+
+        // Connection Logic
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, pairingCode } = update;
+
+            // 1. Send Pairing Code if requested
+            if (pairingCode && chatId) {
+                bot.sendMessage(chatId, 
+                    `WhatsApp Pairing Code for *${folder}*:\n\n` +
+                    `*${pairingCode}*\n\n` +
+                    `Open WhatsApp > Linked Devices > Link a Device > Enter this code.`,
+                    { parse_mode: 'Markdown' }
+                );
             }
-            delete clients[folder];
-          }
-        } else if (connection === 'open') {
-            console.log(`Client ${folder} reconnected.`);
-        }
-      });
 
-      sock.ev.on('creds.update', saveCreds);
-      clients[folder] = sock; 
-      console.log(`Loaded client: ${folder}`);
-    } catch (e) {
-        console.error(`Failed to load client ${folder}: ${e.message}`);
-        if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
+            // 2. Handle Connection Open
+            if (connection === 'open') {
+                console.log(`✅ Client ${folder} connected successfully.`);
+                clients[folder] = sock;
+                if (chatId) {
+                    bot.sendMessage(chatId, `✅ WhatsApp account *${folder}* paired successfully!`, { parse_mode: 'Markdown' });
+                    // Clear chatId so we don't spam on re-connects
+                    chatId = null; 
+                }
+            }
+
+            // 3. Handle Disconnects (The Logic from Script B)
+            if (connection === 'close') {
+                let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+                
+                if (reason === DisconnectReason.loggedOut) {
+                    console.log(`❌ Client ${folder} Logged Out. Deleting session.`);
+                    if (fs.existsSync(sessionPath)) {
+                        fs.rmSync(sessionPath, { recursive: true, force: true });
+                    }
+                    delete clients[folder];
+                    if (chatId) bot.sendMessage(chatId, `❌ Account ${folder} was logged out.`);
+                } else {
+                    // RECONNECTION LOGIC
+                    console.log(`⚠️ Client ${folder} disconnected (Reason: ${reason}). Reconnecting...`);
+                    startClient(folder, chatId); // Recursively call startClient to reconnect
+                }
+            }
+        });
+
+        // If this is a fresh pairing, request the code
+        if (chatId && !sock.authState.creds.registered) {
+            try {
+                await delay(2000); // Wait a bit before requesting
+                const code = await sock.requestPairingCode(folder);
+                console.log(`Pairing code for ${folder}: ${code}`);
+            } catch (e) {
+                console.error('Failed to request pairing code:', e);
+                bot.sendMessage(chatId, 'Error requesting pairing code. Please wait and try again.');
+            }
         }
+
+    } catch (error) {
+        console.error(`Failed to start client ${folder}:`, error);
     }
-  }
+}
+
+// --- LOAD EXISTING SESSIONS ---
+async function loadAllClients() {
+    console.log('Loading all existing sessions...');
+    if (!fs.existsSync(SESSIONS_DIR)) return;
+
+    const folders = fs.readdirSync(SESSIONS_DIR)
+                      .filter(f => fs.statSync(path.join(SESSIONS_DIR, f)).isDirectory());
+    
+    console.log(`Found ${folders.length} sessions.`);
+    for (const folder of folders) {
+        startClient(folder); // Start without chatId (background reconnection)
+    }
 }
 loadAllClients();
 
-// --- 3. TELEGRAM COMMAND HANDLERS ---
+// --- TELEGRAM COMMANDS ---
+
 bot.onText(/\/start/, (msg) => {
     bot.sendMessage(msg.chat.id,
-        'Welcome! This bot is running on a server.\n\n' +
-        '1. Use `/pair <phone_number>` to link (e.g., `/pair 2349163916314`).\n' +
-        '2. Use `/generate <country_code> <amount>` to create a list of numbers.\n' +
-        '3. Reply to a message with `/send` to send it to your list.'
+        '🤖 *Bot Active*\n\n' +
+        '1. `/pair <number>` - Link new WhatsApp.\n' +
+        '2. `/generate <code 234> <amount>` - Generate numbers.\n' +
+        '3. Reply `/send` - Broadcast message.',
+        { parse_mode: 'Markdown' }
     );
 });
 
 bot.onText(/\/pair (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const number = match[1]; 
-
-  if (!number || !/^\d+$/.test(number)) {
-    return bot.sendMessage(chatId, 'Usage: /pair <phone_number>\n(e.g., /pair 2349163916314)');
-  }
-  if (clients[number]) {
-      return bot.sendMessage(chatId, `A client for ${number} already exists or is pairing.`);
-  }
-
-  const sessionPath = path.join(SESSIONS_DIR, number);
-  if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-  }
-  fs.mkdirSync(sessionPath);
-  
-  bot.sendMessage(chatId, `Attempting to pair ${number}. Requesting code...`);
-
-  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-  const sock = makeWASocket({ 
-      auth: state, 
-      printQRInTerminal: false,
-      version: WA_VERSION
-  });
-
-  sock.ev.on('creds.update', saveCreds);
-
-  let pairingCodeSent = false;
-  sock.ev.on('connection.update', async ({ pairingCode, connection, lastDisconnect }) => {
-    
-    if (pairingCode && !pairingCodeSent) {
-      pairingCodeSent = true;
-      bot.sendMessage(chatId, 
-          `WhatsApp Pairing Code for *${number}*:\n\n` +
-          `*${pairingCode}*\n\n` +
-          `Open WhatsApp > Linked Devices > Link a Device > Enter this code.`,
-          { parse_mode: 'Markdown' }
-      );
-    }
-    
-    if (connection === 'close') {
-      const shouldLogout = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut;
-      console.log(`Pairing client ${number} disconnected. Reason: ${lastDisconnect?.error}`);
-      
-      if (fs.existsSync(sessionPath)) {
-          fs.rmSync(sessionPath, { recursive: true, force: true });
-      }
-      delete clients[number];
-      
-      if (shouldLogout) {
-        bot.sendMessage(chatId, `WhatsApp account ${number} logged out.`);
-      } else {
-        bot.sendMessage(chatId, 
-            `Pairing failed for ${number}: *${lastDisconnect?.error?.message || 'Connection closed'}*`,
-            { parse_mode: 'Markdown' }
-        );
-      }
-    }
-    
-    if (connection === 'open') {
-      bot.sendMessage(chatId, `✅ WhatsApp account *${number}* paired successfully!`, { parse_mode: 'Markdown' });
-      clients[number] = sock;
-    }
-  });
-
-  try {
-    await sock.requestPairingCode(number);
-  } catch (e) {
-    console.error('Error requesting pairing code:', e);
-    bot.sendMessage(chatId, 'Failed to generate pairing code: ' + (e.message || e));
-    if (fs.existsSync(sessionPath)) {
-       fs.rmSync(sessionPath, { recursive: true, force: true });
-    }
-  }
-});
-
-bot.onText(/\/send/, async (msg) => {
     const chatId = msg.chat.id;
-    let messageText = '';
-    if (msg.reply_to_message && msg.reply_to_message.text) {
-        messageText = msg.reply_to_message.text;
-    } else {
-        return bot.sendMessage(chatId, 'Please reply to a message with /send to send it.');
+    const number = match[1].replace(/[^0-9]/g, '');
+
+    if (!number) return bot.sendMessage(chatId, 'Invalid format. Use /pair 234900000000');
+
+    if (clients[number]) {
+        return bot.sendMessage(chatId, `Client ${number} is already active.`);
     }
-    let numbers = [];
-    if (fs.existsSync(NUMBERS_FILE)) {
-        numbers = JSON.parse(fs.readFileSync(NUMBERS_FILE));
-    } else {
-        return bot.sendMessage(chatId, `No numbers found. Use /generate first.`);
+
+    // Clear old session if exists to ensure fresh pair
+    const sessionPath = path.join(SESSIONS_DIR, number);
+    if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
     }
-    const waClients = Object.entries(clients);
-    if (waClients.length === 0) {
-        return bot.sendMessage(chatId, 'No WhatsApp accounts are paired. Use /pair first.');
-    }
-    bot.sendMessage(chatId, `Starting to send "${messageText}" to ${numbers.length} numbers using ${waClients.length} accounts...`);
-    let sent = 0;
-    let failed = 0;
-    let clientIndex = 0;
-    for (const num of numbers) {
-        const [clientNumber, sock] = waClients[clientIndex];
-        clientIndex = (clientIndex + 1) % waClients.length;
-        try {
-            const jid = `${num}@s.whatsapp.net`;
-            const [exists] = await sock.onWhatsApp(jid);
-            if (!exists?.exists) {
-                console.log(`Number ${num} does not exist on WhatsApp.`);
-                failed++;
-                continue;
-            }
-            await sock.sendMessage(jid, { text: messageText });
-            sent++;
-            await new Promise(resolve => setTimeout(resolve, 1500 + Math.random() * 2000));
-        } catch (e) {
-            console.error(`Failed to send to ${num} from ${clientNumber}: ${e.message}`);
-            failed++;
-        }
-    }
-    bot.sendMessage(chatId, `✅ Send complete!\nSent: ${sent}\nFailed: ${failed}`);
+    fs.mkdirSync(sessionPath, { recursive: true });
+
+    bot.sendMessage(chatId, `Initializing ${number}... Please wait.`);
+    startClient(number, chatId);
 });
 
 bot.onText(/\/generate (.+)/, (msg, match) => {
     const args = msg.text.split(' ');
     const code = args[1];
     const amount = parseInt(args[2], 10) || 100;
-    if (!code || !/^\d+$/.test(code)) {
-        return bot.sendMessage(msg.chat.id, 'Usage: /generate <country_code> [amount]\n(e.g., /generate 234 50)');
-    }
-    if (amount > 1000) {
-        return bot.sendMessage(msg.chat.id, 'Cannot generate more than 1000 at a time.');
-    }
+
+    if (!code || !/^\d+$/.test(code)) return bot.sendMessage(msg.chat.id, 'Usage: /generate 234 50');
+    
     const numbers = [];
     for (let i = 0; i < amount; i++) {
         const rand = Math.floor(100000000 + Math.random() * 900000000);
         numbers.push(`${code}${rand}`);
     }
     fs.writeFileSync(NUMBERS_FILE, JSON.stringify(numbers, null, 2));
-    bot.sendMessage(msg.chat.id, `Generated ${amount} numbers for code ${code} and saved to ${NUMBERS_FILE}.`);
+    bot.sendMessage(msg.chat.id, `✅ Generated ${amount} numbers to ${NUMBERS_FILE}`);
 });
 
-bot.onText(/\/save/, async (msg) => {
-    bot.sendMessage(msg.chat.id, 'Note: The /save command is disabled until `vcfParser.js` is created.');
+bot.onText(/\/send/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!msg.reply_to_message?.text) return bot.sendMessage(chatId, '⚠️ Reply to a text message with /send');
+
+    const messageText = msg.reply_to_message.text;
+    
+    if (!fs.existsSync(NUMBERS_FILE)) return bot.sendMessage(chatId, '⚠️ No numbers file found. Use /generate first.');
+    
+    const numbers = JSON.parse(fs.readFileSync(NUMBERS_FILE));
+    const activeClients = Object.values(clients);
+
+    if (activeClients.length === 0) return bot.sendMessage(chatId, '⚠️ No active WhatsApp clients.');
+
+    bot.sendMessage(chatId, `🚀 Sending to ${numbers.length} numbers using ${activeClients.length} accounts...`);
+
+    let sent = 0, failed = 0, clientIndex = 0;
+
+    // Non-blocking loop (Bot won't freeze)
+    (async () => {
+        for (const num of numbers) {
+            const sock = activeClients[clientIndex];
+            clientIndex = (clientIndex + 1) % activeClients.length;
+
+            try {
+                const jid = `${num}@s.whatsapp.net`;
+                const [result] = await sock.onWhatsApp(jid);
+
+                if (result?.exists) {
+                    await sock.sendMessage(jid, { text: messageText });
+                    sent++;
+                    // Random delay to prevent spam flag
+                    await delay(Math.random() * 2000 + 1500); 
+                } else {
+                    failed++;
+                }
+            } catch (e) {
+                console.error(`Send Error: ${e.message}`);
+                failed++;
+            }
+        }
+        bot.sendMessage(chatId, `✅ Task Complete.\nSent: ${sent}\nFailed/Invalid: ${failed}`);
+    })();
 });

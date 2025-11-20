@@ -14,7 +14,7 @@ import pino from 'pino';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 
-// Import new command handler
+// Import the separated command file
 import { setupTelegramCommands } from './telegram_commands.js';
 
 // --- SERVER ---
@@ -199,6 +199,6 @@ async function loadAllClients() {
     for (const folder of folders) startClient(folder);
 }
 
-// Load commands from the separate file
+// Start Command Handling
 setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, makeSessionId, antiMsgState);
 loadAllClients();

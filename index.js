@@ -15,12 +15,12 @@ import pino from 'pino';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 
-// --- SERVER FOR HEROKU/RENDER ---
+// --- SERVER (Required for Heroku/Render) ---
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
-    res.send('Ultarbot is Running');
+    res.send('Ultarbot Active');
 });
 
 app.listen(PORT, () => {
@@ -40,10 +40,8 @@ if (!TELEGRAM_TOKEN) {
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 // --- GLOBALS ---
-// clients maps PhoneNumber -> Socket
 const clients = {}; 
-// sessionMap maps SessionID -> PhoneNumber (for logging)
-const sessionMap = {};
+const sessionMap = {}; // Maps SessionID -> PhoneNumber
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 console.log('[SYSTEM] Bot Started. Waiting for commands...');
@@ -54,14 +52,21 @@ bot.on('polling_error', (error) => {
     console.log(`[TELEGRAM ERROR] ${error.code || error.message}`);
 });
 
-// --- HELPER: RANDOM ID GENERATOR ---
+// --- HELPER: GENERATE SESSION ID WITH DATE ---
 function makeSessionId() {
-    let result = '';
+    // 1. Get Current Date (YYYY-MM-DD)
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0]; // Returns "2025-11-20"
+    
+    // 2. Generate Random String
+    let randomStr = '';
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 10; i++) {
-        result += characters.charAt(Math.floor(Math.random() * characters.length));
+    for (let i = 0; i < 8; i++) {
+        randomStr += characters.charAt(Math.floor(Math.random() * characters.length));
     }
-    return 'Ultarbot_data_' + result;
+
+    // 3. Combine: Ultarbot_2025-11-20_Random
+    return `Ultarbot_${dateStr}_${randomStr}`;
 }
 
 // --- HELPER: RANDOM BROWSER ---
@@ -101,13 +106,11 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             const { connection, lastDisconnect } = update;
 
             if (connection === 'open') {
-                // Extract real phone number from socket
                 const userJid = jidNormalizedUser(sock.user.id);
                 const phoneNumber = userJid.split('@')[0];
                 
-                console.log(`[SUCCESS] Client ${phoneNumber} Connected (ID: ${folder})`);
+                console.log(`[SUCCESS] Connected: +${phoneNumber} (ID: ${folder})`);
                 
-                // Store in global map
                 clients[phoneNumber] = sock;
                 sessionMap[folder] = phoneNumber;
 
@@ -118,19 +121,11 @@ async function startClient(folder, targetNumber = null, chatId = null) {
 
                 // 2. Send Session ID to Self-Chat (WhatsApp)
                 try {
-                    const credsPath = path.join(sessionPath, 'creds.json');
-                    let sessionContent = "";
-                    
-                    if(fs.existsSync(credsPath)) {
-                        const raw = fs.readFileSync(credsPath);
-                        sessionContent = raw.toString('base64'); 
-                    }
-
                     await sock.sendMessage(userJid, { 
-                        text: `*Ultarbot Connected*\n\n` +
-                              `ID: ${folder}\n` +
-                              `Number: +${phoneNumber}\n\n` +
-                              `_Session Backup (Base64):_\n${sessionContent}`
+                        text: `Ultarbot Connected\n\n` +
+                              `Number: +${phoneNumber}\n` +
+                              `Session ID:\n` +
+                              `${folder}` 
                     });
                 } catch (e) {
                     console.error(`[ERROR] Failed to send self-message: ${e.message}`);
@@ -139,6 +134,7 @@ async function startClient(folder, targetNumber = null, chatId = null) {
 
             if (connection === 'close') {
                 let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+                
                 if (reason === DisconnectReason.loggedOut) {
                     const num = sessionMap[folder] || "Unknown";
                     console.log(`[LOGOUT] Client ${num} Logged Out`);
@@ -151,12 +147,11 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         });
 
         // --- PAIRING LOGIC ---
-        // Only request code if not registered AND we have a target number
         if (targetNumber && !sock.authState.creds.registered) {
             setTimeout(async () => {
                 if (!sock.authState.creds.registered) {
                     try {
-                        console.log(`[PAIRING] Requesting code for ${targetNumber} (ID: ${folder})...`);
+                        console.log(`[PAIRING] Requesting code for +${targetNumber}...`);
                         const code = await sock.requestPairingCode(targetNumber);
                         
                         console.log(`\n--------------------------------------------------`);
@@ -174,9 +169,7 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                         }
                     } catch (e) {
                         console.error('[PAIRING ERROR]', e.message);
-                        if (chatId) bot.sendMessage(chatId, `[ERROR] Could not generate code: ${e.message}`);
-                        
-                        // Cleanup empty folder on failure
+                        if (chatId) bot.sendMessage(chatId, `[ERROR] Failed to get code: ${e.message}`);
                         if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                     }
                 }
@@ -206,7 +199,7 @@ bot.onText(/\/start/, (msg) => {
         '/pair <number> - Connect New Account\n' +
         '/list - Show Connected Numbers\n' +
         '/generate <code 234> <amount> - Gen Numbers\n' +
-        '/send <number> <text> - DM\n' +
+        '/send <number> <text> - Direct Message\n' +
         '/send (Reply) - Broadcast'
     );
 });
@@ -219,7 +212,7 @@ bot.onText(/\/pair (.+)/, async (msg, match) => {
     
     if (clients[number]) return bot.sendMessage(chatId, `+${number} is already connected.`);
 
-    // Generate Unique Ultarbot ID
+    // Generate ID with DATE
     const sessionId = makeSessionId();
     const sessionPath = path.join(SESSIONS_DIR, sessionId);
     
@@ -227,7 +220,6 @@ bot.onText(/\/pair (.+)/, async (msg, match) => {
 
     bot.sendMessage(chatId, `Initializing +${number}...\nSession ID: ${sessionId}`);
     
-    // Start client with (SessionFolder, TargetPhoneNumber, ChatId)
     startClient(sessionId, number, chatId);
 });
 

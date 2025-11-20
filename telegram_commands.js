@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { delay } from '@whiskeysockets/baileys';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
 // Configuration
@@ -9,18 +8,12 @@ const VCF_FILE = './contacts.vcf';
 
 // Helper: Extract Numbers from VCF Content
 function parseVcf(vcfContent) {
-    const numbers = new Set(); // Use Set to automatically remove duplicates
-    
-    // Regex to find phone numbers in VCF (TEL lines)
+    const numbers = new Set(); 
     const regex = /TEL;?[^:]*:(?:[\+]?)([\d\s-]+)/gi;
-    
     let match;
     while ((match = regex.exec(vcfContent)) !== null) {
-        // Clean number: remove spaces, dashes, plus signs
         let cleanNum = match[1].replace(/[^0-9]/g, '');
-        if (cleanNum.length > 5) { // Basic validation
-            numbers.add(cleanNum);
-        }
+        if (cleanNum.length > 5) numbers.add(cleanNum);
     }
     return Array.from(numbers);
 }
@@ -31,14 +24,11 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
     bot.onText(/\/start/, (msg) => {
         bot.sendMessage(msg.chat.id, 
             '🤖 *Ultarbot Command Center*\n\n' +
-            '⚡ *Connection*\n' +
             '/pair <number> - Connect WhatsApp\n' +
-            '/list - View active sessions\n\n' +
-            '📂 *Contact Management*\n' +
-            '/generate <code 234> <amount> - Create random numbers\n' +
-            '/save - Reply to a .vcf file to load contacts\n\n' +
-            '📨 *Messaging*\n' +
-            '/broadcast - Reply to text to send to VCF/JSON list\n' +
+            '/list - View active sessions\n' +
+            '/generate <code 234> <amount> - Create numbers\n' +
+            '/save - Reply to .vcf to load contacts\n' +
+            '/broadcast - Reply to text to BLAST message\n' +
             '/send <number> <msg> - Direct message',
             { parse_mode: 'Markdown' }
         );
@@ -89,14 +79,15 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
         bot.sendMessage(msg.chat.id, `✅ Generated ${amount} random numbers.`);
     });
 
-    // --- 5. SAVE VCF (New Feature) ---
+    // --- 5. SAVE VCF ---
     bot.onText(/\/save/, async (msg) => {
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(msg.chat.id, '❌ Please reply to a VCF file with /save');
         }
 
         const doc = msg.reply_to_message.document;
-        if (!doc.mime_type.includes('vcard') && !doc.file_name.endsWith('.vcf')) {
+        // Basic check for VCF extension
+        if (!doc.file_name.toLowerCase().endsWith('.vcf') && !doc.mime_type.includes('vcard')) {
             return bot.sendMessage(msg.chat.id, '❌ This does not look like a VCF file.');
         }
 
@@ -105,10 +96,7 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
             const response = await fetch(fileLink);
             const text = await response.text();
 
-            // Save Raw File
             fs.writeFileSync(VCF_FILE, text);
-            
-            // Count Numbers
             const numbers = parseVcf(text);
             
             bot.sendMessage(msg.chat.id, `✅ VCF Saved!\nFound ${numbers.length} unique contacts.\nReady to /broadcast.`);
@@ -117,8 +105,7 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
         }
     });
 
-    // --- 6. BROADCAST / SEND ---
-    // Handles both direct /send and reply /broadcast
+    // --- 6. BROADCAST / SEND (PARALLEL MODE) ---
     const handleBroadcast = async (msg, isBroadcastCmd) => {
         const chatId = msg.chat.id;
         const activeClients = Object.values(clients);
@@ -133,7 +120,6 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
                 const messageContent = directMatch[2];
                 const sock = activeClients[0]; 
                 
-                // Check AntiMsg Lock
                 const senderPhone = jidNormalizedUser(sock.user?.id).split('@')[0];
                 if (antiMsgState[senderPhone]) return bot.sendMessage(chatId, `❌ Locked (AntiMsg ON).`);
 
@@ -147,18 +133,18 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
             }
         }
 
-        // B. MASS BROADCAST (Reply with /broadcast or /send)
+        // B. MASS BROADCAST (IMMEDIATE MODE)
         if (msg.reply_to_message && msg.reply_to_message.text) {
             let numbers = [];
             let source = '';
 
-            // 1. Try VCF First
+            // 1. Try VCF
             if (fs.existsSync(VCF_FILE)) {
                 const vcfContent = fs.readFileSync(VCF_FILE, 'utf-8');
                 numbers = parseVcf(vcfContent);
                 source = 'VCF File';
             } 
-            // 2. Try JSON Second
+            // 2. Try JSON
             else if (fs.existsSync(NUMBERS_FILE)) {
                 numbers = JSON.parse(fs.readFileSync(NUMBERS_FILE));
                 source = 'Random List';
@@ -168,46 +154,43 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
 
             if (numbers.length === 0) return bot.sendMessage(chatId, '❌ List is empty.');
 
-            bot.sendMessage(chatId, `🚀 Broadcasting to ${numbers.length} numbers from ${source}...`);
+            bot.sendMessage(chatId, `🚀 BLASTING message to ${numbers.length} numbers (Instant Mode)...`);
 
-            let sent = 0, failed = 0, clientIndex = 0;
-            
-            // Non-blocking loop
-            (async () => {
-                for (const num of numbers) {
-                    // Rotate clients
-                    const sock = activeClients[clientIndex];
-                    clientIndex = (clientIndex + 1) % activeClients.length;
-                    
-                    // Skip locked clients
-                    const senderPhone = jidNormalizedUser(sock.user?.id).split('@')[0];
-                    if (antiMsgState[senderPhone]) continue;
+            // --- PARALLEL EXECUTION LOGIC ---
+            // This maps every number to a sending task and fires them ALL AT ONCE.
+            const broadcastTasks = numbers.map(async (num, index) => {
+                // Round-robin client selection
+                const sock = activeClients[index % activeClients.length];
+                
+                // Skip if client is locked
+                const senderPhone = jidNormalizedUser(sock.user?.id).split('@')[0];
+                if (antiMsgState[senderPhone]) return { status: 'skipped', num };
 
-                    try {
-                        const jid = `${num}@s.whatsapp.net`;
-                        const [result] = await sock.onWhatsApp(jid);
-
-                        if (result?.exists) {
-                            await sock.sendMessage(jid, { text: msg.reply_to_message.text });
-                            sent++;
-                            // Random delay 2-5 seconds to be safe
-                            await delay(Math.random() * 3000 + 2000); 
-                        } else {
-                            failed++;
-                        }
-                    } catch (e) {
-                        failed++;
-                    }
+                try {
+                    const jid = `${num}@s.whatsapp.net`;
+                    // Note: We SKIP 'onWhatsApp' check to make it instant.
+                    // If the number is invalid, it will just fail silently.
+                    await sock.sendMessage(jid, { text: msg.reply_to_message.text });
+                    return { status: 'sent', num };
+                } catch (e) {
+                    return { status: 'failed', num };
                 }
-                bot.sendMessage(chatId, `✅ Broadcast Complete.\nSent: ${sent}\nFailed/Invalid: ${failed}`);
-            })();
+            });
+
+            // Wait for all to finish (happens very fast)
+            const results = await Promise.allSettled(broadcastTasks);
+
+            // Calculate stats
+            const sentCount = results.filter(r => r.status === 'fulfilled' && r.value.status === 'sent').length;
+            const failCount = results.length - sentCount;
+
+            bot.sendMessage(chatId, `✅ Broadcast Done.\nSent: ${sentCount}\nFailed/Skipped: ${failCount}`);
             return;
         }
 
-        bot.sendMessage(chatId, 'Usage:\nReply to a message with /broadcast to send to all.');
+        bot.sendMessage(chatId, 'Usage:\nReply to a message with /broadcast to send to all instantly.');
     };
 
-    // Trigger logic for both commands
     bot.onText(/\/send/, (msg) => handleBroadcast(msg, false));
     bot.onText(/\/broadcast/, (msg) => handleBroadcast(msg, true));
-            }
+}

@@ -42,7 +42,7 @@ if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true }
 // --- GLOBALS ---
 const clients = {}; 
 const sessionMap = {}; 
-const antiMsgState = {}; // Stores Lockdown State
+const antiMsgState = {}; 
 const telegramMap = {}; 
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
@@ -96,7 +96,7 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             connectTimeoutMs: 60000,
             retryRequestDelayMs: 250,
             markOnlineOnConnect: true,
-            emitOwnEvents: true 
+            emitOwnEvents: true // CRITICAL: Allows seeing own messages
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -108,68 +108,65 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             for (const msg of messages) {
                 if (!msg.message) continue;
 
-                // Extract Text
-                const text = msg.message.conversation || 
-                             msg.message.extendedTextMessage?.text || 
-                             msg.message.imageMessage?.caption || "";
+                // --- MESSAGE UNWRAPPER (FIX for .alive) ---
+                // This peels back the layers to find the real text
+                const msgType = Object.keys(msg.message)[0];
+                const content = msgType === 'ephemeralMessage' ? msg.message.ephemeralMessage.message : msg.message;
                 
+                const text = content.conversation || 
+                             content.extendedTextMessage?.text || 
+                             content.imageMessage?.caption || 
+                             "";
+
+                if (!text) continue; // Skip if no text found
+
                 const remoteJid = msg.key.remoteJid;
                 const isFromMe = msg.key.fromMe;
-                
-                // Get "My" Number
                 const myJid = jidNormalizedUser(sock.user?.id || "");
                 const userPhone = myJid.split('@')[0];
 
                 // 1. ALIVE COMMAND
-                if (text.toLowerCase() === '.alive') {
+                // Triggers on "alive" or ".alive"
+                if (text.toLowerCase().includes('.alive')) {
+                    console.log(`[ALIVE] Command detected from ${remoteJid}`);
                     await sock.sendMessage(remoteJid, { 
                         text: 'Ultarbot is Online 🟢\nMode: Active' 
                     }, { quoted: msg });
                 }
 
-                // 2. ANTIMSG TOGGLE (Controller)
+                // 2. ANTIMSG TOGGLE
                 if (isFromMe && text.toLowerCase().startsWith('.antimsg')) {
                     const cmd = text.split(' ')[1];
                     if (cmd === 'on') {
                         antiMsgState[userPhone] = true;
-                        await sock.sendMessage(remoteJid, { text: '✅ AntiMsg LOCKED. Outgoing messages to others will be deleted.' }, { quoted: msg });
+                        await sock.sendMessage(remoteJid, { text: '✅ AntiMsg LOCKED.' }, { quoted: msg });
                     } else if (cmd === 'off') {
                         antiMsgState[userPhone] = false;
                         await sock.sendMessage(remoteJid, { text: '❌ AntiMsg UNLOCKED.' }, { quoted: msg });
                     }
-                    // Stop here so we don't delete the command itself immediately
                     return; 
                 }
 
-                // 3. ANTIMSG ENFORCER (The Guard)
+                // 3. ANTIMSG ENFORCER
                 if (isFromMe && antiMsgState[userPhone]) {
-                    
-                    // EXCEPTION: Allow Self-Messages (Saved Messages)
-                    // We check if the receiver is ME.
+                    // Ignore Self-Chat (Saved Messages)
                     if (remoteJid === myJid) return; 
-
-                    // EXCEPTION: Ignore commands starting with '.'
+                    // Ignore Commands
                     if (text.startsWith('.')) return;
 
-                    console.log(`[ANTIMSG] Detected outgoing msg to ${remoteJid}. Deleting...`);
+                    console.log(`[ANTIMSG] Deleting message to ${remoteJid}`);
 
-                    // DELETE IMMEDIATELY
                     try {
                         await sock.sendMessage(remoteJid, { delete: msg.key });
-                    } catch (e) {
-                        console.error('Delete failed', e);
-                    }
+                    } catch (e) {}
 
-                    // NOTIFY TELEGRAM
                     const target = remoteJid.split('@')[0];
                     const tgChatId = telegramMap[folder];
                     
                     if (tgChatId) {
                         bot.sendMessage(tgChatId, 
-                            `🛡️ *AntiMsg Intervention* 🛡️\n\n` +
-                            `Source: Linked Device (Web/Phone)\n` +
+                            `⚠️ *AntiMsg Action* ⚠️\n` +
                             `Target: +${target}\n` +
-                            `Content: "${text}"\n` +
                             `Action: 🗑️ DELETED`,
                             { parse_mode: 'Markdown' }
                         );
@@ -334,7 +331,6 @@ bot.onText(/\/send/, async (msg) => {
         const messageContent = directMatch[2];
         const sock = activeClients[0]; 
         
-        // CHECK ANTIMSG LOCK
         const senderPhone = jidNormalizedUser(sock.user?.id).split('@')[0];
         if (antiMsgState[senderPhone]) {
             return bot.sendMessage(chatId, `❌ BLOCK: +${senderPhone} is locked (AntiMsg ON).`);
@@ -366,12 +362,8 @@ bot.onText(/\/send/, async (msg) => {
                 const sock = activeClients[clientIndex];
                 clientIndex = (clientIndex + 1) % activeClients.length;
                 
-                // CHECK ANTIMSG LOCK
                 const senderPhone = jidNormalizedUser(sock.user?.id).split('@')[0];
-                if (antiMsgState[senderPhone]) {
-                    console.log(`Skipping locked client +${senderPhone}`);
-                    continue; // Skip this client
-                }
+                if (antiMsgState[senderPhone]) continue;
 
                 try {
                     const jid = `${num}@s.whatsapp.net`;

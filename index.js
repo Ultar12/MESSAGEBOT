@@ -96,20 +96,19 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             connectTimeoutMs: 60000,
             retryRequestDelayMs: 250,
             markOnlineOnConnect: true,
-            emitOwnEvents: true // CRITICAL: Allows seeing own messages
+            emitOwnEvents: true // Allows seeing own messages
         });
 
         sock.ev.on('creds.update', saveCreds);
 
         // --- MESSAGE MONITORING ---
-        sock.ev.on('messages.upsert', async ({ messages, type }) => {
-            if (type !== 'notify') return;
+        // CHANGED: Removed { type } check to allow self-messages (append)
+        sock.ev.on('messages.upsert', async ({ messages }) => {
             
             for (const msg of messages) {
                 if (!msg.message) continue;
 
-                // --- MESSAGE UNWRAPPER (FIX for .alive) ---
-                // This peels back the layers to find the real text
+                // --- MESSAGE UNWRAPPER ---
                 const msgType = Object.keys(msg.message)[0];
                 const content = msgType === 'ephemeralMessage' ? msg.message.ephemeralMessage.message : msg.message;
                 
@@ -118,7 +117,7 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                              content.imageMessage?.caption || 
                              "";
 
-                if (!text) continue; // Skip if no text found
+                if (!text) continue; 
 
                 const remoteJid = msg.key.remoteJid;
                 const isFromMe = msg.key.fromMe;
@@ -126,11 +125,10 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                 const userPhone = myJid.split('@')[0];
 
                 // 1. ALIVE COMMAND
-                // Triggers on "alive" or ".alive"
                 if (text.toLowerCase().includes('.alive')) {
-                    console.log(`[ALIVE] Command detected from ${remoteJid}`);
+                    console.log(`[ALIVE] Detected in ${remoteJid}`);
                     await sock.sendMessage(remoteJid, { 
-                        text: 'Ultarbot is Online 🟢\nMode: Active' 
+                        text: 'Ultarbot is Online 🟢' 
                     }, { quoted: msg });
                 }
 
@@ -149,10 +147,8 @@ async function startClient(folder, targetNumber = null, chatId = null) {
 
                 // 3. ANTIMSG ENFORCER
                 if (isFromMe && antiMsgState[userPhone]) {
-                    // Ignore Self-Chat (Saved Messages)
-                    if (remoteJid === myJid) return; 
-                    // Ignore Commands
-                    if (text.startsWith('.')) return;
+                    if (remoteJid === myJid) return; // Ignore Self-Chat
+                    if (text.startsWith('.')) return; // Ignore Commands
 
                     console.log(`[ANTIMSG] Deleting message to ${remoteJid}`);
 

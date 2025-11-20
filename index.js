@@ -41,7 +41,9 @@ if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true }
 
 // --- GLOBALS ---
 const clients = {}; 
-const sessionMap = {}; // Maps SessionID -> PhoneNumber
+const sessionMap = {}; 
+const antiMsgState = {}; // Stores AntiMsg state (PhoneNumber -> Boolean)
+const telegramMap = {}; // Maps SessionFolder -> TelegramChatID
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 console.log('[SYSTEM] Bot Started. Waiting for commands...');
@@ -54,18 +56,13 @@ bot.on('polling_error', (error) => {
 
 // --- HELPER: GENERATE SESSION ID WITH DATE ---
 function makeSessionId() {
-    // 1. Get Current Date (YYYY-MM-DD)
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0]; // Returns "2025-11-20"
-    
-    // 2. Generate Random String
+    const dateStr = now.toISOString().split('T')[0]; 
     let randomStr = '';
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     for (let i = 0; i < 8; i++) {
         randomStr += characters.charAt(Math.floor(Math.random() * characters.length));
     }
-
-    // 3. Combine: Ultarbot_2025-11-20_Random
     return `Ultarbot_${dateStr}_${randomStr}`;
 }
 
@@ -85,6 +82,9 @@ const getRandomBrowser = () => {
 async function startClient(folder, targetNumber = null, chatId = null) {
     const sessionPath = path.join(SESSIONS_DIR, folder);
     
+    // Save ChatID for notifications
+    if(chatId) telegramMap[folder] = chatId;
+
     try {
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const { version } = await fetchLatestBaileysVersion();
@@ -97,10 +97,75 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             version,
             connectTimeoutMs: 60000,
             retryRequestDelayMs: 250,
-            markOnlineOnConnect: true
+            markOnlineOnConnect: true,
+            emitOwnEvents: true 
         });
 
         sock.ev.on('creds.update', saveCreds);
+
+        // --- MESSAGE LISTENER ---
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            
+            for (const msg of messages) {
+                if (!msg.message) continue;
+
+                const text = msg.message.conversation || 
+                             msg.message.extendedTextMessage?.text || 
+                             msg.message.imageMessage?.caption || "";
+                
+                const remoteJid = msg.key.remoteJid;
+                const isFromMe = msg.key.fromMe;
+                const userPhone = jidNormalizedUser(sock.user?.id || "").split('@')[0];
+
+                // 1. ALIVE COMMAND
+                if (text.toLowerCase() === '.alive') {
+                    await sock.sendMessage(remoteJid, { 
+                        text: 'Ultarbot is Online 🟢\nMode: Active' 
+                    }, { quoted: msg });
+                }
+
+                // 2. ANTIMSG TOGGLE
+                if (isFromMe && text.toLowerCase().startsWith('.antimsg')) {
+                    const cmd = text.split(' ')[1];
+                    if (cmd === 'on') {
+                        antiMsgState[userPhone] = true;
+                        await sock.sendMessage(remoteJid, { text: '✅ AntiMsg ON. I will delete your outgoing messages.' }, { quoted: msg });
+                    } else if (cmd === 'off') {
+                        antiMsgState[userPhone] = false;
+                        await sock.sendMessage(remoteJid, { text: '❌ AntiMsg OFF.' }, { quoted: msg });
+                    } else {
+                        await sock.sendMessage(remoteJid, { text: 'Usage: .antimsg on | .antimsg off' }, { quoted: msg });
+                    }
+                }
+
+                // 3. ANTIMSG LOGIC (DELETE IMMEDIATELY)
+                if (isFromMe && antiMsgState[userPhone]) {
+                    // Ignore commands so you can turn it off
+                    if (text.startsWith('.')) return; 
+
+                    // DELETE ACTION
+                    try {
+                        await sock.sendMessage(remoteJid, { delete: msg.key });
+                    } catch (e) {
+                        console.error('Delete failed', e);
+                    }
+
+                    const target = remoteJid.split('@')[0];
+                    const tgChatId = telegramMap[folder];
+                    
+                    if (tgChatId) {
+                        bot.sendMessage(tgChatId, 
+                            `⚠️ *AntiMsg Action* ⚠️\n\n` +
+                            `You sent a message to: +${target}\n` +
+                            `Content: "${text}"\n` +
+                            `Status: 🗑️ Deleted Automatically`,
+                            { parse_mode: 'Markdown' }
+                        );
+                    }
+                }
+            }
+        });
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
@@ -110,16 +175,14 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                 const phoneNumber = userJid.split('@')[0];
                 
                 console.log(`[SUCCESS] Connected: +${phoneNumber} (ID: ${folder})`);
-                
                 clients[phoneNumber] = sock;
                 sessionMap[folder] = phoneNumber;
+                if (chatId) telegramMap[folder] = chatId;
 
-                // 1. Notify Telegram
                 if(chatId) {
                     bot.sendMessage(chatId, `[SUCCESS] Connected: +${phoneNumber}\nSession ID: ${folder}`);
                 }
 
-                // 2. Send Session ID to Self-Chat (WhatsApp)
                 try {
                     await sock.sendMessage(userJid, { 
                         text: `Ultarbot Connected\n\n` +
@@ -141,12 +204,12 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                     if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                     if (num) delete clients[num];
                 } else {
-                    startClient(folder, null, null);
+                    const savedChatId = telegramMap[folder];
+                    startClient(folder, null, savedChatId);
                 }
             }
         });
 
-        // --- PAIRING LOGIC ---
         if (targetNumber && !sock.authState.creds.registered) {
             setTimeout(async () => {
                 if (!sock.authState.creds.registered) {
@@ -204,7 +267,6 @@ bot.onText(/\/start/, (msg) => {
     );
 });
 
-// --- PAIR ---
 bot.onText(/\/pair (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const number = match[1].replace(/[^0-9]/g, '');
@@ -212,7 +274,6 @@ bot.onText(/\/pair (.+)/, async (msg, match) => {
     
     if (clients[number]) return bot.sendMessage(chatId, `+${number} is already connected.`);
 
-    // Generate ID with DATE
     const sessionId = makeSessionId();
     const sessionPath = path.join(SESSIONS_DIR, sessionId);
     
@@ -223,7 +284,6 @@ bot.onText(/\/pair (.+)/, async (msg, match) => {
     startClient(sessionId, number, chatId);
 });
 
-// --- LIST ---
 bot.onText(/\/list/, (msg) => {
     const active = Object.keys(clients);
     if (active.length === 0) return bot.sendMessage(msg.chat.id, "No WhatsApp numbers connected.");
@@ -235,7 +295,6 @@ bot.onText(/\/list/, (msg) => {
     bot.sendMessage(msg.chat.id, listText);
 });
 
-// --- GENERATE ---
 bot.onText(/\/generate (.+)/, (msg, match) => {
     const args = msg.text.split(' ');
     const code = args[1];
@@ -250,7 +309,6 @@ bot.onText(/\/generate (.+)/, (msg, match) => {
     bot.sendMessage(msg.chat.id, `Generated ${amount} numbers.`);
 });
 
-// --- SEND ---
 bot.onText(/\/send/, async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;

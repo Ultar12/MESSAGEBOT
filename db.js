@@ -9,17 +9,22 @@ const pool = new pg.Pool({
 export async function initDb() {
     const client = await pool.connect();
     try {
+        // Sessions Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
                 phone TEXT,
                 creds TEXT,
-                antimsg BOOLEAN DEFAULT FALSE
+                antimsg BOOLEAN DEFAULT FALSE,
+                autosave BOOLEAN DEFAULT FALSE
             );
         `);
-        // Ensure column exists if table was already created
-        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         
+        // Add columns if they don't exist (Safe Migration)
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
+        
+        // Numbers Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS broadcast_numbers (
                 phone TEXT PRIMARY KEY
@@ -36,10 +41,9 @@ export async function initDb() {
 // --- SESSIONS ---
 export async function saveSessionToDb(sessionId, phone, credsData) {
     try {
-        // Keep existing antimsg setting if updating
         await pool.query(
-            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg) 
-             VALUES ($1, $2, $3, FALSE) 
+            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave) 
+             VALUES ($1, $2, $3, FALSE, FALSE) 
              ON CONFLICT (session_id) 
              DO UPDATE SET creds = $3, phone = $2`,
             [sessionId, phone, credsData]
@@ -51,6 +55,13 @@ export async function setAntiMsgStatus(sessionId, status) {
     try {
         await pool.query('UPDATE wa_sessions SET antimsg = $1 WHERE session_id = $2', [status, sessionId]);
     } catch (e) { console.error('[DB] AntiMsg Update Error', e); }
+}
+
+// THIS IS THE FUNCTION YOU WERE MISSING
+export async function setAutoSaveStatus(sessionId, status) {
+    try {
+        await pool.query('UPDATE wa_sessions SET autosave = $1 WHERE session_id = $2', [status, sessionId]);
+    } catch (e) { console.error('[DB] AutoSave Update Error', e); }
 }
 
 export async function getAllSessions() {

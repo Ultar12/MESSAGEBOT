@@ -9,7 +9,15 @@ const pool = new pg.Pool({
 export async function initDb() {
     const client = await pool.connect();
     try {
-        // Sessions Table
+        // IDs Table (Maps Session Folder to a permanent Short ID)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS wa_ids (
+                session_folder TEXT PRIMARY KEY,
+                short_id TEXT UNIQUE
+            );
+        `);
+
+        // Sessions Table (Stores Credentials and Settings)
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -21,7 +29,7 @@ export async function initDb() {
             );
         `);
         
-        // Safe Migration: Add columns if missing
+        // Safe Migration: Ensure all columns are present
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
@@ -48,9 +56,31 @@ export async function initDb() {
     }
 }
 
+// --- PERMANENT ID FUNCTIONS ---
+export async function getShortId(sessionFolder) {
+    try {
+        const res = await pool.query('SELECT short_id FROM wa_ids WHERE session_folder = $1', [sessionFolder]);
+        return res.rows[0]?.short_id || null;
+    } catch (e) { return null; }
+}
+
+export async function saveShortId(sessionFolder, shortId) {
+    try {
+        await pool.query(
+            `INSERT INTO wa_ids (session_folder, short_id) VALUES ($1, $2) ON CONFLICT (session_folder) DO NOTHING`,
+            [sessionFolder, shortId]
+        );
+    } catch (e) { console.error('[DB] Save Short ID Error', e); }
+}
+
+export async function deleteShortId(sessionFolder) {
+    try {
+        await pool.query('DELETE FROM wa_ids WHERE session_folder = $1', [sessionFolder]);
+    } catch (e) { console.error('[DB] Delete Short ID Error', e); }
+}
+
 // --- SESSIONS ---
-export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg = false, autosave = false) {
-    // FIX: Ensure parameter count matches SQL placeholders (1 to 6)
+export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave) {
     try {
         await pool.query(
             `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id) 
@@ -79,7 +109,6 @@ export async function getAllSessions(telegramUserId = null) {
         let queryText = 'SELECT * FROM wa_sessions';
         let queryParams = [];
 
-        // If a specific user ID is provided (for regular users)
         if (telegramUserId) {
             queryText += ' WHERE telegram_user_id = $1';
             queryParams = [telegramUserId.toString()];
@@ -93,6 +122,7 @@ export async function getAllSessions(telegramUserId = null) {
 export async function deleteSessionFromDb(sessionId) {
     try {
         await pool.query('DELETE FROM wa_sessions WHERE session_id = $1', [sessionId]);
+        await deleteShortId(sessionId); // Delete the associated permanent ID
     } catch (e) { console.error('[DB] Delete Session Error', e); }
 }
 

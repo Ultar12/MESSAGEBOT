@@ -3,12 +3,11 @@ import {
     getUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
     setAntiMsgStatus
 } from './db.js';
-import fs from 'fs';
 
 const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
 
-// --- TEXT-ONLY KEYBOARDS ---
+// --- KEYBOARDS ---
 const userKeyboard = {
     keyboard: [
         [{ text: "Connect Account" }, { text: "My Account" }],
@@ -30,12 +29,10 @@ function getKeyboard(chatId) {
     return { reply_markup: (chatId.toString() === ADMIN_ID) ? adminKeyboard : userKeyboard };
 }
 
-// Helper: Send Menu
 async function sendMenu(bot, chatId, text) {
     await bot.sendMessage(chatId, text, { ...getKeyboard(chatId), parse_mode: 'Markdown' });
 }
 
-// Helper: Duration Text
 function getDuration(startDate) {
     if (!startDate) return "Just now";
     const diff = Date.now() - new Date(startDate).getTime();
@@ -47,7 +44,7 @@ function getDuration(startDate) {
 
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId) {
 
-    // --- FLASH BROADCAST FUNCTION ---
+    // --- FLASH BROADCAST ---
     async function executeBroadcast(chatId, targetId, rawMessage) {
         const sessionData = shortIdMap[targetId];
         if (!sessionData || !clients[sessionData.folder]) {
@@ -63,22 +60,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         let successCount = 0;
         const startTime = Date.now();
         const successfulNumbers = [];
-        const BATCH_SIZE = 100; // High speed batch
+        const BATCH_SIZE = 250; // Flash Batch
         
         for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
             const batch = numbers.slice(i, i + BATCH_SIZE);
             
+            // Fire all requests in batch simultaneously
             const batchPromises = batch.map(async (num) => {
                 try {
                     const jid = `${num}@s.whatsapp.net`;
-                    
-                    // --- ANTI-BAN LOGIC ---
-                    // Appends invisible spaces and a random ID to make every message unique
+                    // Anti-Ban: Add invisible random tag to make content unique
                     const antiBanTag = `\n\n` + '\u200B'.repeat(Math.floor(Math.random() * 5) + 1) + `Ref: ${Math.random().toString(36).substring(7)}`;
                     const finalMsg = rawMessage + antiBanTag;
 
                     await sock.sendMessage(jid, { text: finalMsg });
-                    
                     successfulNumbers.push(num);
                     successCount++;
                 } catch (e) {}
@@ -99,7 +94,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
     // --- HANDLERS ---
-
     bot.onText(/\/start/, (msg) => {
         userState[msg.chat.id] = null;
         sendMenu(bot, msg.chat.id, 'Welcome to Ultarbot Pro.');
@@ -128,15 +122,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const userId = chatId.toString();
         const isUserAdmin = (userId === ADMIN_ID);
 
-        // INPUTS
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
-            if (number.length < 10) {
-                userState[chatId] = null;
-                return sendMenu(bot, chatId, 'Invalid number format.');
-            }
+            if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number format.');
             userState[chatId] = null;
-            bot.sendMessage(chatId, `Initializing +${number}... Please wait for code.`);
+            bot.sendMessage(chatId, `Initializing +${number}... Please wait.`);
             const sessionId = makeSessionId();
             startClient(sessionId, number, chatId, userId);
             return;
@@ -151,7 +141,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         if (userState[chatId] === 'WAITING_BANK_DETAILS') {
             const parts = text.split('|');
-            if (parts.length !== 3) return sendMenu(bot, chatId, 'Error. Use: Bank | Account | Name');
+            if (parts.length !== 3) return sendMenu(bot, chatId, 'Use: Bank | Account | Name');
             await updateBank(userId, parts[0].trim(), parts[1].trim(), parts[2].trim());
             userState[chatId] = null;
             sendMenu(bot, chatId, '[SUCCESS] Bank details saved.');
@@ -166,14 +156,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             const ngnValue = amount * 0.6;
             const wid = await createWithdrawal(userId, amount, ngnValue);
-            
             notificationBot.sendMessage(ADMIN_ID, `[WITHDRAWAL] ID: ${wid}\nUser: ${userId}\nAmt: NGN ${ngnValue}`);
             userState[chatId] = null;
             sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${wid} submitted.`);
             return;
         }
 
-        // MENU ACTIONS
         switch (text) {
             case "Connect Account":
                 userState[chatId] = 'WAITING_PAIR';
@@ -198,24 +186,14 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 if (!isUserAdmin) return;
                 const allSessions = await getAllSessions(null);
                 const totalNums = await countNumbers();
-                
                 let list = `[DATABASE]\nNumbers: ${totalNums}\n\n[CONNECTED BOTS]\n\n`;
                 if (allSessions.length === 0) list += "No bots connected.";
-                
                 allSessions.forEach(s => {
                     const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
                     const dur = getDuration(s.connected_at);
                     const status = clients[s.session_id] ? '[ONLINE]' : '[OFFLINE]';
                     const anti = s.antimsg ? '[SECURE]' : '[OPEN]';
-                    
-                    if(id) {
-                        list += `${status} ID: \`${id}\`\n`;
-                        list += `NUM: +${s.phone}\n`;
-                        list += `OWNER: ${s.telegram_user_id}\n`;
-                        list += `MODE: ${anti}\n`;
-                        list += `TIME: ${dur}\n`;
-                        list += `------------------\n`;
-                    }
+                    if(id) list += `${status} ID: \`${id}\`\nNUM: +${s.phone}\nMODE: ${anti}\nTIME: ${dur}\n------------------\n`;
                 });
                 sendMenu(bot, chatId, list);
                 break;
@@ -223,11 +201,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             case "Broadcast":
                 const activeIds = isUserAdmin ? Object.keys(shortIdMap) : Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
                 if (activeIds.length === 0) return sendMenu(bot, chatId, "No active bots found.");
-                
-                const autoId = activeIds[0];
                 userState[chatId] = 'WAITING_BROADCAST_MSG';
-                userState[chatId + '_target'] = autoId;
-                bot.sendMessage(chatId, `[BROADCAST SETUP]\nBot ID: ${autoId}\n\nEnter your message:`, { reply_markup: { force_reply: true } });
+                userState[chatId + '_target'] = activeIds[0];
+                bot.sendMessage(chatId, `[BROADCAST]\nBot ID: ${activeIds[0]}\n\nEnter message:`, { reply_markup: { force_reply: true } });
                 break;
 
             case "Dashboard":

@@ -14,6 +14,7 @@ export function parseVCF(filePath) {
     if (num.length > 6) numbers.push(num);
   }
   return numbers;
+  
 }
 
 // Check if a number is registered on WhatsApp using baileys

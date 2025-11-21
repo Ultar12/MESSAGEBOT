@@ -42,7 +42,37 @@ function getDuration(startDate) {
     return `${days}d ${hours}h ${minutes}m`;
 }
 
+import { parseVCF, isWhatsAppNumber } from './vcfParser.js';
+import fs from 'fs';
+
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId) {
+    // --- /save VCF handler ---
+    bot.on('document', async (msg) => {
+        try {
+            if (!msg.caption || !msg.caption.startsWith('/save')) return;
+            const chatId = msg.chat.id;
+            const fileId = msg.document.file_id;
+            const fileName = msg.document.file_name || 'contacts.vcf';
+            const fileUrl = await bot.getFileLink(fileId);
+            const res = await fetch(fileUrl);
+            const vcfData = await res.text();
+            fs.writeFileSync(fileName, vcfData);
+            const allNumbers = parseVCF(fileName);
+            bot.sendMessage(chatId, `Checking ${allNumbers.length} numbers for WhatsApp registration...`);
+            // Use first available WhatsApp client for checking
+            const sock = Object.values(clients)[0];
+            const validNumbers = [];
+            for (const num of allNumbers) {
+                if (await isWhatsAppNumber(sock, num)) {
+                    validNumbers.push(num);
+                }
+            }
+            // Save validNumbers to your DB here if needed
+            bot.sendMessage(chatId, `Saved ${validNumbers.length} WhatsApp numbers.\nList:\n${validNumbers.join(', ')}`);
+        } catch (err) {
+            bot.sendMessage(msg.chat.id, 'Error processing VCF: ' + (err.message || err));
+        }
+    });
 
     // --- FLASH BROADCAST ---
     async function executeBroadcast(chatId, targetId, rawMessage) {

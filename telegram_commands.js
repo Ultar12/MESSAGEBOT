@@ -147,7 +147,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     // --- COMMANDS ---
 
-    // NEW: ANTIMSG TOGGLE
+    // ANTIMSG TOGGLE
     bot.onText(/\/antimsg (.+)/, async (msg, match) => {
         const id = match[1].trim();
         
@@ -211,19 +211,24 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
             await addNumbersToDb(validNumbers);
 
-            // FORMAT THE LIST FOR TELEGRAM
-            let listMsg = `Saved ${validNumbers.length} verified numbers to Postgres:\n\n`;
+            // --- NEW: LIST ALL NUMBERS ---
+            let listMsg = `Saved ${validNumbers.length} numbers:\n\n`;
+            // Split to avoid Telegram char limit (4096)
+            const chunks = [];
+            let currentChunk = listMsg;
             
-            // If too long, split logic would be needed, but for now lets list them
-            // Telegram max is 4096 chars. 100 numbers is ~1200 chars.
-            if (validNumbers.length > 300) {
-                listMsg += validNumbers.slice(0, 300).join('\n');
-                listMsg += `\n...and ${validNumbers.length - 300} more (truncated).`;
-            } else {
-                listMsg += validNumbers.join('\n');
+            for (const num of validNumbers) {
+                if ((currentChunk.length + num.length) > 4000) {
+                    chunks.push(currentChunk);
+                    currentChunk = "";
+                }
+                currentChunk += `${num}\n`;
             }
+            chunks.push(currentChunk);
 
-            bot.sendMessage(msg.chat.id, listMsg);
+            for (const chunk of chunks) {
+                await bot.sendMessage(msg.chat.id, chunk);
+            }
 
         } catch (e) {
             bot.sendMessage(msg.chat.id, "Error: " + e.message);

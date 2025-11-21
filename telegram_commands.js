@@ -43,6 +43,7 @@ function getDuration(startDate) {
 }
 
 import { parseVCF, isWhatsAppNumber } from './vcfParser.js';
+import { addNumbersToDb } from './db.js';
 import fs from 'fs';
 
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId) {
@@ -67,6 +68,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                         validNumbers.push(num);
                     }
                 }
+                await addNumbersToDb(validNumbers);
                 bot.sendMessage(chatId, `Saved ${validNumbers.length} WhatsApp numbers.\nList:\n${validNumbers.join(', ')}`);
             }
         } catch (err) {
@@ -96,6 +98,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     validNumbers.push(num);
                 }
             }
+            await addNumbersToDb(validNumbers);
             bot.sendMessage(chatId, `Saved ${validNumbers.length} WhatsApp numbers.\nList:\n${validNumbers.join(', ')}`);
         } catch (err) {
             bot.sendMessage(msg.chat.id, 'Error processing VCF: ' + (err.message || err));

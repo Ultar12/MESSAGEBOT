@@ -1,26 +1,23 @@
 import fs from 'fs';
-import path from 'path';
-import { jidNormalizedUser, delay } from '@whiskeysockets/baileys';
+import { delay } from '@whiskeysockets/baileys';
+import { addNumbersToDb, getAllNumbers, clearAllNumbers } from './db.js';
 
-const DB_FILE = './bot_database.json';
-const VCF_FILE = './contacts.vcf';
+const userState = {}; // Tracks who is trying to pair
 
-// Helper: Load DB
-function loadDb() {
-    if (fs.existsSync(DB_FILE)) {
-        try { return JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) { return { sessions: {}, numbers: [] }; }
+// Reply Keyboard Layout (Persistent Buttons)
+const mainKeyboard = {
+    reply_markup: {
+        keyboard: [
+            [{ text: "Pair Account" }, { text: "List Active" }],
+            [{ text: "Broadcast" }, { text: "Save VCF" }],
+            [{ text: "Delete Database" }, { text: "Generate Numbers" }]
+        ],
+        resize_keyboard: true
     }
-    return { sessions: {}, numbers: [] };
-}
+};
 
-// Helper: Save DB
-function saveDb(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-}
-
-// Helper: Fast VCF Parser
 function parseVcf(vcfContent) {
-    const numbers = new Set(); 
+    const numbers = new Set();
     const lines = vcfContent.split(/\r?\n/);
     lines.forEach(line => {
         if (line.includes('TEL')) {
@@ -31,234 +28,180 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState, logToDb) {
+export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState) {
 
-    // --- MAIN MENU ---
-    const mainMenu = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: "Pair Account", callback_data: "btn_pair" }],
-                [{ text: "List Active Accounts", callback_data: "btn_list" }],
-                [{ text: "Delete Database", callback_data: "btn_delnum" }]
-            ]
-        }
-    };
-
-    // --- 1. START ---
+    // --- 1. START / MENU ---
     bot.onText(/\/start/, (msg) => {
-        bot.sendMessage(msg.chat.id, 
-            'Ultarbot Flash System\n\n' +
-            'Select an option below or use commands:\n' +
-            '/generate <code 234> <amount>\n' +
-            '/save (Reply to VCF)\n' +
-            '/broadcast <id> (Reply to text)',
-            mainMenu
-        );
+        userState[msg.chat.id] = null;
+        bot.sendMessage(msg.chat.id, 'Ultarbot Pro Active. Select an option:', mainKeyboard);
     });
 
-    // --- 2. BUTTONS ---
-    bot.on('callback_query', async (query) => {
-        const chatId = query.message.chat.id;
-        const data = query.data;
-        bot.answerCallbackQuery(query.id);
-
-        if (data === 'btn_pair') {
-            bot.sendMessage(chatId, 'Enter number to pair (e.g. 23490...):');
-        }
-        else if (data === 'btn_list') {
-            const db = loadDb();
-            const ids = Object.keys(db.sessions);
-            if (ids.length === 0) return bot.sendMessage(chatId, "No accounts connected.", mainMenu);
-            
-            let listText = "Active Accounts:\n\n";
-            ids.forEach((id) => {
-                const session = db.sessions[id];
-                const status = antiMsgState[session.phone] ? "LOCKED" : "READY";
-                listText += `ID: ${id} | +${session.phone} [${status}]\n`;
-            });
-            bot.sendMessage(chatId, listText, { parse_mode: 'Markdown' });
-        }
-        else if (data === 'btn_delnum') {
-            const db = loadDb();
-            const oldCount = db.numbers.length;
-            db.numbers = []; // Clear numbers
-            saveDb(db);
-            
-            if (fs.existsSync(VCF_FILE)) fs.unlinkSync(VCF_FILE);
-            
-            logToDb("DB_CLEAR", `Cleared ${oldCount} numbers`);
-            bot.sendMessage(chatId, `[!] Deleted ${oldCount} numbers from database.`, mainMenu);
-        }
-    });
-
-    // --- 3. PAIRING ---
-    bot.onText(/\/pair (.+)/, async (msg, match) => {
+    // --- 2. TEXT HANDLER (Buttons & Inputs) ---
+    bot.on('message', async (msg) => {
+        if (!msg.text) return;
         const chatId = msg.chat.id;
-        const number = match[1].replace(/[^0-9]/g, '');
-        if (!number) return bot.sendMessage(chatId, 'Usage: /pair 2349012345678');
-        
-        const db = loadDb();
-        const existingId = Object.keys(db.sessions).find(key => db.sessions[key].phone === number);
-        
-        if (existingId) return bot.sendMessage(chatId, `Number already connected (ID: ${existingId})`);
+        const text = msg.text;
 
-        const sessionId = makeSessionId(); 
-        const sessionPath = path.join(SESSIONS_DIR, sessionId);
-        fs.mkdirSync(sessionPath, { recursive: true });
+        // A. PAIRING INPUT STATE
+        if (userState[chatId] === 'WAITING_PAIR') {
+            const number = text.replace(/[^0-9]/g, '');
+            
+            if (number.length < 10) {
+                return bot.sendMessage(chatId, 'Invalid number. Try again (e.g. 23490...):');
+            }
 
-        logToDb("PAIR_INIT", `User requested pairing for ${number}`);
-        bot.sendMessage(chatId, `Initializing ${number}...`);
-        startClient(sessionId, number, chatId);
+            // Check if already connected
+            const existing = Object.values(shortIdMap).find(s => s.phone === number);
+            if (existing) {
+                userState[chatId] = null;
+                return bot.sendMessage(chatId, `Account +${number} is already connected.`, mainKeyboard);
+            }
+
+            userState[chatId] = null; // Clear state
+            bot.sendMessage(chatId, `Initializing +${number}... Please wait for code.`);
+            
+            const sessionId = makeSessionId();
+            // startClient handles the folder creation and DB saving now
+            startClient(sessionId, number, chatId);
+            return;
+        }
+
+        // B. BROADCAST INPUT STATE
+        if (userState[chatId] === 'WAITING_BROADCAST') {
+            const messageText = text;
+            const targetId = userState[chatId + '_target']; // Retrieve stored ID
+            userState[chatId] = null;
+
+            const sessionData = shortIdMap[targetId];
+            if (!sessionData || !clients[sessionData.folder]) {
+                return bot.sendMessage(chatId, 'Client disconnected or invalid.', mainKeyboard);
+            }
+
+            const sock = clients[sessionData.folder];
+            const numbers = await getAllNumbers(); // Get from Postgres
+
+            if (numbers.length === 0) return bot.sendMessage(chatId, 'Database empty. Use Generate or Save VCF.', mainKeyboard);
+
+            bot.sendMessage(chatId, `Flashing message to ${numbers.length} contacts...`);
+            
+            let success = 0;
+            // FLASH LOOP (Parallel/Fast)
+            // We map all promises and execute them immediately
+            const tasks = numbers.map(async (num) => {
+                try {
+                    // Fire and Forget (No await onWhatsApp)
+                    await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
+                    success++;
+                } catch (e) {}
+            });
+
+            await Promise.all(tasks);
+            bot.sendMessage(chatId, `Flash Complete. Sent Requests: ${success}`, mainKeyboard);
+            return;
+        }
+
+        // C. BUTTON COMMANDS
+        switch (text) {
+            case "Pair Account":
+                userState[chatId] = 'WAITING_PAIR';
+                bot.sendMessage(chatId, 'Please enter the WhatsApp number (Country code + Number):', {
+                    reply_markup: { force_reply: true }
+                });
+                break;
+
+            case "List Active":
+                const ids = Object.keys(shortIdMap);
+                if (ids.length === 0) {
+                    bot.sendMessage(chatId, "No accounts connected.");
+                } else {
+                    let list = "Active Sessions:\n";
+                    ids.forEach(id => {
+                        list += `ID: ${id} | +${shortIdMap[id].phone}\n`;
+                    });
+                    bot.sendMessage(chatId, list);
+                }
+                break;
+
+            case "Delete Database":
+                await clearAllNumbers();
+                // Also clear local VCF file
+                if (fs.existsSync('./contacts.vcf')) fs.unlinkSync('./contacts.vcf');
+                bot.sendMessage(chatId, "Numbers database cleared.", mainKeyboard);
+                break;
+
+            case "Generate Numbers":
+                bot.sendMessage(chatId, "Use command: /generate 234 50");
+                break;
+
+            case "Broadcast":
+                const activeIds = Object.keys(shortIdMap);
+                if (activeIds.length === 0) return bot.sendMessage(chatId, "Pair an account first.");
+                // Ask for which ID to use
+                // For simplicity, if only 1, use it. If multiple, ask user.
+                if (activeIds.length === 1) {
+                    userState[chatId] = 'WAITING_BROADCAST';
+                    userState[chatId + '_target'] = activeIds[0];
+                    bot.sendMessage(chatId, `Using ID ${activeIds[0]}. Enter your message text now:`);
+                } else {
+                    bot.sendMessage(chatId, `Use command: /broadcast <id> <message> (Reply not supported in button mode yet)`);
+                }
+                break;
+                
+            case "Save VCF":
+                bot.sendMessage(chatId, "Please send the .vcf file now and reply to it with /save");
+                break;
+        }
     });
 
-    // --- 4. GENERATE ---
-    bot.onText(/\/generate (.+)/, (msg, match) => {
+    // --- COMMANDS ---
+
+    bot.onText(/\/generate (.+)/, async (msg, match) => {
         const args = msg.text.split(' ');
         const code = args[1];
         const amount = parseInt(args[2], 10) || 100;
-        if (!code) return bot.sendMessage(msg.chat.id, 'Usage: /generate 234 50');
         
-        const db = loadDb();
-        let count = 0;
+        const newNumbers = [];
         for (let i = 0; i < amount; i++) {
-            const num = `${code}${Math.floor(100000000 + Math.random() * 900000000)}`;
-            if (!db.numbers.includes(num)) {
-                db.numbers.push(num);
-                count++;
-            }
+            newNumbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
         }
-        saveDb(db);
         
-        logToDb("GENERATE", `Generated ${count} numbers`);
-        bot.sendMessage(msg.chat.id, `[+] Added ${count} numbers to database.`);
+        await addNumbersToDb(newNumbers);
+        bot.sendMessage(msg.chat.id, `Added ${amount} numbers to Postgres DB.`);
     });
 
-    // --- 5. SAVE VCF (SEQUENTIAL SCANNER) ---
     bot.onText(/\/save/, async (msg) => {
-        if (!msg.reply_to_message?.document) return bot.sendMessage(msg.chat.id, 'Reply to a VCF file.');
-
-        const db = loadDb();
-        const firstId = Object.keys(db.sessions)[0];
+        if (!msg.reply_to_message?.document) return;
         
-        if (!firstId || !clients[db.sessions[firstId].folder]) {
-            return bot.sendMessage(msg.chat.id, '[!] Connect a WhatsApp account first to check numbers.');
+        const firstId = Object.keys(shortIdMap)[0];
+        if (!firstId || !clients[shortIdMap[firstId].folder]) {
+            return bot.sendMessage(msg.chat.id, 'Pair an account first.');
         }
-        const sock = clients[db.sessions[firstId].folder];
+        const sock = clients[shortIdMap[firstId].folder];
 
         try {
+            bot.sendMessage(msg.chat.id, "Downloading...");
             const fileLink = await bot.getFileLink(msg.reply_to_message.document.file_id);
             const response = await fetch(fileLink);
             const text = await response.text();
-
-            let rawNumbers = parseVcf(text);
-            if (rawNumbers.length === 0) return bot.sendMessage(msg.chat.id, '[!] No numbers found in VCF.');
-
-            bot.sendMessage(msg.chat.id, `[i] Scanning ${rawNumbers.length} numbers sequentially...`);
+            
+            const rawNumbers = parseVcf(text);
+            bot.sendMessage(msg.chat.id, `Scanning ${rawNumbers.length} numbers (Sequential Mode)...`);
 
             const validNumbers = [];
-            let processed = 0;
-
-            // SEQUENTIAL SCAN (One by One)
+            // Sequential Scan
             for (const num of rawNumbers) {
                 try {
-                    // Check individually
-                    const [result] = await sock.onWhatsApp(`${num}@s.whatsapp.net`);
-                    
-                    if (result && result.exists) {
-                        const cleanJid = result.jid.split('@')[0];
-                        if (!db.numbers.includes(cleanJid)) {
-                            validNumbers.push(cleanJid);
-                            db.numbers.push(cleanJid); // Add to main DB
-                        }
-                    }
-                } catch (e) {
-                    // If check fails, we skip but don't stop
-                }
-                
-                processed++;
-                // Small delay to ensure sequence integrity
-                await delay(100);
+                    const [res] = await sock.onWhatsApp(`${num}@s.whatsapp.net`);
+                    if (res?.exists) validNumbers.push(res.jid.split('@')[0]);
+                } catch (e) {}
+                await delay(100); // Reliability delay
             }
 
-            saveDb(db); // Save final list
-            logToDb("VCF_SAVE", `Scanned ${rawNumbers.length}, Saved ${validNumbers.length}`);
-
-            bot.sendMessage(msg.chat.id, 
-                `Scan Complete\n\n` +
-                `Total VCF: ${rawNumbers.length}\n` +
-                `Registered: ${validNumbers.length}\n` +
-                `Invalid/Duplicates: ${rawNumbers.length - validNumbers.length}\n\n` +
-                `Database Updated.`
-            );
+            await addNumbersToDb(validNumbers);
+            bot.sendMessage(msg.chat.id, `Saved ${validNumbers.length} verified numbers to Postgres.`);
 
         } catch (e) {
-            bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
-        }
-    });
-
-    // --- 6. DELETE NUMBERS ---
-    bot.onText(/\/delnum/, (msg) => {
-        const db = loadDb();
-        const count = db.numbers.length;
-        db.numbers = [];
-        saveDb(db);
-        bot.sendMessage(msg.chat.id, `[!] Database cleared. Removed ${count} numbers.`);
-    });
-
-    // --- 7. FLASH BROADCAST ---
-    bot.onText(/\/broadcast (.+)/, async (msg, match) => {
-        if (!msg.reply_to_message?.text) return bot.sendMessage(msg.chat.id, 'Reply to text with /broadcast <id>');
-        
-        const targetId = match[1].trim();
-        const db = loadDb();
-        const sessionData = db.sessions[targetId];
-
-        if (!sessionData) return bot.sendMessage(msg.chat.id, `Invalid ID. Use List button.`);
-        
-        const sock = clients[sessionData.folder];
-        if (!sock) return bot.sendMessage(msg.chat.id, 'Client not active.');
-
-        const numbers = db.numbers;
-        if (numbers.length === 0) return bot.sendMessage(msg.chat.id, '[!] Database is empty. Use /save or /generate.');
-
-        bot.sendMessage(msg.chat.id, `[i] FLASHING message to ${numbers.length} verified numbers using ${targetId}...`);
-        logToDb("BROADCAST_START", `ID: ${targetId}, Target: ${numbers.length}`);
-
-        const messageContent = { text: msg.reply_to_message.text };
-        let successCount = 0;
-        const startTime = Date.now();
-        
-        // FLASH EXECUTION
-        const tasks = numbers.map(async (num) => {
-            try {
-                await sock.sendMessage(`${num}@s.whatsapp.net`, messageContent);
-                successCount++;
-            } catch (e) {}
-        });
-
-        await Promise.all(tasks);
-        
-        const duration = (Date.now() - startTime) / 1000;
-        logToDb("BROADCAST_END", `ID: ${targetId}, Sent: ${successCount}`);
-        bot.sendMessage(msg.chat.id, `[+] Flash Complete in ${duration}s.\nSent Requests: ${successCount}`);
-    });
-
-    // --- 8. DIRECT SEND ---
-    bot.onText(/\/send/, async (msg) => {
-        if (msg.reply_to_message) return; 
-        const directMatch = msg.text.match(/\/send\s+(\d+)\s+(.+)/);
-        if (!directMatch) return bot.sendMessage(msg.chat.id, 'Usage: /send <number> <msg>');
-
-        const db = loadDb();
-        const firstId = Object.keys(db.sessions)[0];
-        if(!firstId) return bot.sendMessage(msg.chat.id, 'No active clients.');
-
-        const sock = clients[db.sessions[firstId].folder];
-        try {
-            await sock.sendMessage(`${directMatch[1]}@s.whatsapp.net`, { text: directMatch[2] });
-            bot.sendMessage(msg.chat.id, '[+] Sent.');
-        } catch (e) {
-            bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
+            bot.sendMessage(msg.chat.id, "Error: " + e.message);
         }
     });
 }

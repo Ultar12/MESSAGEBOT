@@ -9,7 +9,6 @@ const pool = new pg.Pool({
 export async function initDb() {
     const client = await pool.connect();
     try {
-        // Sessions Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -20,11 +19,9 @@ export async function initDb() {
             );
         `);
         
-        // Add columns if they don't exist (Safe Migration)
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
         
-        // Numbers Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS broadcast_numbers (
                 phone TEXT PRIMARY KEY
@@ -57,7 +54,6 @@ export async function setAntiMsgStatus(sessionId, status) {
     } catch (e) { console.error('[DB] AntiMsg Update Error', e); }
 }
 
-// THIS IS THE FUNCTION YOU WERE MISSING
 export async function setAutoSaveStatus(sessionId, status) {
     try {
         await pool.query('UPDATE wa_sessions SET autosave = $1 WHERE session_id = $2', [status, sessionId]);
@@ -82,6 +78,7 @@ export async function addNumbersToDb(numbersArray) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        // Insert unique numbers only (Merge Logic)
         for (const num of numbersArray) {
             await client.query('INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', [num]);
         }
@@ -98,6 +95,31 @@ export async function getAllNumbers() {
         const res = await pool.query('SELECT phone FROM broadcast_numbers');
         return res.rows.map(r => r.phone);
     } catch (e) { return []; }
+}
+
+// New: Count total numbers
+export async function countNumbers() {
+    try {
+        const res = await pool.query('SELECT COUNT(*) FROM broadcast_numbers');
+        return parseInt(res.rows[0].count);
+    } catch (e) { return 0; }
+}
+
+// New: Bulk Delete specific numbers
+export async function deleteNumbers(numbersArray) {
+    if (numbersArray.length === 0) return;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        // Optimized bulk delete
+        await client.query('DELETE FROM broadcast_numbers WHERE phone = ANY($1)', [numbersArray]);
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK');
+        console.error('[DB] Delete Numbers Error', e);
+    } finally {
+        client.release();
+    }
 }
 
 export async function clearAllNumbers() {

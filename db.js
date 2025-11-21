@@ -22,7 +22,7 @@ export async function initDb() {
             );
         `);
         
-        // Migrations for existing tables
+        // Migrations
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
@@ -51,6 +51,7 @@ export async function initDb() {
             );
         `);
 
+        // Numbers, Blacklist, History
         await client.query(`CREATE TABLE IF NOT EXISTS broadcast_numbers (phone TEXT PRIMARY KEY);`);
         await client.query(`CREATE TABLE IF NOT EXISTS blacklist (phone TEXT PRIMARY KEY);`);
         await client.query(`CREATE TABLE IF NOT EXISTS withdrawals (id SERIAL PRIMARY KEY, telegram_id TEXT, amount_points INTEGER, amount_ngn INTEGER, status TEXT DEFAULT 'PENDING', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
@@ -67,10 +68,9 @@ export async function initDb() {
 // --- SESSIONS ---
 export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave) {
     try {
-        // Note: We do NOT update connected_at here to avoid resetting it on every creds update
         await pool.query(
-            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id) 
-             VALUES ($1, $2, $3, $4, $5, $6) 
+            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id, connected_at) 
+             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
              ON CONFLICT (session_id) 
              DO UPDATE SET creds = $3, phone = $2, antimsg = $4, autosave = $5, telegram_user_id = $6`,
             [sessionId, phone, credsData, antimsg, autosave, telegramUserId]
@@ -79,22 +79,21 @@ export async function saveSessionToDb(sessionId, phone, credsData, telegramUserI
 }
 
 export async function updateConnectionTime(sessionId) {
-    try {
-        // Set connected_at to NOW
-        await pool.query('UPDATE wa_sessions SET connected_at = CURRENT_TIMESTAMP WHERE session_id = $1', [sessionId]);
-    } catch(e) { console.error('[DB] Update Time Error', e); }
+    try { await pool.query('UPDATE wa_sessions SET connected_at = CURRENT_TIMESTAMP WHERE session_id = $1', [sessionId]); } catch(e) {}
 }
 
 export async function setAntiMsgStatus(sessionId, status) {
     try {
+        if (!sessionId) throw new Error("Session ID is undefined");
         await pool.query('UPDATE wa_sessions SET antimsg = $1 WHERE session_id = $2', [status, sessionId]);
-    } catch (e) { console.error('[DB] AntiMsg Update Error', e); }
+    } catch (e) { console.error('[DB] AntiMsg Update Error:', e.message); }
 }
 
 export async function setAutoSaveStatus(sessionId, status) {
     try {
+        if (!sessionId) throw new Error("Session ID is undefined");
         await pool.query('UPDATE wa_sessions SET autosave = $1 WHERE session_id = $2', [status, sessionId]);
-    } catch (e) { console.error('[DB] AutoSave Update Error', e); }
+    } catch (e) { console.error('[DB] AutoSave Update Error:', e.message); }
 }
 
 export async function getAllSessions(telegramUserId = null) {

@@ -22,6 +22,7 @@ import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumber
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const SESSIONS_DIR = './sessions';
 const ADMIN_ID = process.env.ADMIN_ID;
+const NOTIFICATION_ID = process.env.NOTIFICATION_ID; // New: Channel/Group ID for logs
 
 if (!TELEGRAM_TOKEN) { console.error('Missing TELEGRAM_TOKEN'); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error('Missing DATABASE_URL'); process.exit(1); }
@@ -37,10 +38,62 @@ const antiMsgState = {};
 const autoSaveState = {}; 
 const notificationCache = {}; 
 
+// --- NEW STATE FOR EDITING LOGS ---
+const notificationState = {
+    msgId: null,
+    lastUpdateTime: 0,
+    logEntries: [],
+    maxEntries: 15,
+    updateThreshold: 10 * 60 * 1000 // 10 minutes in milliseconds
+};
+
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
+// --- NOTIFICATION HANDLER ---
+async function updateAdminNotification(newEntry) {
+    if (!NOTIFICATION_ID) return;
+
+    const now = Date.now();
+    const utcTime = new Date().toISOString().substring(11, 19);
+
+    const logEntry = `[${utcTime}] ${newEntry}`;
+    notificationState.logEntries.unshift(logEntry);
+    
+    // Trim log history
+    if (notificationState.logEntries.length > notificationState.maxEntries) {
+        notificationState.logEntries.pop();
+    }
+
+    const logText = notificationState.logEntries.join('\n');
+    const header = `*Ultarbot Activity Log*\n(Next new message in ${Math.round(notificationState.updateThreshold / 60000)} min if idle)\n---\n`;
+    const fullMessage = header + logText;
+
+    try {
+        if (!notificationState.msgId || (now - notificationState.lastUpdateTime) > notificationState.updateThreshold) {
+            // Send a NEW message
+            const res = await bot.sendMessage(NOTIFICATION_ID, fullMessage, { parse_mode: 'Markdown' });
+            notificationState.msgId = res.message_id;
+            notificationState.lastUpdateTime = now;
+        } else {
+            // EDIT the existing message
+            await bot.editMessageText(fullMessage, {
+                chat_id: NOTIFICATION_ID,
+                message_id: notificationState.msgId,
+                parse_mode: 'Markdown'
+            });
+            notificationState.lastUpdateTime = now;
+        }
+    } catch (e) {
+        // If editing fails (e.g., message deleted manually), send a new one next time
+        notificationState.msgId = null;
+        console.error('[NOTIF ERROR] Could not edit log message.', e.message);
+    }
+}
+
+
+// --- CORE FUNCTIONS (Unchanged) ---
 function generateShortId() { return Math.random().toString(36).substring(2, 7); }
 function makeSessionId() { return `Ultarbot_${Date.now()}`; }
 
@@ -80,7 +133,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 if (id) phone = shortIdMap[id].phone;
                 
-                // Pass telegramUserId to saveSessionToDb
                 await saveSessionToDb(folder, phone, content, telegramUserId);
             }
         } catch(e) {}
@@ -94,11 +146,21 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         for (const msg of messages) {
             if (!msg.message) continue;
             if (msg.message.protocolMessage) continue; 
-            if (msg.key.id.startsWith('BAE5')) continue; // Ignore system messages that can loop
+            if (msg.key.id.startsWith('BAE5')) continue;
 
             const remoteJid = msg.key.remoteJid;
             const isFromMe = msg.key.fromMe;
             const myJid = jidNormalizedUser(sock.user?.id || "");
+            
+            // --- Log User Interaction (New) ---
+            if (remoteJid.endsWith('@s.whatsapp.net')) {
+                const senderNum = remoteJid.split('@')[0];
+                let action = isFromMe ? "Message Sent" : "Message Received";
+                if (remoteJid === myJid) action = "Self-Message";
+                
+                await updateAdminNotification(`User ${senderNum} [ID: ${myShortId}] | Action: ${action}`);
+            }
+            // --- End Log ---
             
             // --- AutoSave Logic ---
             if (!isFromMe && autoSaveState[myShortId]) {
@@ -126,7 +188,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 try {
                     await sock.sendMessage(remoteJid, { delete: msg.key });
                     
-                    // Anti-Spam Notification Logic
+                    // Anti-Spam Notification Logic (Kept as fallback/console log)
                     const target = remoteJid.split('@')[0];
                     const now = Date.now();
                     const lastNotif = notificationCache[target] || 0;
@@ -150,7 +212,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             let myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
             if (!myShortId) {
                 myShortId = generateShortId();
-                // When connecting, we know the user's chat ID from the pair command
                 shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: chatId }; 
             } else {
                 shortIdMap[myShortId].phone = phoneNumber;
@@ -158,6 +219,9 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
             clients[folder] = sock;
             console.log(`Connected: ${phoneNumber}`);
+            
+            await updateAdminNotification(`Account +${phoneNumber} [ID: ${myShortId}] Connected.`);
+
 
             if (chatId) {
                 bot.sendMessage(chatId, 
@@ -178,13 +242,12 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
-                const num = id ? shortIdMap[id].phone : "Unknown";
-                let msg = `Logged Out.`;
-                if (reason === 403) msg = `CRITICAL: Account +${num} was BANNED.`;
+            const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
+            const num = id ? shortIdMap[id].phone : "Unknown";
+            let msg = `Logged Out.`;
+            if (reason === 403) msg = `CRITICAL: Account +${num} was BANNED.`;
 
-                // Use the saved chatId for notification
+            if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 const notifyId = id ? shortIdMap[id].chatId : ADMIN_ID;
                 if (notifyId) bot.sendMessage(notifyId, msg);
                 
@@ -192,6 +255,8 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
                 if (id) delete shortIdMap[id];
+                
+                await updateAdminNotification(`Account +${num} Disconnected/Banned.`);
             } else {
                 startClient(folder, null, chatId, telegramUserId);
             }
@@ -221,11 +286,10 @@ async function boot() {
         if (session.creds) fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
         
         const shortId = generateShortId();
-        // Restore properties from DB
         shortIdMap[shortId] = { 
             folder: session.session_id, 
             phone: session.phone,
-            chatId: session.telegram_user_id // Stored owner ID
+            chatId: session.telegram_user_id 
         };
         
         if (session.antimsg) antiMsgState[shortId] = true;

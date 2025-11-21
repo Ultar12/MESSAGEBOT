@@ -15,40 +15,31 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 
 import { setupTelegramCommands } from './telegram_commands.js';
-import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb } from './db.js';
+import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb } from './db.js';
 
-// --- CONFIG ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const SESSIONS_DIR = './sessions';
 
 if (!TELEGRAM_TOKEN) { console.error('Missing TELEGRAM_TOKEN'); process.exit(1); }
 if (!process.env.DATABASE_URL) { console.error('Missing DATABASE_URL'); process.exit(1); }
 
-// --- SERVER ---
 const app = express();
 const PORT = process.env.PORT || 10000;
 app.get('/', (req, res) => res.send('Ultarbot Pro Running'));
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
-// --- SETUP ---
 const clients = {}; 
 const shortIdMap = {}; 
 const antiMsgState = {}; 
-// New: Cache to stop spam { "targetNumber": timestamp }
+const autoSaveState = {}; 
 const notificationCache = {}; 
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-// --- HELPERS ---
-function generateShortId() {
-    return Math.random().toString(36).substring(2, 7);
-}
-
-function makeSessionId() {
-    return `Ultarbot_${Date.now()}`;
-}
+function generateShortId() { return Math.random().toString(36).substring(2, 7); }
+function makeSessionId() { return `Ultarbot_${Date.now()}`; }
 
 const getRandomBrowser = () => {
     const browsers = [
@@ -58,7 +49,6 @@ const getRandomBrowser = () => {
     return browsers[Math.floor(Math.random() * browsers.length)];
 };
 
-// --- CLIENT LOGIC ---
 async function startClient(folder, targetNumber = null, chatId = null) {
     const sessionPath = path.join(SESSIONS_DIR, folder);
     if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
@@ -86,66 +76,55 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                 let phone = "pending";
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 if (id) phone = shortIdMap[id].phone;
-                
                 await saveSessionToDb(folder, phone, content);
             }
         } catch(e) {}
     });
 
-    // --- MESSAGE HANDLER ---
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        
+    sock.ev.on('messages.upsert', async ({ messages }) => {
         const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
         if (!myShortId) return;
 
         for (const msg of messages) {
             if (!msg.message) continue;
-            
-            // --- SPAM FIX: Ignore Protocol Messages (Deletes/Edits) ---
             if (msg.message.protocolMessage) continue; 
 
             const remoteJid = msg.key.remoteJid;
             const isFromMe = msg.key.fromMe;
             const myJid = jidNormalizedUser(sock.user?.id || "");
             
-            // Text Extraction
+            // AutoSave
+            if (!isFromMe && autoSaveState[myShortId]) {
+                if (remoteJid.endsWith('@s.whatsapp.net')) {
+                    const senderNum = remoteJid.split('@')[0];
+                    await addNumbersToDb([senderNum]);
+                }
+            }
+
             const msgType = Object.keys(msg.message)[0];
             const content = msgType === 'ephemeralMessage' ? msg.message.ephemeralMessage.message : msg.message;
             const text = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || "";
 
-            // Alive Check
             if (text && text.toLowerCase().includes('.alive')) {
                 await sock.sendMessage(remoteJid, { text: 'Ultarbot is Online' }, { quoted: msg });
             }
 
-            // --- ANTIMSG LOGIC ---
             if (antiMsgState[myShortId] && isFromMe) {
-                if (remoteJid === myJid) return; // Ignore Self
-                if (text.startsWith('.')) return; // Ignore Commands
+                if (remoteJid === myJid) return; 
+                if (text.startsWith('.')) return; 
                 if (remoteJid === 'status@broadcast') return;
 
-                console.log(`[ANTIMSG] Deleting for ${myShortId}`);
-                
                 try {
-                    // 1. Delete Message
                     await sock.sendMessage(remoteJid, { delete: msg.key });
-                    
-                    // 2. Send Notification (DEBOUNCED)
-                    // Check if we notified about this number in the last 10 seconds
                     const target = remoteJid.split('@')[0];
                     const now = Date.now();
                     const lastNotif = notificationCache[target] || 0;
 
-                    if (now - lastNotif > 10000) { // 10 Seconds cooldown
-                        if (chatId) {
-                            bot.sendMessage(chatId, `[ANTIMSG] Deleted message sent to ${target}`);
-                        }
-                        notificationCache[target] = now; // Update timestamp
+                    if (now - lastNotif > 10000) { 
+                        if (chatId) bot.sendMessage(chatId, `[ANTIMSG] Deleted message sent to ${target}`);
+                        notificationCache[target] = now; 
                     }
-
-                } catch (e) {
-                    console.error("Delete failed", e);
-                }
+                } catch (e) {}
             }
         }
     });
@@ -158,7 +137,6 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             const phoneNumber = userJid.split('@')[0];
             
             let myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
-            
             if (!myShortId) {
                 myShortId = generateShortId();
                 shortIdMap[myShortId] = { folder, phone: phoneNumber };
@@ -170,21 +148,23 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             console.log(`Connected: ${phoneNumber}`);
 
             if (chatId) {
+                // --- COPYABLE ID HERE ---
                 bot.sendMessage(chatId, 
-                    `Connected!\nNumber: +${phoneNumber}\nID: ${myShortId}`
+                    `Connected!\n` +
+                    `Number: +${phoneNumber}\n` +
+                    `ID: \`${myShortId}\``, 
+                    { parse_mode: 'Markdown' }
                 );
             }
         }
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 const num = id ? shortIdMap[id].phone : "Unknown";
-                
                 let msg = `Logged Out.`;
-                if (reason === 403) msg = `CRITICAL: Account +${num} was BANNED. Deleting data.`;
+                if (reason === 403) msg = `CRITICAL: Account +${num} was BANNED.`;
 
                 if (chatId) bot.sendMessage(chatId, msg);
                 
@@ -192,7 +172,6 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
                 if (id) delete shortIdMap[id];
-
             } else {
                 startClient(folder, null, chatId);
             }
@@ -214,27 +193,22 @@ async function startClient(folder, targetNumber = null, chatId = null) {
 async function boot() {
     await initDb(); 
     const savedSessions = await getAllSessions();
-    
     console.log(`[DB] Restoring ${savedSessions.length} sessions...`);
     
     for (const session of savedSessions) {
         const folderPath = path.join(SESSIONS_DIR, session.session_id);
         if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
-        
-        if (session.creds) {
-            fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
-        }
-        
-        startClient(session.session_id);
+        if (session.creds) fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
         
         const shortId = generateShortId();
         shortIdMap[shortId] = { folder: session.session_id, phone: session.phone };
         
-        if (session.antimsg) {
-            antiMsgState[shortId] = true;
-        }
+        if (session.antimsg) antiMsgState[shortId] = true;
+        if (session.autosave) autoSaveState[shortId] = true; 
+
+        startClient(session.session_id);
     }
 }
 
-setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState);
+setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState, autoSaveState);
 boot();

@@ -148,7 +148,6 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             console.log(`Connected: ${phoneNumber}`);
 
             if (chatId) {
-                // --- COPYABLE ID HERE ---
                 bot.sendMessage(chatId, 
                     `Connected!\n` +
                     `Number: +${phoneNumber}\n` +

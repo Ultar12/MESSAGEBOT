@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { delay } from '@whiskeysockets/baileys';
-import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, getAllSessions } from './db.js';
+import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, getAllSessions } from './db.js';
 
 const userState = {}; 
 
@@ -27,40 +27,35 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState) {
+export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState, autoSaveState) {
 
-    // --- 1. START ---
     bot.onText(/\/start/, (msg) => {
         userState[msg.chat.id] = null;
         bot.sendMessage(msg.chat.id, 'Ultarbot Pro Active. Select an option:', mainKeyboard);
     });
 
-    // --- 2. INPUT LISTENER ---
     bot.on('message', async (msg) => {
         if (!msg.text) return;
         const chatId = msg.chat.id;
         const text = msg.text;
 
-        // A. PAIRING INPUT
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
-            if (number.length < 10) return bot.sendMessage(chatId, 'Invalid number.');
+            if (number.length < 10) return bot.sendMessage(chatId, 'Invalid number. Try again (e.g. 23490...):');
 
             const existing = Object.values(shortIdMap).find(s => s.phone === number);
             if (existing) {
                 userState[chatId] = null;
-                return bot.sendMessage(chatId, `Account +${number} is already connected.`);
+                return bot.sendMessage(chatId, `Account +${number} is already connected.`, mainKeyboard);
             }
 
             userState[chatId] = null;
             bot.sendMessage(chatId, `Initializing +${number}... Please wait for code.`);
-            
             const sessionId = makeSessionId();
             startClient(sessionId, number, chatId);
             return;
         }
 
-        // B. BROADCAST INPUT
         if (userState[chatId] === 'WAITING_BROADCAST') {
             const messageText = text;
             const targetId = userState[chatId + '_target']; 
@@ -68,13 +63,13 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
             const sessionData = shortIdMap[targetId];
             if (!sessionData || !clients[sessionData.folder]) {
-                return bot.sendMessage(chatId, 'Client disconnected or invalid.');
+                return bot.sendMessage(chatId, 'Client disconnected or invalid.', mainKeyboard);
             }
 
             const sock = clients[sessionData.folder];
             const numbers = await getAllNumbers();
 
-            if (numbers.length === 0) return bot.sendMessage(chatId, 'Database empty.');
+            if (numbers.length === 0) return bot.sendMessage(chatId, 'Database empty. Use Generate or Save VCF.', mainKeyboard);
 
             bot.sendMessage(chatId, `Flashing message to ${numbers.length} contacts...`);
             
@@ -87,11 +82,10 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             });
 
             await Promise.all(tasks);
-            bot.sendMessage(chatId, `Flash Complete. Sent Requests: ${success}`);
+            bot.sendMessage(chatId, `Flash Complete. Sent Requests: ${success}`, mainKeyboard);
             return;
         }
 
-        // C. BUTTON COMMANDS
         switch (text) {
             case "Pair Account":
                 userState[chatId] = 'WAITING_PAIR';
@@ -103,19 +97,23 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 if (ids.length === 0) {
                     bot.sendMessage(chatId, "No accounts connected.");
                 } else {
-                    let list = "Active Sessions:\n";
+                    let list = "Active Sessions:\n\n";
                     ids.forEach(id => {
-                        const status = antiMsgState[id] ? "[LOCKED]" : "[ACTIVE]";
-                        list += `ID: ${id} | +${shortIdMap[id].phone} ${status}\n`;
+                        const session = shortIdMap[id];
+                        const antiStatus = antiMsgState[id] ? "LOCKED" : "UNLOCKED";
+                        const saveStatus = autoSaveState[id] ? "AUTOSAVE" : "MANUAL";
+                        
+                        // --- COPYABLE ID IN LIST ---
+                        list += `ID: \`${id}\` | +${session.phone} [${antiStatus}]\n`;
                     });
-                    bot.sendMessage(chatId, list);
+                    bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
                 }
                 break;
 
             case "Delete Database":
                 await clearAllNumbers();
                 if (fs.existsSync('./contacts.vcf')) fs.unlinkSync('./contacts.vcf');
-                bot.sendMessage(chatId, "Numbers database cleared.");
+                bot.sendMessage(chatId, "Numbers database cleared.", mainKeyboard);
                 break;
 
             case "Generate Numbers":
@@ -128,7 +126,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 if (activeIds.length === 1) {
                     userState[chatId] = 'WAITING_BROADCAST';
                     userState[chatId + '_target'] = activeIds[0];
-                    bot.sendMessage(chatId, `Using ID ${activeIds[0]}. Enter your message text now:`);
+                    bot.sendMessage(chatId, `Using ID \`${activeIds[0]}\`. Enter your message text now:`, { parse_mode: 'Markdown' });
                 } else {
                     bot.sendMessage(chatId, `Use command: /broadcast <id> <message>`);
                 }
@@ -140,27 +138,32 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         }
     });
 
-    // --- COMMANDS ---
-
-    // UPDATED: ANTIMSG ID ON/OFF
     bot.onText(/\/antimsg\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
         const id = match[1].trim();
-        const action = match[2].toLowerCase(); // on or off
-        
-        if (!shortIdMap[id]) {
-            return bot.sendMessage(msg.chat.id, `Invalid ID. check /list`);
-        }
+        const action = match[2].toLowerCase();
+        if (!shortIdMap[id]) return bot.sendMessage(msg.chat.id, `Invalid ID.`);
 
         const sessionId = shortIdMap[id].folder;
         const newState = (action === 'on');
-
-        // Update Memory
+        
         antiMsgState[id] = newState;
-        // Update Database
         await setAntiMsgStatus(sessionId, newState);
 
-        const statusText = newState ? "LOCKED (Auto-Delete ON)" : "UNLOCKED (Normal Mode)";
-        bot.sendMessage(msg.chat.id, `Account +${shortIdMap[id].phone} is now: ${statusText}`);
+        bot.sendMessage(msg.chat.id, `AntiMsg for \`${id}\` is now ${action.toUpperCase()}.`, { parse_mode: 'Markdown' });
+    });
+
+    bot.onText(/\/autosave\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
+        const id = match[1].trim();
+        const action = match[2].toLowerCase();
+        if (!shortIdMap[id]) return bot.sendMessage(msg.chat.id, `Invalid ID.`);
+
+        const sessionId = shortIdMap[id].folder;
+        const newState = (action === 'on');
+        
+        autoSaveState[id] = newState;
+        await setAutoSaveStatus(sessionId, newState);
+
+        bot.sendMessage(msg.chat.id, `AutoSave for \`${id}\` is now ${action.toUpperCase()}.`, { parse_mode: 'Markdown' });
     });
 
     bot.onText(/\/generate (.+)/, async (msg, match) => {
@@ -169,21 +172,17 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         const amount = parseInt(args[2], 10) || 100;
         
         const newNumbers = [];
-        for (let i = 0; i < amount; i++) {
-            newNumbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
-        }
+        for (let i = 0; i < amount; i++) newNumbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
         
         await addNumbersToDb(newNumbers);
-        bot.sendMessage(msg.chat.id, `Added ${amount} numbers to Postgres DB.`);
+        bot.sendMessage(msg.chat.id, `Added ${amount} numbers.`);
     });
 
     bot.onText(/\/save/, async (msg) => {
         if (!msg.reply_to_message?.document) return;
         
         const firstId = Object.keys(shortIdMap)[0];
-        if (!firstId || !clients[shortIdMap[firstId].folder]) {
-            return bot.sendMessage(msg.chat.id, 'Pair an account first.');
-        }
+        if (!firstId || !clients[shortIdMap[firstId].folder]) return bot.sendMessage(msg.chat.id, 'Pair an account first.');
         const sock = clients[shortIdMap[firstId].folder];
 
         try {
@@ -205,18 +204,12 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             }
 
             await addNumbersToDb(validNumbers);
-
-            let listMsg = `Saved ${validNumbers.length} verified numbers to Postgres:\n\n`;
             
-            if (validNumbers.length > 300) {
-                listMsg += validNumbers.slice(0, 300).join('\n');
-                listMsg += `\n...and ${validNumbers.length - 300} more.`;
-            } else {
-                listMsg += validNumbers.join('\n');
-            }
+            let listMsg = `Saved ${validNumbers.length} numbers:\n\n`;
+            if (validNumbers.length > 300) listMsg += validNumbers.slice(0, 300).join('\n') + `\n...and ${validNumbers.length - 300} more.`;
+            else listMsg += validNumbers.join('\n');
 
             bot.sendMessage(msg.chat.id, listMsg);
-
         } catch (e) {
             bot.sendMessage(msg.chat.id, "Error: " + e.message);
         }

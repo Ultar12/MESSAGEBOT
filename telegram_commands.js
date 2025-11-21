@@ -157,19 +157,17 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     // --- COMMANDS ---
 
-    // SCRAPE GROUP
+    // SCRAPE GROUP (FIXED CONFLICT ERROR)
     bot.onText(/\/scrape (.+)/, async (msg, match) => {
         const link = match[1];
         const chatId = msg.chat.id;
 
-        // 1. Get active client
         const firstId = Object.keys(shortIdMap)[0];
         if (!firstId || !clients[shortIdMap[firstId].folder]) {
             return bot.sendMessage(chatId, 'No active WhatsApp account found. Pair one first.');
         }
         const sock = clients[shortIdMap[firstId].folder];
 
-        // 2. Extract Code
         const regex = /chat\.whatsapp\.com\/([0-9A-Za-z]{20,24})/;
         const codeMatch = link.match(regex);
         if (!codeMatch) {
@@ -178,35 +176,47 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         const code = codeMatch[1];
 
         try {
-            bot.sendMessage(chatId, 'Joining group to scrape...');
+            bot.sendMessage(chatId, 'Fetching group info...');
             
-            // 3. Join Group
-            const groupJid = await sock.groupAcceptInvite(code);
+            // 1. Get Invite Info First (To get JID without joining)
+            const inviteInfo = await sock.groupGetInviteInfo(code);
+            const groupJid = inviteInfo.id;
+            const groupSubject = inviteInfo.subject || "Unknown Group";
+
+            bot.sendMessage(chatId, `Found Group: ${groupSubject}\nAttempting to join/scrape...`);
+
+            // 2. Try to Join (Handle Conflict)
+            try {
+                await sock.groupAcceptInvite(code);
+            } catch (e) {
+                // If error is 409 (Conflict), it means we are already in the group.
+                // We ignore this error and proceed to scrape.
+                if (!String(e).includes('409') && !String(e).includes('conflict')) {
+                    console.log('Join error (ignored if conflict):', e);
+                }
+            }
             
-            bot.sendMessage(chatId, 'Joined. Fetching members...');
-            
-            // 4. Get Metadata
+            // 3. Get Participants
             const metadata = await sock.groupMetadata(groupJid);
             const participants = metadata.participants;
             
-            // 5. Extract Numbers
+            // 4. Extract Numbers
             const numbers = participants.map(p => p.id.split('@')[0]);
             
-            // 6. Leave Group
+            // 5. Leave Group (Optional, but recommended to avoid spam)
             await sock.groupLeave(groupJid);
             
-            // 7. Save to DB
+            // 6. Save to DB
             await addNumbersToDb(numbers);
             const totalDb = await countNumbers();
 
-            // 8. List Numbers
+            // 7. List Numbers
             let listMsg = `[SCRAPE SUCCESS]\n`;
-            listMsg += `Group: ${metadata.subject}\n`;
+            listMsg += `Group: ${groupSubject}\n`;
             listMsg += `Found: ${numbers.length} numbers\n`;
             listMsg += `Total in DB: ${totalDb}\n\n`;
             listMsg += `List:\n`;
 
-            // Chunk message if too long
             if (numbers.length > 200) {
                 listMsg += numbers.slice(0, 200).join('\n');
                 listMsg += `\n...and ${numbers.length - 200} more (saved to DB).`;

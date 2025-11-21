@@ -16,10 +16,17 @@ import { Boom } from '@hapi/boom';
 
 import { setupTelegramCommands } from './telegram_commands.js';
 
+// --- SERVER ---
+const app = express();
+const PORT = process.env.PORT || 10000;
+app.get('/', (req, res) => res.send('Ultarbot Active'));
+app.listen(PORT, () => console.log(`[SYSTEM] Server listening on port ${PORT}`));
+
 // --- CONFIG ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const API_SECRET = process.env.API_SECRET; // Secure Key
+const API_SECRET = process.env.API_SECRET;
 const SESSIONS_DIR = process.env.SESSIONS_DIR || './sessions';
+const DB_FILE = './id_database.json'; // Stores the 5-char IDs
 
 if (!TELEGRAM_TOKEN) {
     console.error('[FATAL] TELEGRAM_TOKEN is missing');
@@ -29,78 +36,40 @@ if (!TELEGRAM_TOKEN) {
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 // --- GLOBALS ---
-const clients = {}; 
-const sessionMap = {}; 
+const clients = {}; // Maps Folder -> Socket
 const antiMsgState = {}; 
 const telegramMap = {}; 
 
-// --- EXPRESS SERVER & API ---
-const app = express();
-const PORT = process.env.PORT || 10000;
+// Map: ShortID -> { folder: "Ultarbot_...", phone: "234..." }
+let shortIdMap = {}; 
 
-// Middleware for JSON
-app.use(express.json());
+// Load Database
+if (fs.existsSync(DB_FILE)) {
+    try {
+        shortIdMap = JSON.parse(fs.readFileSync(DB_FILE));
+    } catch (e) { console.error("DB Error", e); }
+}
 
-// 1. HEALTH CHECK
-app.get('/', (req, res) => res.send('Ultarbot Active'));
+function saveDb() {
+    fs.writeFileSync(DB_FILE, JSON.stringify(shortIdMap, null, 2));
+}
 
-// 2. PAIRING API (GET /pair?number=xxx&secret=xxx)
-app.get('/pair', async (req, res) => {
-    const { number, secret } = req.query;
-
-    // Security Check
-    if (secret !== API_SECRET) {
-        return res.status(403).json({ error: 'Invalid Secret Key' });
-    }
-
-    if (!number) {
-        return res.status(400).json({ error: 'Missing number parameter' });
-    }
-
-    const cleanNumber = number.replace(/[^0-9]/g, '');
-    
-    if (clients[cleanNumber]) {
-        return res.status(400).json({ error: 'Number already connected' });
-    }
-
-    // Create Session
-    const sessionId = makeSessionId();
-    const sessionPath = path.join(SESSIONS_DIR, sessionId);
-    fs.mkdirSync(sessionPath, { recursive: true });
-
-    console.log(`[API] Pairing request for ${cleanNumber}`);
-
-    // Trigger Client Start with Callback
-    // We pass a callback function that gets called when the code is generated
-    startClient(sessionId, cleanNumber, null, (code) => {
-        // Send JSON response to the other bot
-        if (code) {
-            res.json({ 
-                status: 'success', 
-                number: cleanNumber,
-                pairing_code: code 
-            });
-        } else {
-            res.status(500).json({ error: 'Failed to generate code' });
-        }
-    });
-});
-
-app.listen(PORT, () => console.log(`[SYSTEM] Server listening on port ${PORT}`));
-
-
-// --- BOT SETUP ---
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 console.log('[SYSTEM] Bot Started.');
 
-// --- HELPERS ---
+// --- HELPER: 5-CHAR RANDOM ID ---
+function generateShortId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < 5; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+    // Ensure uniqueness
+    if (shortIdMap[result]) return generateShortId();
+    return result;
+}
+
 function makeSessionId() {
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0]; 
-    let randomStr = '';
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 8; i++) randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
-    return `Ultarbot_${dateStr}_${randomStr}`;
+    const dateStr = new Date().toISOString().split('T')[0]; 
+    return `Ultarbot_${dateStr}_${Date.now()}`;
 }
 
 const getRandomBrowser = () => {
@@ -111,8 +80,24 @@ const getRandomBrowser = () => {
     return browsers[Math.floor(Math.random() * browsers.length)];
 };
 
-// --- WHATSAPP CLIENT LOGIC ---
-// Added 'onCode' parameter for API callbacks
+// --- API FOR PAIRING ---
+app.use(express.json());
+app.get('/pair', async (req, res) => {
+    const { number, secret } = req.query;
+    if (secret !== API_SECRET) return res.status(403).json({ error: 'Invalid Key' });
+    if (!number) return res.status(400).json({ error: 'No number' });
+
+    const sessionId = makeSessionId();
+    const sessionPath = path.join(SESSIONS_DIR, sessionId);
+    fs.mkdirSync(sessionPath, { recursive: true });
+
+    startClient(sessionId, number, null, (code) => {
+        if (code) res.json({ status: 'success', pairing_code: code });
+        else res.status(500).json({ error: 'Failed' });
+    });
+});
+
+// --- WHATSAPP LOGIC ---
 async function startClient(folder, targetNumber = null, chatId = null, onCode = null) {
     const sessionPath = path.join(SESSIONS_DIR, folder);
     if(chatId) telegramMap[folder] = chatId;
@@ -135,12 +120,11 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
 
         sock.ev.on('creds.update', saveCreds);
 
-        // --- MSG HANDLER ---
+        // --- MESSAGE HANDLER ---
         sock.ev.on('messages.upsert', async ({ messages }) => {
             for (const msg of messages) {
                 if (!msg.message) continue;
                 
-                // Unwrap Message
                 const msgType = Object.keys(msg.message)[0];
                 const content = msgType === 'ephemeralMessage' ? msg.message.ephemeralMessage.message : msg.message;
                 const text = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || "";
@@ -162,12 +146,12 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                     const cmd = text.split(' ')[1];
                     if (cmd === 'on') {
                         antiMsgState[userPhone] = true;
-                        await sock.sendMessage(remoteJid, { text: '✅ AntiMsg LOCKED.' }, { quoted: msg });
+                        await sock.sendMessage(remoteJid, { text: '✅ Locked' }, { quoted: msg });
                     } else if (cmd === 'off') {
                         antiMsgState[userPhone] = false;
-                        await sock.sendMessage(remoteJid, { text: '❌ AntiMsg UNLOCKED.' }, { quoted: msg });
+                        await sock.sendMessage(remoteJid, { text: '❌ Unlocked' }, { quoted: msg });
                     }
-                    return; 
+                    return;
                 }
 
                 // AntiMsg Action
@@ -178,10 +162,8 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                     try { await sock.sendMessage(remoteJid, { delete: msg.key }); } catch (e) {}
 
                     const target = remoteJid.split('@')[0];
-                    const tgChatId = telegramMap[folder];
-                    
-                    if (tgChatId) {
-                        bot.sendMessage(tgChatId, `⚠️ *AntiMsg Action*\nTarget: +${target}\nAction: 🗑️ DELETED`, { parse_mode: 'Markdown' });
+                    if (telegramMap[folder]) {
+                        bot.sendMessage(telegramMap[folder], `⚠️ *Locked Action*\nTarget: +${target}\n🗑️ Deleted`, { parse_mode: 'Markdown' });
                     }
                 }
             }
@@ -195,24 +177,59 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                 const userJid = jidNormalizedUser(sock.user.id);
                 const phoneNumber = userJid.split('@')[0];
                 
-                console.log(`[SUCCESS] Connected: +${phoneNumber} (ID: ${folder})`);
-                clients[phoneNumber] = sock;
-                sessionMap[folder] = phoneNumber;
-                if (chatId) telegramMap[folder] = chatId;
+                // 1. Check if ID exists
+                let myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
+                
+                // 2. Assign New Random 5-Char ID if new
+                if (!myShortId) {
+                    myShortId = generateShortId();
+                    shortIdMap[myShortId] = { folder: folder, phone: phoneNumber };
+                    saveDb();
+                } else {
+                    // Update phone just in case
+                    shortIdMap[myShortId].phone = phoneNumber;
+                    saveDb();
+                }
 
-                if(chatId) bot.sendMessage(chatId, `[SUCCESS] Connected: +${phoneNumber}\nSession ID: ${folder}`);
+                console.log(`[CONNECTED] +${phoneNumber} | ID: ${myShortId}`);
+                clients[folder] = sock;
+
+                if(chatId) {
+                    bot.sendMessage(chatId, 
+                        `*Connected*\n` +
+                        `Number: +${phoneNumber}\n` +
+                        `Bot ID: \`${myShortId}\`\n\n` +
+                        `Use: /broadcast ${myShortId}`,
+                        { parse_mode: 'Markdown' }
+                    );
+                }
 
                 try {
-                    await sock.sendMessage(userJid, { text: `Ultarbot Connected\nNumber: +${phoneNumber}\nSession ID:\n${folder}` });
+                    await sock.sendMessage(userJid, { text: `Ultarbot ID: ${myShortId}` });
                 } catch (e) {}
             }
 
+            // --- LOGOUT & DELETE ---
             if (connection === 'close') {
                 let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
                 if (reason === DisconnectReason.loggedOut) {
-                    const num = sessionMap[folder];
+                    console.log(`[LOGOUT] Session ${folder} ended.`);
+                    
+                    // 1. Delete from DB
+                    const myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
+                    if (myShortId) {
+                        delete shortIdMap[myShortId];
+                        saveDb();
+                    }
+
+                    // 2. Delete File
                     if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
-                    if (num) delete clients[num];
+                    
+                    // 3. Clear Memory
+                    delete clients[folder];
+
+                    if (telegramMap[folder]) bot.sendMessage(telegramMap[folder], `❌ Session Logged Out & Deleted.`);
+
                 } else {
                     const savedChatId = telegramMap[folder];
                     startClient(folder, null, savedChatId);
@@ -220,46 +237,33 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
             }
         });
 
-        // --- PAIRING LOGIC ---
+        // --- PAIRING CODE ---
         if (targetNumber && !sock.authState.creds.registered) {
             setTimeout(async () => {
                 if (!sock.authState.creds.registered) {
                     try {
-                        console.log(`[PAIRING] Requesting code for +${targetNumber}...`);
                         const code = await sock.requestPairingCode(targetNumber);
-                        
-                        // 1. Telegram (Legacy support)
-                        if (chatId) {
-                            await bot.sendMessage(chatId, `Pairing Code for +${targetNumber}:\n\n\`${code}\`\n\nTap code to copy.`, { parse_mode: 'Markdown' });
-                        }
-
-                        // 2. API Callback (New Feature)
-                        if (onCode) {
-                            onCode(code);
-                        }
-
+                        if (chatId) await bot.sendMessage(chatId, `Code: \`${code}\``, { parse_mode: 'Markdown' });
+                        if (onCode) onCode(code);
                     } catch (e) {
-                        if (chatId) bot.sendMessage(chatId, `[ERROR] Failed to get code: ${e.message}`);
-                        if (onCode) onCode(null); // Notify API of failure
-                        if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+                        if (onCode) onCode(null);
                     }
                 }
             }, 3000);
         }
     } catch (error) {
-        console.error(`[CLIENT ERROR] ${folder}:`, error);
+        console.error(`[ERROR] ${folder}:`, error);
         if (onCode) onCode(null);
     }
 }
 
-// --- INIT ---
+// --- STARTUP ---
 async function loadAllClients() {
     if (!fs.existsSync(SESSIONS_DIR)) return;
     const folders = fs.readdirSync(SESSIONS_DIR).filter(f => fs.statSync(path.join(SESSIONS_DIR, f)).isDirectory());
-    console.log(`[SYSTEM] Reloading ${folders.length} sessions...`);
     for (const folder of folders) startClient(folder);
 }
 
-// Load commands
-setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, makeSessionId, antiMsgState);
+// Initialize
+setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState);
 loadAllClients();

@@ -14,19 +14,6 @@ const mainKeyboard = {
     }
 };
 
-// HELPER: Chunk Array for Batching
-function chunkArray(myArray, chunk_size){
-    var index = 0;
-    var arrayLength = myArray.length;
-    var tempArray = [];
-    
-    for (index = 0; index < arrayLength; index += chunk_size) {
-        myChunk = myArray.slice(index, index+chunk_size);
-        tempArray.push(myChunk);
-    }
-    return tempArray;
-}
-
 function parseVcf(vcfContent) {
     const numbers = new Set();
     const lines = vcfContent.split(/\r?\n/);
@@ -39,7 +26,7 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-// --- HELPER: EXECUTE TURBO BROADCAST ---
+// --- HELPER: EXECUTE STEALTH FLASH BROADCAST ---
 async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, messageText) {
     const sessionData = shortIdMap[targetId];
     if (!sessionData || !clients[sessionData.folder]) {
@@ -51,38 +38,59 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
 
     if (numbers.length === 0) return bot.sendMessage(chatId, 'Database empty.', mainKeyboard);
 
-    bot.sendMessage(chatId, `Turbo-Flashing message to ${numbers.length} contacts using ID ${targetId}...`);
+    bot.sendMessage(chatId, `Initiating STEALTH FLASH to ${numbers.length} numbers...`);
     
-    let successCount = 0;
-    const startTime = Date.now();
     const successfulNumbers = [];
+    const startTime = Date.now();
 
-    // --- TURBO BATCH LOGIC ---
-    // 1. Batch Size: 10 messages per burst
-    // 2. Delay: 1 second between bursts
-    // This prevents the "Missing Messages" issue while staying fast.
+    // --- STEALTH FLASH LOGIC ---
+    // We use Promise.all for speed, but we modify the payload for safety.
     
-    const BATCH_SIZE = 10; 
+    const tasks = numbers.map(async (num) => {
+        // 1. MICRO-JITTER (1ms to 50ms)
+        // Prevents exact millisecond timestamps which flag "Bot Behavior"
+        await new Promise(r => setTimeout(r, Math.random() * 50));
+
+        try {
+            const jid = `${num}@s.whatsapp.net`;
+            
+            // 2. HASH BREAKER
+            // Adds invisible random chars so every message is unique on the server
+            const uniqueId = Math.random().toString(36).substring(7);
+            const stealthText = `${messageText} \u200B`; // Zero-width space
+
+            // 3. FORWARDING CONTEXT
+            // Makes the message look like a "Forwarded" item (Trust Score)
+            await sock.sendMessage(jid, { 
+                text: stealthText,
+                contextInfo: {
+                    isForwarded: true,
+                    forwardingScore: 999, // High score implies viral content
+                    forwardedNewsletterMessageInfo: {
+                        newsletterJid: '120363161962923954@newsletter', // Fake Channel ID
+                        serverMessageId: 100,
+                        newsletterName: "Public Announcement"
+                    },
+                    // This forces WA to treat it as a distinct entity
+                    externalAdReply: {
+                        showAdAttribution: false,
+                        renderLargerThumbnail: false,
+                        title: "Broadcast",
+                        body: "Message",
+                        mediaType: 1,
+                        thumbnailUrl: "", // Optional
+                        sourceUrl: ""
+                    }
+                }
+            });
+
+            successfulNumbers.push(num);
+        } catch (e) {}
+    });
+
+    // Fire all barrels
+    await Promise.all(tasks);
     
-    for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
-        const batch = numbers.slice(i, i + BATCH_SIZE);
-        
-        // Create parallel tasks for this batch only
-        const batchTasks = batch.map(async (num) => {
-            try {
-                await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
-                successfulNumbers.push(num);
-                successCount++;
-            } catch (e) {}
-        });
-
-        // Fire this batch instantly
-        await Promise.all(batchTasks);
-        
-        // Cool down to let WhatsApp sync
-        await delay(1000); 
-    }
-
     const duration = (Date.now() - startTime) / 1000;
 
     // CLEANUP
@@ -91,25 +99,28 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     }
 
     bot.sendMessage(chatId, 
-        `Flash Complete in ${duration}s.\n` +
-        `Sent: ${successCount}\n` +
-        `Database Cleaned: ${successfulNumbers.length} numbers removed.`, 
+        `Stealth Flash Complete in ${duration}s.\n` +
+        `Sent: ${successfulNumbers.length}\n` +
+        `DB Cleaned: ${successfulNumbers.length} removed.`, 
         mainKeyboard
     );
 }
 
 export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState, autoSaveState) {
 
+    // --- 1. START ---
     bot.onText(/\/start/, (msg) => {
         userState[msg.chat.id] = null;
         bot.sendMessage(msg.chat.id, 'Ultarbot Pro Active.', mainKeyboard);
     });
 
+    // --- 2. INPUT LISTENER ---
     bot.on('message', async (msg) => {
         if (!msg.text) return;
         const chatId = msg.chat.id;
         const text = msg.text;
 
+        // A. PAIRING INPUT
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
             if (number.length < 10) return bot.sendMessage(chatId, 'Invalid number.');
@@ -127,13 +138,17 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             return;
         }
 
+        // B. BROADCAST MESSAGE INPUT
         if (userState[chatId] === 'WAITING_BROADCAST_MSG') {
             const targetId = userState[chatId + '_target']; 
             userState[chatId] = null; 
+            
+            // Use the new Stealth Broadcast function
             await executeBroadcast(bot, clients, shortIdMap, chatId, targetId, text);
             return;
         }
 
+        // C. BUTTON COMMANDS
         switch (text) {
             case "Pair Account":
                 userState[chatId] = 'WAITING_PAIR';
@@ -169,17 +184,20 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 const activeIds = Object.keys(shortIdMap);
                 if (activeIds.length === 0) return bot.sendMessage(chatId, "Pair an account first.", mainKeyboard);
                 
+                // AUTO-SELECT FIRST
                 const autoId = activeIds[0];
+                
                 userState[chatId] = 'WAITING_BROADCAST_MSG';
                 userState[chatId + '_target'] = autoId;
                 
-                bot.sendMessage(chatId, `Using Account ID: \`${autoId}\`\n\nPlease enter the message to broadcast:`, { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, `Using Account ID: \`${autoId}\` (Stealth Mode)\n\nPlease enter the message to broadcast:`, { parse_mode: 'Markdown' });
                 break;
         }
     });
 
     // --- COMMANDS ---
 
+    // MANUAL BROADCAST
     bot.onText(/\/broadcast (.+)/, async (msg, match) => {
         if (!msg.reply_to_message?.text) return bot.sendMessage(msg.chat.id, 'Reply to text with /broadcast <id>');
         const targetId = match[1].trim();

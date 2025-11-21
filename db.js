@@ -16,20 +16,25 @@ export async function initDb() {
                 phone TEXT,
                 creds TEXT,
                 antimsg BOOLEAN DEFAULT FALSE,
-                autosave BOOLEAN DEFAULT FALSE
+                autosave BOOLEAN DEFAULT FALSE,
+                telegram_user_id TEXT
             );
         `);
+        
+        // Safe Migration: Add columns if missing
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
+        // Add new telegram_user_id column if it doesn't exist
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
         
-        // Broadcast Numbers Table
+        // Numbers Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS broadcast_numbers (
                 phone TEXT PRIMARY KEY
             );
         `);
 
-        // NEW: Blacklist Table
+        // Blacklist Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS blacklist (
                 phone TEXT PRIMARY KEY
@@ -45,14 +50,14 @@ export async function initDb() {
 }
 
 // --- SESSIONS ---
-export async function saveSessionToDb(sessionId, phone, credsData) {
+export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId) {
     try {
         await pool.query(
-            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave) 
-             VALUES ($1, $2, $3, FALSE, FALSE) 
+            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id) 
+             VALUES ($1, $2, $3, FALSE, FALSE, $6) 
              ON CONFLICT (session_id) 
-             DO UPDATE SET creds = $3, phone = $2`,
-            [sessionId, phone, credsData]
+             DO UPDATE SET creds = $3, phone = $2, telegram_user_id = $6`,
+            [sessionId, phone, credsData, null, null, telegramUserId]
         );
     } catch (e) { console.error('[DB] Save Session Error', e); }
 }
@@ -69,9 +74,18 @@ export async function setAutoSaveStatus(sessionId, status) {
     } catch (e) { console.error('[DB] AutoSave Update Error', e); }
 }
 
-export async function getAllSessions() {
+export async function getAllSessions(telegramUserId = null) {
     try {
-        const res = await pool.query('SELECT * FROM wa_sessions');
+        let queryText = 'SELECT * FROM wa_sessions';
+        let queryParams = [];
+
+        // If a specific user ID is provided (for regular users)
+        if (telegramUserId) {
+            queryText += ' WHERE telegram_user_id = $1';
+            queryParams = [telegramUserId.toString()];
+        }
+        
+        const res = await pool.query(queryText, queryParams);
         return res.rows;
     } catch (e) { return []; }
 }
@@ -133,7 +147,7 @@ export async function clearAllNumbers() {
     } catch (e) { console.error('[DB] Clear Numbers Error', e); }
 }
 
-// --- BLACKLIST (THE MISSING PART) ---
+// --- BLACKLIST ---
 export async function addToBlacklist(phone) {
     try {
         await pool.query('INSERT INTO blacklist (phone) VALUES ($1) ON CONFLICT DO NOTHING', [phone]);

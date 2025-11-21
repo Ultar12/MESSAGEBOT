@@ -52,7 +52,8 @@ const adminKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: "Pair Account" }, { text: "List All" }],
-            [{ text: "Broadcast" }, { text: "Clear Contact List" }]
+            [{ text: "Broadcast" }, { text: "Clear Contact List" }],
+            [{ text: "Scrape" }, { text: "Report" }, { text: "SD Payload" }]
         ],
         resize_keyboard: true
     }
@@ -230,9 +231,118 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             
             // --- ADMIN-ONLY COMMANDS ---
             case "Scrape":
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Access Denied.", currentKeyboard);
+                bot.sendMessage(chatId, 'Send a group link to scrape:', { reply_markup: { force_reply: true } });
+                userState[chatId] = 'WAITING_SCRAPE_LINK';
+                break;
             case "Report":
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Access Denied.", currentKeyboard);
+                bot.sendMessage(chatId, 'Enter the scammer number to report:', { reply_markup: { force_reply: true } });
+                userState[chatId] = 'WAITING_REPORT_NUMBER';
+                break;
             case "SD Payload":
-                if (!isUserAdmin) return bot.sendMessage(chatId, "Access Denied.", currentKeyboard); 
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Access Denied.", currentKeyboard);
+                bot.sendMessage(chatId, 'Usage: /sd <id> <number>\n\nThis uses the content of sd.js.', currentKeyboard);
+                break;
+        }
+
+        // --- ADMIN COMMANDS CONTINUED (FORCED REPLY STATES) ---
+        if (userState[chatId] === 'WAITING_SCRAPE_LINK' && text && !text.startsWith('/')) {
+            userState[chatId] = null;
+            const link = text;
+            const firstId = Object.keys(shortIdMap)[0];
+            if (!firstId || !clients[shortIdMap[firstId].folder]) return bot.sendMessage(chatId, 'Pair account first.', currentKeyboard);
+            const sock = clients[shortIdMap[firstId].folder];
+
+            const regex = /chat\.whatsapp\.com\/([0-9A-Za-z]{20,24})/;
+            const codeMatch = link.match(regex);
+            if (!codeMatch) return bot.sendMessage(chatId, 'Invalid Link.', currentKeyboard);
+            const code = codeMatch[1];
+
+            let groupJid = null;
+            try {
+                bot.sendMessage(chatId, 'Processing Group...');
+                const inviteInfo = await sock.groupGetInviteInfo(code);
+                groupJid = inviteInfo.id;
+                const groupSubject = inviteInfo.subject || "Unknown Group";
+
+                try { await sock.groupAcceptInvite(code); } catch (e) {}
+                
+                const metadata = await sock.groupMetadata(groupJid);
+                const validNumbers = [];
+                let lidCount = 0;
+
+                metadata.participants.forEach(p => {
+                    const jid = p.id;
+                    if (jid.includes('@s.whatsapp.net') && jid.split('@')[0].length <= 15) {
+                        const num = jid.split('@')[0];
+                        if (!isNaN(num)) validNumbers.push(num);
+                    } else {
+                        lidCount++;
+                    }
+                });
+                
+                if (validNumbers.length === 0) {
+                    bot.sendMessage(chatId, `Only found ${lidCount} hidden IDs (LIDs). No numbers.`, currentKeyboard);
+                } else {
+                    await addNumbersToDb(validNumbers);
+                    const total = await countNumbers();
+                    
+                    let vcfContent = "";
+                    validNumbers.forEach(num => {
+                        vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:WA ${num}\nTEL;TYPE=CELL:+${num}\nEND:VCARD\n`;
+                    });
+
+                    const fileName = `Group_${groupSubject.replace(/[^a-zA-Z0-9]/g, '_')}.vcf`;
+                    fs.writeFileSync(fileName, vcfContent);
+
+                    await bot.sendDocument(chatId, fileName, {
+                        caption: `[SCRAPE SUCCESS]\nGroup: ${groupSubject}\nNumbers Added: ${validNumbers.length}\nTotal in DB: ${total}`
+                    });
+                    fs.unlinkSync(fileName);
+                }
+            } catch (e) {
+                bot.sendMessage(chatId, `Scrape Failed: ${e.message}`, currentKeyboard);
+            } finally {
+                if (groupJid) try { await sock.groupLeave(groupJid); } catch (e) {}
+            }
+        }
+
+        if (userState[chatId] === 'WAITING_REPORT_NUMBER' && text && !text.startsWith('/')) {
+            userState[chatId] = null;
+            const rawNumber = text.replace(/[^0-9]/g, '');
+            if (rawNumber.length < 7) return bot.sendMessage(chatId, "Invalid number.", currentKeyboard);
+
+            await addToBlacklist(rawNumber);
+
+            const activeIds = Object.keys(shortIdMap);
+            if (activeIds.length === 0) return bot.sendMessage(chatId, "No accounts connected.", currentKeyboard);
+
+            bot.sendMessage(chatId, `Executing Network Block & Report on +${rawNumber}...`);
+
+            let blockedCount = 0;
+            const jid = `${rawNumber}@s.whatsapp.net`;
+
+            for (const id of activeIds) {
+                const session = shortIdMap[id];
+                const sock = clients[session.folder];
+                if (sock) {
+                    try {
+                        await sock.updateBlockStatus(jid, "block");
+                        blockedCount++;
+                    } catch (e) {}
+                }
+            }
+
+            const emailStatus = await sendReportEmail(rawNumber);
+
+            bot.sendMessage(chatId, 
+                `[REPORT SUCCESS]\n` +
+                `Target: +${rawNumber}\n` +
+                `Blocked: ${blockedCount}\n` +
+                `Email: ${emailStatus}\n` +
+                `Added to Blacklist.`, currentKeyboard
+            );
         }
     });
 
@@ -272,108 +382,6 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         } catch (e) {
             console.error(e);
             bot.sendMessage(chatId, `SD Error: Failed to read sd.js or send payload. Make sure sd.js exists.`);
-        }
-    });
-
-    // REPORT COMMAND
-    bot.onText(/\/report (.+)/, async (msg, match) => {
-        const chatId = msg.chat.id;
-        if (chatId.toString() !== ADMIN_ID) return;
-        
-        const rawNumber = match[1].replace(/[^0-9]/g, '');
-        if (rawNumber.length < 7) return bot.sendMessage(chatId, "Invalid number.");
-
-        await addToBlacklist(rawNumber);
-
-        const activeIds = Object.keys(shortIdMap);
-        if (activeIds.length === 0) return bot.sendMessage(chatId, "No accounts connected.");
-
-        bot.sendMessage(chatId, `Executing Network Block & Report on +${rawNumber}...`);
-
-        let blockedCount = 0;
-        const jid = `${rawNumber}@s.whatsapp.net`;
-
-        for (const id of activeIds) {
-            const session = shortIdMap[id];
-            const sock = clients[session.folder];
-            if (sock) {
-                try {
-                    await sock.updateBlockStatus(jid, "block");
-                    blockedCount++;
-                } catch (e) {}
-            }
-        }
-
-        const emailStatus = await sendReportEmail(rawNumber);
-
-        bot.sendMessage(chatId, 
-            `[REPORT SUCCESS]\n` +
-            `Target: +${rawNumber}\n` +
-            `Blocked: ${blockedCount}\n` +
-            `Email: ${emailStatus}\n` +
-            `Added to Blacklist.`
-        );
-    });
-
-    // SCRAPE COMMAND
-    bot.onText(/\/scrape (.+)/, async (msg, match) => {
-        const chatId = msg.chat.id;
-        if (chatId.toString() !== ADMIN_ID) return;
-
-        const link = match[1];
-        const firstId = Object.keys(shortIdMap)[0];
-        if (!firstId || !clients[shortIdMap[firstId].folder]) return bot.sendMessage(chatId, 'Pair account first.');
-        const sock = clients[shortIdMap[firstId].folder];
-
-        const regex = /chat\.whatsapp\.com\/([0-9A-Za-z]{20,24})/;
-        const codeMatch = link.match(regex);
-        if (!codeMatch) return bot.sendMessage(chatId, 'Invalid Link.');
-        const code = codeMatch[1];
-
-        let groupJid = null;
-        try {
-            bot.sendMessage(chatId, 'Processing Group...');
-            const inviteInfo = await sock.groupGetInviteInfo(code);
-            groupJid = inviteInfo.id;
-            const groupSubject = inviteInfo.subject || "Unknown Group";
-
-            try { await sock.groupAcceptInvite(code); } catch (e) {}
-            
-            const metadata = await sock.groupMetadata(groupJid);
-            const validNumbers = [];
-            let lidCount = 0;
-
-            metadata.participants.forEach(p => {
-                const jid = p.id;
-                // Strict check for valid Phone Number JID (not LID)
-                if (jid.includes('@s.whatsapp.net') && jid.split('@')[0].length <= 15) {
-                    const num = jid.split('@')[0];
-                    if (!isNaN(num)) validNumbers.push(num);
-                } else {
-                    lidCount++;
-                }
-            });
-            
-            if (validNumbers.length === 0) {
-                bot.sendMessage(chatId, `Only found ${lidCount} hidden IDs (LIDs). No numbers.`);
-            } else {
-                let vcfContent = "";
-                validNumbers.forEach(num => {
-                    vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:WA ${num}\nTEL;TYPE=CELL:+${num}\nEND:VCARD\n`;
-                });
-
-                const fileName = `Group_${groupSubject.replace(/[^a-zA-Z0-9]/g, '_')}.vcf`;
-                fs.writeFileSync(fileName, vcfContent);
-
-                await bot.sendDocument(chatId, fileName, {
-                    caption: `[SCRAPE SUCCESS]\nGroup: ${groupSubject}\nFound Numbers: ${validNumbers.length}\nLIDs: ${lidCount}`
-                });
-                fs.unlinkSync(fileName);
-            }
-        } catch (e) {
-            bot.sendMessage(chatId, `Scrape Failed: ${e.message}`);
-        } finally {
-            if (groupJid) try { await sock.groupLeave(groupJid); } catch (e) {}
         }
     });
 

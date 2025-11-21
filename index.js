@@ -16,7 +16,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 
 import { setupTelegramCommands } from './telegram_commands.js';
-import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, getShortId, saveShortId, deleteShortId, addPoints, getAllNumbers } from './db.js';
+import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, getShortId, saveShortId, deleteShortId, addPoints } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
@@ -30,9 +30,8 @@ const PORT = process.env.PORT || 10000;
 app.get('/', (req, res) => res.send('Ultarbot Pro Running'));
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
-// --- DUAL BOT SETUP ---
 const mainBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false }); // Only for sending
+const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
 const clients = {}; 
 const shortIdMap = {}; 
@@ -43,35 +42,18 @@ if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true }
 
 function generateShortId() { return Math.random().toString(36).substring(2, 7); }
 function makeSessionId() { return `Ultarbot_${Date.now()}`; }
-
 const getRandomBrowser = () => Browsers.macOS('Chrome');
 
-// --- POINTS SYSTEM LOOP (Every 1 Hour) ---
+// POINTS LOOP (Hourly)
 const POINTS_PER_HOUR = 10;
 setInterval(async () => {
-    console.log('[POINTS] Distributing hourly points...');
     const sessions = await getAllSessions();
-    
     for (const session of sessions) {
-        // Check if session is actually connected in memory
-        const folder = session.session_id;
-        const ownerId = session.telegram_user_id;
-        
-        if (clients[folder] && ownerId) {
-            await addPoints(ownerId, POINTS_PER_HOUR);
+        if (clients[session.session_id] && session.telegram_user_id) {
+            await addPoints(session.telegram_user_id, POINTS_PER_HOUR, 'TASK');
         }
     }
-}, 3600000); // 1 Hour in ms
-
-
-// --- NOTIFICATION FIX ---
-async function sendAdminLog(message) {
-    try {
-        await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' });
-    } catch (e) {
-        console.error('[NOTIF ERROR]', e.message);
-    }
-}
+}, 3600000);
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     const sessionPath = path.join(SESSIONS_DIR, folder);
@@ -101,7 +83,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 let phone = "pending";
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 if (id) phone = shortIdMap[id].phone;
-                
                 await saveSessionToDb(folder, phone, content, telegramUserId || 'admin', false, false);
             }
         } catch(e) {}
@@ -123,23 +104,16 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId };
             clients[folder] = sock;
 
-            await sendAdminLog(`🟢 *Online:* User \`${telegramUserId || 'Admin'}\` connected +${phoneNumber}`);
-
             if (chatId) {
-                mainBot.sendMessage(chatId, `✅ Connected!\nNumber: +${phoneNumber}\nID: \`${myShortId}\``, { parse_mode: 'Markdown' });
+                mainBot.sendMessage(chatId, `Connected!\nNumber: +${phoneNumber}\nID: \`${myShortId}\``, { parse_mode: 'Markdown' });
             }
         }
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                const notifyId = telegramUserId || ADMIN_ID;
-                
-                await sendAdminLog(`🔴 *Logged Out/Banned:* +${shortIdMap[folder]?.phone || 'Unknown'}`);
-                if (notifyId) mainBot.sendMessage(notifyId, "❌ Session Logged Out.");
-
                 await deleteSessionFromDb(folder);
-                await deleteShortId(folder);
+                deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
             } else {
@@ -153,9 +127,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             try {
                 const code = await sock.requestPairingCode(targetNumber);
                 if (chatId) mainBot.sendMessage(chatId, `Code: \`${code}\``, { parse_mode: 'Markdown' });
-            } catch (e) {
-                if (chatId) mainBot.sendMessage(chatId, "Pairing failed. Try again.");
-            }
+            } catch (e) {}
         }, 3000);
     }
 }
@@ -163,20 +135,14 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 async function boot() {
     await initDb(); 
     const savedSessions = await getAllSessions(null);
-    
     for (const session of savedSessions) {
         const folderPath = path.join(SESSIONS_DIR, session.session_id);
         if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
         if (session.creds) fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
         
         const shortId = await getShortId(session.session_id) || generateShortId();
-        shortIdMap[shortId] = { 
-            folder: session.session_id, 
-            phone: session.phone, 
-            chatId: session.telegram_user_id 
-        };
-        
-        startClient(session.session_id, null, session.telegram_user_id, session.telegram_user_id);
+        shortIdMap[shortId] = { folder: session.session_id, phone: session.phone, chatId: session.telegram_user_id };
+        startClient(session.session_id, null, null, session.telegram_user_id);
     }
 }
 

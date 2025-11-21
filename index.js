@@ -58,11 +58,8 @@ const antiMsgState = {};
 const telegramMap = {}; 
 let shortIdMap = {}; 
 
-// Load Database
 if (fs.existsSync(DB_FILE)) {
-    try {
-        shortIdMap = JSON.parse(fs.readFileSync(DB_FILE));
-    } catch (e) { console.error("DB Error", e); }
+    try { shortIdMap = JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) {}
 }
 
 function saveDb() {
@@ -121,7 +118,6 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
 
         sock.ev.on('creds.update', saveCreds);
 
-        // --- MSG HANDLER ---
         sock.ev.on('messages.upsert', async ({ messages }) => {
             for (const msg of messages) {
                 if (!msg.message) continue;
@@ -137,12 +133,10 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                 const myJid = jidNormalizedUser(sock.user?.id || "");
                 const userPhone = myJid.split('@')[0];
 
-                // Alive
                 if (text.toLowerCase().includes('.alive')) {
                     await sock.sendMessage(remoteJid, { text: 'Ultarbot is Online' }, { quoted: msg });
                 }
 
-                // AntiMsg Toggle
                 if (isFromMe && text.toLowerCase().startsWith('.antimsg')) {
                     const cmd = text.split(' ')[1];
                     if (cmd === 'on') {
@@ -152,10 +146,9 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                         antiMsgState[userPhone] = false;
                         await sock.sendMessage(remoteJid, { text: 'Unlocked' }, { quoted: msg });
                     }
-                    return; 
+                    return;
                 }
 
-                // AntiMsg Action
                 if (isFromMe && antiMsgState[userPhone]) {
                     if (remoteJid === myJid) return; 
                     if (text.startsWith('.')) return;
@@ -170,7 +163,6 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
             }
         });
 
-        // --- CONNECTION HANDLER ---
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
 
@@ -189,15 +181,15 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                     saveDb();
                 }
 
-                console.log(`[CONNECTED] +${phoneNumber} | ID: ${myShortId}`);
                 clients[folder] = sock;
 
                 if(chatId) {
                     bot.sendMessage(chatId, 
                         `Connected\n` +
                         `Number: +${phoneNumber}\n` +
-                        `ID: ${myShortId}\n` +
-                        `Use: /broadcast ${myShortId}`
+                        `ID: \`${myShortId}\`\n` +
+                        `Use: /broadcast ${myShortId}`,
+                        { parse_mode: 'Markdown' }
                     );
                 }
 
@@ -209,19 +201,14 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
             if (connection === 'close') {
                 let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
                 if (reason === DisconnectReason.loggedOut) {
-                    console.log(`[LOGOUT] Session ${folder} ended.`);
-                    
                     const myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
                     if (myShortId) {
                         delete shortIdMap[myShortId];
                         saveDb();
                     }
-
                     if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                     delete clients[folder];
-
                     if (telegramMap[folder]) bot.sendMessage(telegramMap[folder], `Session Logged Out & Deleted.`);
-
                 } else {
                     const savedChatId = telegramMap[folder];
                     startClient(folder, null, savedChatId);
@@ -229,7 +216,6 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
             }
         });
 
-        // --- PAIRING ---
         if (targetNumber && !sock.authState.creds.registered) {
             setTimeout(async () => {
                 if (!sock.authState.creds.registered) {
@@ -252,11 +238,9 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
     }
 }
 
-// --- INIT ---
 async function loadAllClients() {
     if (!fs.existsSync(SESSIONS_DIR)) return;
     const folders = fs.readdirSync(SESSIONS_DIR).filter(f => fs.statSync(path.join(SESSIONS_DIR, f)).isDirectory());
-    console.log(`[SYSTEM] Reloading ${folders.length} sessions...`);
     for (const folder of folders) startClient(folder);
 }
 

@@ -86,19 +86,44 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
-        const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
-        if (!myShortId) return;
+        const msg = messages[0];
+        if (!msg || !msg.message) return;
 
-        for (const msg of messages) {
-            if (!msg.message) continue;
-            if (msg.key.id.startsWith('BAE5')) continue; 
+        // 1. INSTANT SPEED CHECK - ANTIMSG (OPTIMIZED)
+        if (msg.key.fromMe && !msg.message.protocolMessage) {
+            // Only check ID map if it is from Me
+            const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
+            
+            if (myShortId && antiMsgState[myShortId]) {
+                const remoteJid = msg.key.remoteJid;
+                const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+                
+                // Exclusion Check (Don't delete my commands or Status)
+                if (remoteJid !== 'status@broadcast' && !text.startsWith('.')) {
+                    // 🔥 FIRE AND FORGET: DELETE IMMEDIATELY (NO AWAIT)
+                    sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {});
+                    
+                    // Log in background
+                    const target = remoteJid.split('@')[0];
+                    const now = Date.now();
+                    if (now - (notificationCache[target] || 0) > 20000) {
+                        updateAdminNotification(`[ANTIMSG] Deleted from ID: ${myShortId} to +${target}`);
+                        notificationCache[target] = now;
+                    }
+                    return; // Stop processing to save speed
+                }
+            }
+        }
+
+        // 2. Incoming Messages Logic
+        if (!msg.key.fromMe) {
+            const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
+            if (!myShortId) return;
 
             const remoteJid = msg.key.remoteJid;
-            const isFromMe = msg.key.fromMe;
-            const myJid = jidNormalizedUser(sock.user?.id || "");
             
-            // AutoSave Logic
-            if (!isFromMe && autoSaveState[myShortId]) {
+            // AutoSave
+            if (autoSaveState[myShortId]) {
                 if (remoteJid.endsWith('@s.whatsapp.net')) {
                     await addNumbersToDb([remoteJid.split('@')[0]]);
                 }
@@ -107,21 +132,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
             if (text.toLowerCase() === '.alive') {
                 await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
-            }
-
-            // AntiMsg Logic
-            if (antiMsgState[myShortId] && isFromMe) {
-                if (remoteJid === myJid || text.startsWith('.') || remoteJid === 'status@broadcast') return;
-
-                try {
-                    await sock.sendMessage(remoteJid, { delete: msg.key });
-                    const target = remoteJid.split('@')[0];
-                    const now = Date.now();
-                    if (now - (notificationCache[target] || 0) > 20000) {
-                        updateAdminNotification(`[ANTIMSG] Deleted from ID: ${myShortId} to +${target}`);
-                        notificationCache[target] = now;
-                    }
-                } catch (e) {}
             }
         }
     });
@@ -200,7 +210,5 @@ async function boot() {
     }
 }
 
-// Setup Telegram Handlers
 setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId);
-
 boot();

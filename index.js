@@ -17,7 +17,7 @@ import { Boom } from '@hapi/boom';
 import fetch from 'node-fetch'; // Required for VCF download
 
 import { setupTelegramCommands } from './telegram_commands.js';
-import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, getBlacklist, setAntiMsgStatus, setAutoSaveStatus } from './db.js';
+import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, getBlacklist, setAntiMsgStatus, setAutoSaveStatus, getShortId, saveShortId, deleteShortId } from './db.js'; // FIXED IMPORTS
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
@@ -42,7 +42,7 @@ const clients = {};
 const shortIdMap = {}; 
 const antiMsgState = {}; 
 const autoSaveState = {}; 
-const notificationState = { msgId: null, lastTime: 0, logContent: '' }; // State persistence
+const notificationState = { msgId: null, lastTime: 0, logContent: '' }; 
 const notificationCache = {}; 
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -63,19 +63,17 @@ async function updateAdminNotification(logEntry, isNewAction = false) {
     const logText = `\n${logEntry}`;
 
     if (!notificationState.msgId || (currentTime - notificationState.lastTime) > TIME_LIMIT) {
-        // Send a NEW message or if the old ID is invalid
         try {
             const msg = await notificationBot.sendMessage(NOTIFICATION_ID, `*** Bot Activity Log ***\n${logText}`, { parse_mode: 'Markdown' });
             notificationState.msgId = msg.message_id;
             notificationState.logContent = `*** Bot Activity Log ***\n${logText}`;
         } catch (e) {
             console.error(`[NOTIF ERROR] Could not send new log message.`, e.message);
-            notificationState.msgId = null; // Clear ID if sending failed
+            notificationState.msgId = null; 
         }
     } else if (isNewAction) {
-        // Edit the existing message
         let newContent = notificationState.logContent;
-        if (newContent.length > 3000) { // Keep message length reasonable
+        if (newContent.length > 3000) {
              newContent = newContent.substring(0, 2000) + "\n... (truncated log)";
         }
         
@@ -88,11 +86,10 @@ async function updateAdminNotification(logEntry, isNewAction = false) {
                 parse_mode: 'Markdown'
             });
         } catch (e) {
-            // FIX: If edit fails (message not found), send a new one and clear old ID
             if (e.message.includes('message to edit not found')) {
                 console.warn(`[NOTIF WARNING] Old message ID ${notificationState.msgId} missing. Sending new log.`);
-                notificationState.msgId = null; // Invalidate the bad ID
-                await updateAdminNotification(logEntry, isNewAction); // Recursively call to send new message
+                notificationState.msgId = null; 
+                await updateAdminNotification(logEntry, isNewAction);
             } else {
                 console.error(`[NOTIF ERROR] Could not edit log message.`, e.message);
                 notificationState.msgId = null; 
@@ -203,16 +200,13 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
             
-            let myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
+            let myShortId = await getShortId(folder);
             if (!myShortId) {
                 myShortId = generateShortId();
-                shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId };
-                await saveShortId(folder, myShortId); // Save permanent ID
-            } else {
-                shortIdMap[myShortId].phone = phoneNumber;
-                shortIdMap[myShortId].chatId = telegramUserId;
+                await saveShortId(folder, myShortId);
             }
-
+            
+            shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId };
             clients[folder] = sock;
 
             const log = `[ONLINE] Account \`${myShortId}\` (+${phoneNumber}) connected.`;
@@ -245,7 +239,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 msg = `[CRITICAL] Account \`${id}\` (+${num}) was ${reason === 403 ? 'BANNED' : 'LOGGED OUT'}. Deleted session.`;
                 
                 await deleteSessionFromDb(folder);
-                await deleteShortId(folder);
+                // deleteShortId is called inside deleteSessionFromDb
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
                 if (id) delete shortIdMap[id];
@@ -280,6 +274,7 @@ async function boot() {
         
         if (session.creds) fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
         
+        // Restore permanent Short ID
         let shortId = await getShortId(session.session_id);
         if (!shortId) {
              shortId = generateShortId();
@@ -292,6 +287,7 @@ async function boot() {
             chatId: session.telegram_user_id 
         };
         
+        // Restore runtime states from DB
         if (session.antimsg) antiMsgState[shortId] = true;
         if (session.autosave) autoSaveState[shortId] = true; 
 

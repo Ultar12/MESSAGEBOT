@@ -1,25 +1,25 @@
 import pg from 'pg';
 import 'dotenv/config';
 
-// Connect to Postgres
 const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false } // Required for Render/Heroku
+    ssl: { rejectUnauthorized: false }
 });
 
-// Initialize Tables
 export async function initDb() {
     const client = await pool.connect();
     try {
-        // Table for WhatsApp Sessions
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
                 phone TEXT,
-                creds TEXT
+                creds TEXT,
+                antimsg BOOLEAN DEFAULT FALSE
             );
         `);
-        // Table for Broadcast Numbers
+        // Ensure column exists if table was already created
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
+        
         await client.query(`
             CREATE TABLE IF NOT EXISTS broadcast_numbers (
                 phone TEXT PRIMARY KEY
@@ -27,23 +27,30 @@ export async function initDb() {
         `);
         console.log('[DB] Tables initialized.');
     } catch (err) {
-        console.error('[DB ERROR] Init failed:', err);
+        console.error('[DB ERROR]', err);
     } finally {
         client.release();
     }
 }
 
-// --- SESSION METHODS ---
+// --- SESSIONS ---
 export async function saveSessionToDb(sessionId, phone, credsData) {
     try {
+        // Keep existing antimsg setting if updating
         await pool.query(
-            `INSERT INTO wa_sessions (session_id, phone, creds) 
-             VALUES ($1, $2, $3) 
+            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg) 
+             VALUES ($1, $2, $3, FALSE) 
              ON CONFLICT (session_id) 
              DO UPDATE SET creds = $3, phone = $2`,
             [sessionId, phone, credsData]
         );
     } catch (e) { console.error('[DB] Save Session Error', e); }
+}
+
+export async function setAntiMsgStatus(sessionId, status) {
+    try {
+        await pool.query('UPDATE wa_sessions SET antimsg = $1 WHERE session_id = $2', [status, sessionId]);
+    } catch (e) { console.error('[DB] AntiMsg Update Error', e); }
 }
 
 export async function getAllSessions() {
@@ -59,21 +66,17 @@ export async function deleteSessionFromDb(sessionId) {
     } catch (e) { console.error('[DB] Delete Session Error', e); }
 }
 
-// --- NUMBER METHODS ---
+// --- NUMBERS ---
 export async function addNumbersToDb(numbersArray) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         for (const num of numbersArray) {
-            await client.query(
-                'INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', 
-                [num]
-            );
+            await client.query('INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', [num]);
         }
         await client.query('COMMIT');
     } catch (e) {
         await client.query('ROLLBACK');
-        console.error('[DB] Add Numbers Error', e);
     } finally {
         client.release();
     }

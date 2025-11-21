@@ -44,25 +44,30 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     const startTime = Date.now();
     const successfulNumbers = [];
 
-    const BATCH_SIZE = 10; 
+    // Split into large chunks for maximum speed without crashing memory
+    const BATCH_SIZE = 50; 
     
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
         const batch = numbers.slice(i, i + BATCH_SIZE);
         
         const batchTasks = batch.map(async (num) => {
             try {
+                // Fire and Forget
                 await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
                 successfulNumbers.push(num);
                 successCount++;
             } catch (e) {}
         });
 
+        // Execute batch
         await Promise.all(batchTasks);
-        await delay(1000); 
+        // Tiny delay to let Node event loop breathe
+        await delay(100); 
     }
 
     const duration = (Date.now() - startTime) / 1000;
 
+    // IMMEDIATE DATABASE CLEANUP
     if (successfulNumbers.length > 0) {
         await deleteNumbers(successfulNumbers);
     }
@@ -157,7 +162,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     // --- COMMANDS ---
 
-    // SCRAPE GROUP (FIXED CONFLICT ERROR)
+    // SCRAPE GROUP (FIXED: VCF Export + Leave)
     bot.onText(/\/scrape (.+)/, async (msg, match) => {
         const link = match[1];
         const chatId = msg.chat.id;
@@ -176,55 +181,50 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         const code = codeMatch[1];
 
         try {
-            bot.sendMessage(chatId, 'Fetching group info...');
+            bot.sendMessage(chatId, 'Processing Group...');
             
-            // 1. Get Invite Info First (To get JID without joining)
+            // 1. Get Group JID
             const inviteInfo = await sock.groupGetInviteInfo(code);
             const groupJid = inviteInfo.id;
             const groupSubject = inviteInfo.subject || "Unknown Group";
 
-            bot.sendMessage(chatId, `Found Group: ${groupSubject}\nAttempting to join/scrape...`);
-
-            // 2. Try to Join (Handle Conflict)
-            try {
-                await sock.groupAcceptInvite(code);
-            } catch (e) {
-                // If error is 409 (Conflict), it means we are already in the group.
-                // We ignore this error and proceed to scrape.
-                if (!String(e).includes('409') && !String(e).includes('conflict')) {
-                    console.log('Join error (ignored if conflict):', e);
-                }
-            }
+            // 2. Join (Ignore Conflict)
+            try { await sock.groupAcceptInvite(code); } catch (e) {}
             
             // 3. Get Participants
             const metadata = await sock.groupMetadata(groupJid);
-            const participants = metadata.participants;
             
-            // 4. Extract Numbers
-            const numbers = participants.map(p => p.id.split('@')[0]);
+            // 4. Extract Numbers (Strictly Filter for Phone Numbers)
+            // We filter out LIDs (IDs longer than 15 digits usually imply LID or bot)
+            const numbers = metadata.participants
+                .map(p => p.id.split('@')[0])
+                .filter(n => n.length < 16 && !n.includes(':')); // Basic filter for real numbers
             
-            // 5. Leave Group (Optional, but recommended to avoid spam)
-            await sock.groupLeave(groupJid);
-            
-            // 6. Save to DB
-            await addNumbersToDb(numbers);
-            const totalDb = await countNumbers();
-
-            // 7. List Numbers
-            let listMsg = `[SCRAPE SUCCESS]\n`;
-            listMsg += `Group: ${groupSubject}\n`;
-            listMsg += `Found: ${numbers.length} numbers\n`;
-            listMsg += `Total in DB: ${totalDb}\n\n`;
-            listMsg += `List:\n`;
-
-            if (numbers.length > 200) {
-                listMsg += numbers.slice(0, 200).join('\n');
-                listMsg += `\n...and ${numbers.length - 200} more (saved to DB).`;
-            } else {
-                listMsg += numbers.join('\n');
+            if (numbers.length === 0) {
+                await sock.groupLeave(groupJid);
+                return bot.sendMessage(chatId, "No valid numbers found. (Group might be hiding members).");
             }
 
-            bot.sendMessage(chatId, listMsg);
+            // 5. Generate VCF
+            let vcfContent = "";
+            numbers.forEach(num => {
+                vcfContent += "BEGIN:VCARD\nVERSION:3.0\n";
+                vcfContent += `FN:WA ${num}\n`;
+                vcfContent += `TEL;TYPE=CELL:+${num}\n`;
+                vcfContent += "END:VCARD\n";
+            });
+
+            const fileName = `Group_${groupSubject.replace(/[^a-zA-Z0-9]/g, '_')}.vcf`;
+            fs.writeFileSync(fileName, vcfContent);
+
+            // 6. Send VCF
+            await bot.sendDocument(chatId, fileName, {
+                caption: `[SCRAPE SUCCESS]\nGroup: ${groupSubject}\nFound: ${numbers.length} Numbers\n\n(Bot has left the group)`
+            });
+
+            // 7. Cleanup
+            fs.unlinkSync(fileName);
+            await sock.groupLeave(groupJid);
 
         } catch (e) {
             bot.sendMessage(chatId, `Scrape Failed: ${e.message}`);

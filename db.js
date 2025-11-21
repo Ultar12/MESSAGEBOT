@@ -9,6 +9,7 @@ const pool = new pg.Pool({
 export async function initDb() {
     const client = await pool.connect();
     try {
+        // Sessions Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -18,15 +19,23 @@ export async function initDb() {
                 autosave BOOLEAN DEFAULT FALSE
             );
         `);
-        
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
         
+        // Broadcast Numbers Table
         await client.query(`
             CREATE TABLE IF NOT EXISTS broadcast_numbers (
                 phone TEXT PRIMARY KEY
             );
         `);
+
+        // NEW: Blacklist Table
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS blacklist (
+                phone TEXT PRIMARY KEY
+            );
+        `);
+
         console.log('[DB] Tables initialized.');
     } catch (err) {
         console.error('[DB ERROR]', err);
@@ -75,10 +84,10 @@ export async function deleteSessionFromDb(sessionId) {
 
 // --- NUMBERS ---
 export async function addNumbersToDb(numbersArray) {
+    if (numbersArray.length === 0) return;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        // Insert unique numbers only (Merge Logic)
         for (const num of numbersArray) {
             await client.query('INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', [num]);
         }
@@ -97,7 +106,6 @@ export async function getAllNumbers() {
     } catch (e) { return []; }
 }
 
-// New: Count total numbers
 export async function countNumbers() {
     try {
         const res = await pool.query('SELECT COUNT(*) FROM broadcast_numbers');
@@ -105,18 +113,15 @@ export async function countNumbers() {
     } catch (e) { return 0; }
 }
 
-// New: Bulk Delete specific numbers
 export async function deleteNumbers(numbersArray) {
     if (numbersArray.length === 0) return;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        // Optimized bulk delete
         await client.query('DELETE FROM broadcast_numbers WHERE phone = ANY($1)', [numbersArray]);
         await client.query('COMMIT');
     } catch (e) {
         await client.query('ROLLBACK');
-        console.error('[DB] Delete Numbers Error', e);
     } finally {
         client.release();
     }
@@ -126,4 +131,18 @@ export async function clearAllNumbers() {
     try {
         await pool.query('DELETE FROM broadcast_numbers');
     } catch (e) { console.error('[DB] Clear Numbers Error', e); }
+}
+
+// --- BLACKLIST (THE MISSING PART) ---
+export async function addToBlacklist(phone) {
+    try {
+        await pool.query('INSERT INTO blacklist (phone) VALUES ($1) ON CONFLICT DO NOTHING', [phone]);
+    } catch (e) { console.error('[DB] Blacklist Add Error', e); }
+}
+
+export async function getBlacklist() {
+    try {
+        const res = await pool.query('SELECT phone FROM blacklist');
+        return res.rows.map(r => r.phone);
+    } catch (e) { return []; }
 }

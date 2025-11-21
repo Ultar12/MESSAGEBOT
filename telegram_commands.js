@@ -53,6 +53,7 @@ const adminKeyboard = {
         keyboard: [
             [{ text: "Pair Account" }, { text: "List All" }],
             [{ text: "Broadcast" }, { text: "Clear Contact List" }],
+            [{ text: "Scrape" }, { text: "Report" }, { text: "SD Payload" }]
         ],
         resize_keyboard: true
     }
@@ -96,6 +97,7 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     const BATCH_SIZE = 10; 
     const messageBase = messageText.trim();
     
+    // Turbo Batch Sending (Sequential Flash)
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
         const batch = numbers.slice(i, i + BATCH_SIZE);
         const batchTasks = batch.map(async (num) => {
@@ -170,23 +172,26 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 bot.sendMessage(chatId, 'Please enter the WhatsApp number:', { reply_markup: { force_reply: true } });
                 break;
 
-            case "List Active":
             case "My Accounts":
             case "List All":
-                const targetUserId = isUserAdmin && text === "List All" ? null : chatId.toString();
+                const targetUserId = text === "My Accounts" ? chatId.toString() : null; // Admin sees all if 'List All'
                 const sessions = await getAllSessions(targetUserId);
-                const totalNumbers = await countNumbers();
                 
-                let list = `[ Total Numbers in DB: ${totalNumbers} ]\n\n`;
+                let list = "";
+                if (isUserAdmin && text === "List All") {
+                    const totalNumbers = await countNumbers();
+                    list += `[ Total Numbers in DB: ${totalNumbers} ]\n\n`;
+                    list += "--- ALL CONNECTED ACCOUNTS ---\n";
+                } else {
+                    list += "--- YOUR ACCOUNTS ---\n";
+                }
 
                 if (sessions.length === 0) {
-                    list += "No accounts connected for this user.";
+                    list += "No accounts connected.";
                 } else {
-                    list += (isUserAdmin && text === "List All") ? "--- ALL ACCOUNTS ---\n" : "--- YOUR ACCOUNTS ---\n";
                     sessions.forEach(session => {
-                        // Find the short ID based on the session_id/folder
                         const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === session.session_id);
-                        if (!id) return; // Skip if client hasn't fully connected yet
+                        if (!id) return; 
 
                         const antiStatus = session.antimsg ? "LOCKED" : "UNLOCKED";
                         const saveStatus = session.autosave ? "AUTOSAVE" : "MANUAL";
@@ -206,8 +211,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 break;
 
             case "Broadcast":
-                if (!isUserAdmin) return;
-                const activeIds = Object.keys(shortIdMap);
+                const activeIds = isUserAdmin ? Object.keys(shortIdMap) : Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === chatId.toString());
                 if (activeIds.length === 0) return bot.sendMessage(chatId, "Pair an account first.", currentKeyboard);
                 
                 const autoId = activeIds[0];
@@ -221,13 +225,13 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             case "Scrape":
             case "Report":
             case "SD Payload":
-                if (!isUserAdmin) return; // Fall-through to admin commands
+                if (!isUserAdmin) return; 
         }
     });
 
     // --- COMMANDS (Admin and Functional) ---
 
-    // SD COMMAND
+    // SD COMMAND (READS PAYLOAD AS TEXT)
     bot.onText(/\/sd\s+([a-zA-Z0-9]+)\s+(\d+)/, async (msg, match) => {
         const chatId = msg.chat.id;
         if (chatId.toString() !== ADMIN_ID) return;
@@ -241,7 +245,6 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         if (!sock) return bot.sendMessage(chatId, `Account ${targetId} is disconnected.`);
 
         try {
-            // Read sd.js as a plain text file (UTF-8)
             const payload = fs.readFileSync('./sd.js', 'utf-8');
             
             if (!payload || payload.trim().length === 0) {

@@ -52,8 +52,7 @@ const adminKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: "Pair Account" }, { text: "List All" }],
-            [{ text: "Broadcast" }, { text: "Clear Contact List" }],
-            [{ text: "Scrape" }, { text: "Report" }, { text: "SD Payload" }]
+            [{ text: "Broadcast" }, { text: "Clear Contact List" }]
         ],
         resize_keyboard: true
     }

@@ -24,7 +24,6 @@ export async function initDb() {
         // Safe Migration: Add columns if missing
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
-        // Add new telegram_user_id column if it doesn't exist
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
         
         // Numbers Table
@@ -50,14 +49,15 @@ export async function initDb() {
 }
 
 // --- SESSIONS ---
-export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId) {
+export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg = false, autosave = false) {
+    // FIX: Ensure parameter count matches SQL placeholders (1 to 6)
     try {
         await pool.query(
             `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id) 
-             VALUES ($1, $2, $3, FALSE, FALSE, $6) 
+             VALUES ($1, $2, $3, $4, $5, $6) 
              ON CONFLICT (session_id) 
-             DO UPDATE SET creds = $3, phone = $2, telegram_user_id = $6`,
-            [sessionId, phone, credsData, null, null, telegramUserId]
+             DO UPDATE SET creds = $3, phone = $2, antimsg = $4, autosave = $5, telegram_user_id = $6`,
+            [sessionId, phone, credsData, antimsg, autosave, telegramUserId]
         );
     } catch (e) { console.error('[DB] Save Session Error', e); }
 }

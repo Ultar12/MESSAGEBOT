@@ -15,3 +15,13 @@ export function parseVCF(filePath) {
   }
   return numbers;
 }
+
+// Check if a number is registered on WhatsApp using baileys
+export async function isWhatsAppNumber(sock, number) {
+  try {
+    const result = await sock.onWhatsApp(`${number}@s.whatsapp.net`);
+    return result && result.length > 0 && result[0].exists;
+  } catch (e) {
+    return false;
+  }
+}

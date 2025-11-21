@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { delay } from '@whiskeysockets/baileys';
-import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, getAllSessions } from './db.js';
+import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers } from './db.js';
 
 const userState = {}; 
 
@@ -31,7 +31,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     bot.onText(/\/start/, (msg) => {
         userState[msg.chat.id] = null;
-        bot.sendMessage(msg.chat.id, 'Ultarbot Pro Active. Select an option:', mainKeyboard);
+        bot.sendMessage(msg.chat.id, 'Ultarbot Pro Active.', mainKeyboard);
     });
 
     bot.on('message', async (msg) => {
@@ -39,6 +39,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         const chatId = msg.chat.id;
         const text = msg.text;
 
+        // A. PAIRING INPUT
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
             if (number.length < 10) return bot.sendMessage(chatId, 'Invalid number. Try again (e.g. 23490...):');
@@ -56,6 +57,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             return;
         }
 
+        // B. BROADCAST INPUT
         if (userState[chatId] === 'WAITING_BROADCAST') {
             const messageText = text;
             const targetId = userState[chatId + '_target']; 
@@ -71,21 +73,45 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
             if (numbers.length === 0) return bot.sendMessage(chatId, 'Database empty. Use Generate or Save VCF.', mainKeyboard);
 
-            bot.sendMessage(chatId, `Flashing message to ${numbers.length} contacts...`);
+            bot.sendMessage(chatId, `FLASHING message to ${numbers.length} contacts...`);
             
-            let success = 0;
+            const successfulNumbers = [];
+            
+            const startTime = Date.now();
+
+            // --- ULTRA FLASH LOGIC ---
+            // 1. Create Promises
             const tasks = numbers.map(async (num) => {
                 try {
-                    await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
-                    success++;
+                    const jid = `${num}@s.whatsapp.net`;
+                    // Fire and Forget (Instant)
+                    await sock.sendMessage(jid, { text: messageText });
+                    // Track success for deletion later
+                    successfulNumbers.push(num);
                 } catch (e) {}
             });
 
+            // 2. Wait for trigger pull (ms)
             await Promise.all(tasks);
-            bot.sendMessage(chatId, `Flash Complete. Sent Requests: ${success}`, mainKeyboard);
+            
+            const duration = (Date.now() - startTime) / 1000;
+
+            // 3. CLEANUP DATABASE (Async)
+            // Delete ONLY the numbers that were successfully fired at
+            if (successfulNumbers.length > 0) {
+                await deleteNumbers(successfulNumbers);
+            }
+
+            bot.sendMessage(chatId, 
+                `Flash Complete in ${duration}s.\n` +
+                `Sent Requests: ${successfulNumbers.length}\n` +
+                `Database Cleaned: ${successfulNumbers.length} numbers removed.`, 
+                mainKeyboard
+            );
             return;
         }
 
+        // C. BUTTONS
         switch (text) {
             case "Pair Account":
                 userState[chatId] = 'WAITING_PAIR';
@@ -94,20 +120,22 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
             case "List Active":
                 const ids = Object.keys(shortIdMap);
+                const totalNumbers = await countNumbers(); // NEW: Get Total from DB
+                
+                let list = `[ Total Numbers in DB: ${totalNumbers} ]\n\n`;
+                
                 if (ids.length === 0) {
-                    bot.sendMessage(chatId, "No accounts connected.");
+                    list += "No accounts connected.";
                 } else {
-                    let list = "Active Sessions:\n\n";
+                    list += "Active Sessions:\n";
                     ids.forEach(id => {
                         const session = shortIdMap[id];
                         const antiStatus = antiMsgState[id] ? "LOCKED" : "UNLOCKED";
                         const saveStatus = autoSaveState[id] ? "AUTOSAVE" : "MANUAL";
-                        
-                        // --- COPYABLE ID IN LIST ---
-                        list += `ID: \`${id}\` | +${session.phone} [${antiStatus}]\n`;
+                        list += `ID: \`${id}\` | +${session.phone}\n[${antiStatus}] [${saveStatus}]\n\n`;
                     });
-                    bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
                 }
+                bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
                 break;
 
             case "Delete Database":
@@ -137,6 +165,8 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 break;
         }
     });
+
+    // --- COMMANDS ---
 
     bot.onText(/\/antimsg\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
         const id = match[1].trim();
@@ -175,7 +205,9 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         for (let i = 0; i < amount; i++) newNumbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
         
         await addNumbersToDb(newNumbers);
-        bot.sendMessage(msg.chat.id, `Added ${amount} numbers.`);
+        
+        const total = await countNumbers();
+        bot.sendMessage(msg.chat.id, `Added ${amount} numbers. (Total: ${total})`);
     });
 
     bot.onText(/\/save/, async (msg) => {
@@ -205,7 +237,10 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
             await addNumbersToDb(validNumbers);
             
-            let listMsg = `Saved ${validNumbers.length} numbers:\n\n`;
+            const total = await countNumbers();
+            
+            let listMsg = `Saved ${validNumbers.length} new numbers.\nTotal Database: ${total}\n\nNew Numbers:\n`;
+            
             if (validNumbers.length > 300) listMsg += validNumbers.slice(0, 300).join('\n') + `\n...and ${validNumbers.length - 300} more.`;
             else listMsg += validNumbers.join('\n');
 

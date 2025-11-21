@@ -2,22 +2,36 @@ import fs from 'fs';
 import path from 'path';
 import { jidNormalizedUser, delay } from '@whiskeysockets/baileys';
 
-const NUMBERS_FILE = './numbers.json';
+const DB_FILE = './bot_database.json';
 const VCF_FILE = './contacts.vcf';
+
+// Helper: Load DB
+function loadDb() {
+    if (fs.existsSync(DB_FILE)) {
+        try { return JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) { return { sessions: {}, numbers: [] }; }
+    }
+    return { sessions: {}, numbers: [] };
+}
+
+// Helper: Save DB
+function saveDb(data) {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+}
 
 // Helper: Fast VCF Parser
 function parseVcf(vcfContent) {
     const numbers = new Set(); 
-    const regex = /TEL;?[^:]*:(?:[\+]?)([\d\s-]+)/gi;
-    let match;
-    while ((match = regex.exec(vcfContent)) !== null) {
-        let cleanNum = match[1].replace(/[^0-9]/g, '');
-        if (cleanNum.length > 5) numbers.add(cleanNum);
-    }
+    const lines = vcfContent.split(/\r?\n/);
+    lines.forEach(line => {
+        if (line.includes('TEL')) {
+            let cleanNum = line.replace(/[^0-9]/g, '');
+            if (cleanNum.length > 7 && cleanNum.length < 16) numbers.add(cleanNum);
+        }
+    });
     return Array.from(numbers);
 }
 
-export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState) {
+export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState, logToDb) {
 
     // --- MAIN MENU ---
     const mainMenu = {
@@ -42,7 +56,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         );
     });
 
-    // --- 2. BUTTON HANDLER ---
+    // --- 2. BUTTONS ---
     bot.on('callback_query', async (query) => {
         const chatId = query.message.chat.id;
         const data = query.data;
@@ -50,44 +64,49 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
         if (data === 'btn_pair') {
             bot.sendMessage(chatId, 'Enter number to pair (e.g. 23490...):');
-            // Note: Simple state handling would go here as per previous code
         }
         else if (data === 'btn_list') {
-            const ids = Object.keys(shortIdMap);
+            const db = loadDb();
+            const ids = Object.keys(db.sessions);
             if (ids.length === 0) return bot.sendMessage(chatId, "No accounts connected.", mainMenu);
             
             let listText = "Active Accounts:\n\n";
             ids.forEach((id) => {
-                const session = shortIdMap[id];
-                const phone = session.phone || "Connecting...";
-                const status = antiMsgState[phone] ? "LOCKED" : "READY";
-                listText += `ID: \`${id}\` | +${phone} [${status}]\n`;
+                const session = db.sessions[id];
+                const status = antiMsgState[session.phone] ? "LOCKED" : "READY";
+                listText += `ID: ${id} | +${session.phone} [${status}]\n`;
             });
             bot.sendMessage(chatId, listText, { parse_mode: 'Markdown' });
         }
         else if (data === 'btn_delnum') {
-            let deletedItems = [];
-            if (fs.existsSync(NUMBERS_FILE)) { fs.unlinkSync(NUMBERS_FILE); deletedItems.push("Generated List"); }
-            if (fs.existsSync(VCF_FILE)) { fs.unlinkSync(VCF_FILE); deletedItems.push("VCF Contacts"); }
+            const db = loadDb();
+            const oldCount = db.numbers.length;
+            db.numbers = []; // Clear numbers
+            saveDb(db);
             
-            if (deletedItems.length > 0) bot.sendMessage(chatId, `Deleted:\n- ${deletedItems.join('\n- ')}`, mainMenu);
-            else bot.sendMessage(chatId, 'Database is empty.', mainMenu);
+            if (fs.existsSync(VCF_FILE)) fs.unlinkSync(VCF_FILE);
+            
+            logToDb("DB_CLEAR", `Cleared ${oldCount} numbers`);
+            bot.sendMessage(chatId, `[!] Deleted ${oldCount} numbers from database.`, mainMenu);
         }
     });
 
-    // --- 3. PAIRING (Command) ---
+    // --- 3. PAIRING ---
     bot.onText(/\/pair (.+)/, async (msg, match) => {
         const chatId = msg.chat.id;
         const number = match[1].replace(/[^0-9]/g, '');
         if (!number) return bot.sendMessage(chatId, 'Usage: /pair 2349012345678');
         
-        const existingSession = Object.values(shortIdMap).find(s => s.phone === number);
-        if (existingSession) return bot.sendMessage(chatId, `Number already connected (ID: ${existingSession.id})`);
+        const db = loadDb();
+        const existingId = Object.keys(db.sessions).find(key => db.sessions[key].phone === number);
+        
+        if (existingId) return bot.sendMessage(chatId, `Number already connected (ID: ${existingId})`);
 
         const sessionId = makeSessionId(); 
         const sessionPath = path.join(SESSIONS_DIR, sessionId);
         fs.mkdirSync(sessionPath, { recursive: true });
 
+        logToDb("PAIR_INIT", `User requested pairing for ${number}`);
         bot.sendMessage(chatId, `Initializing ${number}...`);
         startClient(sessionId, number, chatId);
     });
@@ -99,79 +118,77 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         const amount = parseInt(args[2], 10) || 100;
         if (!code) return bot.sendMessage(msg.chat.id, 'Usage: /generate 234 50');
         
-        const numbers = [];
+        const db = loadDb();
+        let count = 0;
         for (let i = 0; i < amount; i++) {
-            numbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
+            const num = `${code}${Math.floor(100000000 + Math.random() * 900000000)}`;
+            if (!db.numbers.includes(num)) {
+                db.numbers.push(num);
+                count++;
+            }
         }
-        fs.writeFileSync(NUMBERS_FILE, JSON.stringify(numbers, null, 2));
-        bot.sendMessage(msg.chat.id, `Generated ${amount} numbers.`);
+        saveDb(db);
+        
+        logToDb("GENERATE", `Generated ${count} numbers`);
+        bot.sendMessage(msg.chat.id, `[+] Added ${count} numbers to database.`);
     });
 
-    // --- 5. SAVE VCF (SMART FILTER) ---
+    // --- 5. SAVE VCF (SEQUENTIAL SCANNER) ---
     bot.onText(/\/save/, async (msg) => {
         if (!msg.reply_to_message?.document) return bot.sendMessage(msg.chat.id, 'Reply to a VCF file.');
 
-        // 1. Check for Active Client (Needed for scanning)
-        const firstId = Object.keys(shortIdMap)[0];
-        if (!firstId || !clients[shortIdMap[firstId].folder]) {
-            return bot.sendMessage(msg.chat.id, '❌ You must pair a WhatsApp account first to scan numbers.');
+        const db = loadDb();
+        const firstId = Object.keys(db.sessions)[0];
+        
+        if (!firstId || !clients[db.sessions[firstId].folder]) {
+            return bot.sendMessage(msg.chat.id, '[!] Connect a WhatsApp account first to check numbers.');
         }
-        const sock = clients[shortIdMap[firstId].folder];
+        const sock = clients[db.sessions[firstId].folder];
 
         try {
             const fileLink = await bot.getFileLink(msg.reply_to_message.document.file_id);
             const response = await fetch(fileLink);
             const text = await response.text();
 
-            // 2. Parse Numbers
             let rawNumbers = parseVcf(text);
-            if (rawNumbers.length === 0) return bot.sendMessage(msg.chat.id, '❌ No numbers found in VCF.');
+            if (rawNumbers.length === 0) return bot.sendMessage(msg.chat.id, '[!] No numbers found in VCF.');
 
-            bot.sendMessage(msg.chat.id, `🔎 Scanning ${rawNumbers.length} numbers... This may take a moment.`);
+            bot.sendMessage(msg.chat.id, `[i] Scanning ${rawNumbers.length} numbers sequentially...`);
 
-            // 3. Scan Batch Logic
             const validNumbers = [];
-            const invalidNumbers = [];
-            
-            // Scan in chunks of 50 to be safe
-            const BATCH_SIZE = 50;
-            
-            for (let i = 0; i < rawNumbers.length; i += BATCH_SIZE) {
-                const batch = rawNumbers.slice(i, i + BATCH_SIZE);
-                // Format for onWhatsApp: "12345@s.whatsapp.net"
-                const queryIds = batch.map(n => `${n}@s.whatsapp.net`);
-                
+            let processed = 0;
+
+            // SEQUENTIAL SCAN (One by One)
+            for (const num of rawNumbers) {
                 try {
-                    const results = await sock.onWhatsApp(queryIds);
+                    // Check individually
+                    const [result] = await sock.onWhatsApp(`${num}@s.whatsapp.net`);
                     
-                    // "results" contains only numbers that exist
-                    results.forEach(res => {
-                        if (res.exists) {
-                            const num = res.jid.split('@')[0];
-                            validNumbers.push(num);
+                    if (result && result.exists) {
+                        const cleanJid = result.jid.split('@')[0];
+                        if (!db.numbers.includes(cleanJid)) {
+                            validNumbers.push(cleanJid);
+                            db.numbers.push(cleanJid); // Add to main DB
                         }
-                    });
+                    }
                 } catch (e) {
-                    console.error('Scan Error', e);
+                    // If check fails, we skip but don't stop
                 }
                 
-                // Tiny delay to be polite to server
-                await delay(500); 
+                processed++;
+                // Small delay to ensure sequence integrity
+                await delay(100);
             }
 
-            // 4. Save CLEAN List
-            fs.writeFileSync(NUMBERS_FILE, JSON.stringify(validNumbers, null, 2));
-            
-            // Remove old VCF to force system to use the new JSON list
-            if (fs.existsSync(VCF_FILE)) fs.unlinkSync(VCF_FILE);
+            saveDb(db); // Save final list
+            logToDb("VCF_SAVE", `Scanned ${rawNumbers.length}, Saved ${validNumbers.length}`);
 
             bot.sendMessage(msg.chat.id, 
-                `*Scan Complete*\n\n` +
+                `Scan Complete\n\n` +
                 `Total VCF: ${rawNumbers.length}\n` +
                 `Registered: ${validNumbers.length}\n` +
-                `Not on WA: ${rawNumbers.length - validNumbers.length}\n\n` +
-                `Database updated. Ready to Flash Broadcast!`,
-                { parse_mode: 'Markdown' }
+                `Invalid/Duplicates: ${rawNumbers.length - validNumbers.length}\n\n` +
+                `Database Updated.`
             );
 
         } catch (e) {
@@ -181,48 +198,40 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     // --- 6. DELETE NUMBERS ---
     bot.onText(/\/delnum/, (msg) => {
-        let deletedItems = [];
-        if (fs.existsSync(NUMBERS_FILE)) { fs.unlinkSync(NUMBERS_FILE); deletedItems.push("Generated List"); }
-        if (fs.existsSync(VCF_FILE)) { fs.unlinkSync(VCF_FILE); deletedItems.push("VCF Contacts"); }
-        
-        if (deletedItems.length > 0) bot.sendMessage(msg.chat.id, `Deleted:\n- ${deletedItems.join('\n- ')}`);
-        else bot.sendMessage(msg.chat.id, 'Database is empty.');
+        const db = loadDb();
+        const count = db.numbers.length;
+        db.numbers = [];
+        saveDb(db);
+        bot.sendMessage(msg.chat.id, `[!] Database cleared. Removed ${count} numbers.`);
     });
 
-    // --- 7. FLASH BROADCAST (Uses the Clean List) ---
+    // --- 7. FLASH BROADCAST ---
     bot.onText(/\/broadcast (.+)/, async (msg, match) => {
         if (!msg.reply_to_message?.text) return bot.sendMessage(msg.chat.id, 'Reply to text with /broadcast <id>');
         
         const targetId = match[1].trim();
-        const sessionData = shortIdMap[targetId];
+        const db = loadDb();
+        const sessionData = db.sessions[targetId];
 
         if (!sessionData) return bot.sendMessage(msg.chat.id, `Invalid ID. Use List button.`);
         
         const sock = clients[sessionData.folder];
         if (!sock) return bot.sendMessage(msg.chat.id, 'Client not active.');
 
-        // Get Numbers (Prioritizes JSON now because that's where CLEAN numbers are)
-        let numbers = [];
-        if (fs.existsSync(NUMBERS_FILE)) {
-            numbers = JSON.parse(fs.readFileSync(NUMBERS_FILE));
-        } else if (fs.existsSync(VCF_FILE)) {
-            // Fallback if user manually uploaded VCF but didn't scan
-            numbers = parseVcf(fs.readFileSync(VCF_FILE, 'utf-8'));
-        } else {
-            return bot.sendMessage(msg.chat.id, 'No numbers found.');
-        }
+        const numbers = db.numbers;
+        if (numbers.length === 0) return bot.sendMessage(msg.chat.id, '[!] Database is empty. Use /save or /generate.');
 
-        bot.sendMessage(msg.chat.id, `FLASHING message to ${numbers.length} verified numbers using ${targetId}...`);
+        bot.sendMessage(msg.chat.id, `[i] FLASHING message to ${numbers.length} verified numbers using ${targetId}...`);
+        logToDb("BROADCAST_START", `ID: ${targetId}, Target: ${numbers.length}`);
 
         const messageContent = { text: msg.reply_to_message.text };
         let successCount = 0;
         const startTime = Date.now();
         
-        // Parallel Execution (Fire and Forget)
+        // FLASH EXECUTION
         const tasks = numbers.map(async (num) => {
             try {
-                const jid = `${num}@s.whatsapp.net`;
-                await sock.sendMessage(jid, messageContent);
+                await sock.sendMessage(`${num}@s.whatsapp.net`, messageContent);
                 successCount++;
             } catch (e) {}
         });
@@ -230,7 +239,8 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         await Promise.all(tasks);
         
         const duration = (Date.now() - startTime) / 1000;
-        bot.sendMessage(msg.chat.id, `Flash Complete in ${duration}s.\nSent Requests: ${successCount}`);
+        logToDb("BROADCAST_END", `ID: ${targetId}, Sent: ${successCount}`);
+        bot.sendMessage(msg.chat.id, `[+] Flash Complete in ${duration}s.\nSent Requests: ${successCount}`);
     });
 
     // --- 8. DIRECT SEND ---
@@ -239,13 +249,14 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         const directMatch = msg.text.match(/\/send\s+(\d+)\s+(.+)/);
         if (!directMatch) return bot.sendMessage(msg.chat.id, 'Usage: /send <number> <msg>');
 
-        const firstId = Object.keys(shortIdMap)[0];
-        if(!firstId) return bot.sendMessage(msg.chat.id, 'No clients.');
+        const db = loadDb();
+        const firstId = Object.keys(db.sessions)[0];
+        if(!firstId) return bot.sendMessage(msg.chat.id, 'No active clients.');
 
-        const sock = clients[shortIdMap[firstId].folder];
+        const sock = clients[db.sessions[firstId].folder];
         try {
             await sock.sendMessage(`${directMatch[1]}@s.whatsapp.net`, { text: directMatch[2] });
-            bot.sendMessage(msg.chat.id, 'Sent.');
+            bot.sendMessage(msg.chat.id, '[+] Sent.');
         } catch (e) {
             bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
         }

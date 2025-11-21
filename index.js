@@ -14,17 +14,11 @@ import pino from 'pino';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 
-// Import the separated command file
 import { setupTelegramCommands } from './telegram_commands.js';
-
-// --- SERVER ---
-const app = express();
-const PORT = process.env.PORT || 10000;
-app.get('/', (req, res) => res.send('Ultarbot Active'));
-app.listen(PORT, () => console.log(`[SYSTEM] Server listening on port ${PORT}`));
 
 // --- CONFIG ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const API_SECRET = process.env.API_SECRET; // Secure Key
 const SESSIONS_DIR = process.env.SESSIONS_DIR || './sessions';
 
 if (!TELEGRAM_TOKEN) {
@@ -40,6 +34,62 @@ const sessionMap = {};
 const antiMsgState = {}; 
 const telegramMap = {}; 
 
+// --- EXPRESS SERVER & API ---
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// Middleware for JSON
+app.use(express.json());
+
+// 1. HEALTH CHECK
+app.get('/', (req, res) => res.send('Ultarbot Active'));
+
+// 2. PAIRING API (GET /pair?number=xxx&secret=xxx)
+app.get('/pair', async (req, res) => {
+    const { number, secret } = req.query;
+
+    // Security Check
+    if (secret !== API_SECRET) {
+        return res.status(403).json({ error: 'Invalid Secret Key' });
+    }
+
+    if (!number) {
+        return res.status(400).json({ error: 'Missing number parameter' });
+    }
+
+    const cleanNumber = number.replace(/[^0-9]/g, '');
+    
+    if (clients[cleanNumber]) {
+        return res.status(400).json({ error: 'Number already connected' });
+    }
+
+    // Create Session
+    const sessionId = makeSessionId();
+    const sessionPath = path.join(SESSIONS_DIR, sessionId);
+    fs.mkdirSync(sessionPath, { recursive: true });
+
+    console.log(`[API] Pairing request for ${cleanNumber}`);
+
+    // Trigger Client Start with Callback
+    // We pass a callback function that gets called when the code is generated
+    startClient(sessionId, cleanNumber, null, (code) => {
+        // Send JSON response to the other bot
+        if (code) {
+            res.json({ 
+                status: 'success', 
+                number: cleanNumber,
+                pairing_code: code 
+            });
+        } else {
+            res.status(500).json({ error: 'Failed to generate code' });
+        }
+    });
+});
+
+app.listen(PORT, () => console.log(`[SYSTEM] Server listening on port ${PORT}`));
+
+
+// --- BOT SETUP ---
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 console.log('[SYSTEM] Bot Started.');
 
@@ -62,7 +112,8 @@ const getRandomBrowser = () => {
 };
 
 // --- WHATSAPP CLIENT LOGIC ---
-async function startClient(folder, targetNumber = null, chatId = null) {
+// Added 'onCode' parameter for API callbacks
+async function startClient(folder, targetNumber = null, chatId = null, onCode = null) {
     const sessionPath = path.join(SESSIONS_DIR, folder);
     if(chatId) telegramMap[folder] = chatId;
 
@@ -169,18 +220,27 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             }
         });
 
-        // --- PAIRING ---
+        // --- PAIRING LOGIC ---
         if (targetNumber && !sock.authState.creds.registered) {
             setTimeout(async () => {
                 if (!sock.authState.creds.registered) {
                     try {
                         console.log(`[PAIRING] Requesting code for +${targetNumber}...`);
                         const code = await sock.requestPairingCode(targetNumber);
+                        
+                        // 1. Telegram (Legacy support)
                         if (chatId) {
                             await bot.sendMessage(chatId, `Pairing Code for +${targetNumber}:\n\n\`${code}\`\n\nTap code to copy.`, { parse_mode: 'Markdown' });
                         }
+
+                        // 2. API Callback (New Feature)
+                        if (onCode) {
+                            onCode(code);
+                        }
+
                     } catch (e) {
                         if (chatId) bot.sendMessage(chatId, `[ERROR] Failed to get code: ${e.message}`);
+                        if (onCode) onCode(null); // Notify API of failure
                         if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                     }
                 }
@@ -188,6 +248,7 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         }
     } catch (error) {
         console.error(`[CLIENT ERROR] ${folder}:`, error);
+        if (onCode) onCode(null);
     }
 }
 
@@ -199,6 +260,6 @@ async function loadAllClients() {
     for (const folder of folders) startClient(folder);
 }
 
-// Start Command Handling
+// Load commands
 setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, makeSessionId, antiMsgState);
 loadAllClients();

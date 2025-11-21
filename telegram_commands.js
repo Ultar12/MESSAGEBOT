@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { delay } from '@whiskeysockets/baileys';
+import { delay, jidDecode } from '@whiskeysockets/baileys';
 import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers } from './db.js';
 
 const userState = {}; 
@@ -44,30 +44,25 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     const startTime = Date.now();
     const successfulNumbers = [];
 
-    // Split into large chunks for maximum speed without crashing memory
-    const BATCH_SIZE = 50; 
+    const BATCH_SIZE = 10; 
     
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
         const batch = numbers.slice(i, i + BATCH_SIZE);
         
         const batchTasks = batch.map(async (num) => {
             try {
-                // Fire and Forget
                 await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
                 successfulNumbers.push(num);
                 successCount++;
             } catch (e) {}
         });
 
-        // Execute batch
         await Promise.all(batchTasks);
-        // Tiny delay to let Node event loop breathe
-        await delay(100); 
+        await delay(1000); 
     }
 
     const duration = (Date.now() - startTime) / 1000;
 
-    // IMMEDIATE DATABASE CLEANUP
     if (successfulNumbers.length > 0) {
         await deleteNumbers(successfulNumbers);
     }
@@ -162,7 +157,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     // --- COMMANDS ---
 
-    // SCRAPE GROUP (FIXED: VCF Export + Leave)
+    // SCRAPE GROUP (Fixed LID Filter + Guaranteed Exit)
     bot.onText(/\/scrape (.+)/, async (msg, match) => {
         const link = match[1];
         const chatId = msg.chat.id;
@@ -180,54 +175,76 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         }
         const code = codeMatch[1];
 
+        let groupJid = null;
+
         try {
             bot.sendMessage(chatId, 'Processing Group...');
             
-            // 1. Get Group JID
+            // 1. Get Invite Info
             const inviteInfo = await sock.groupGetInviteInfo(code);
-            const groupJid = inviteInfo.id;
+            groupJid = inviteInfo.id;
             const groupSubject = inviteInfo.subject || "Unknown Group";
 
-            // 2. Join (Ignore Conflict)
+            // 2. Join (Ignore Conflict if already joined)
             try { await sock.groupAcceptInvite(code); } catch (e) {}
             
-            // 3. Get Participants
+            // 3. Get Metadata
             const metadata = await sock.groupMetadata(groupJid);
             
-            // 4. Extract Numbers (Strictly Filter for Phone Numbers)
-            // We filter out LIDs (IDs longer than 15 digits usually imply LID or bot)
-            const numbers = metadata.participants
-                .map(p => p.id.split('@')[0])
-                .filter(n => n.length < 16 && !n.includes(':')); // Basic filter for real numbers
+            // 4. Extract & FILTER Numbers (Crucial Logic)
+            const validNumbers = [];
+            let lidCount = 0;
+
+            metadata.participants.forEach(p => {
+                const jid = p.id;
+                
+                // Case A: Explicit Phone JID (@s.whatsapp.net)
+                if (jid.includes('@s.whatsapp.net')) {
+                    const num = jid.split('@')[0];
+                    // Double check length (7-15 digits is standard for phone)
+                    if (num.length >= 7 && num.length <= 15 && !isNaN(num)) {
+                        validNumbers.push(num);
+                    }
+                } 
+                // Case B: LID or other (Ignore)
+                else {
+                    lidCount++;
+                }
+            });
             
-            if (numbers.length === 0) {
-                await sock.groupLeave(groupJid);
-                return bot.sendMessage(chatId, "No valid numbers found. (Group might be hiding members).");
+            if (validNumbers.length === 0) {
+                bot.sendMessage(chatId, `⚠️ Warning: Only found ${lidCount} hidden IDs (LIDs). No phone numbers visible.`);
+                // Don't return here, let it proceed to finally block to leave
+            } else {
+                // 5. Generate VCF
+                let vcfContent = "";
+                validNumbers.forEach(num => {
+                    vcfContent += "BEGIN:VCARD\nVERSION:3.0\n";
+                    vcfContent += `FN:WA ${num}\n`;
+                    vcfContent += `TEL;TYPE=CELL:+${num}\n`;
+                    vcfContent += "END:VCARD\n";
+                });
+
+                const fileName = `Group_${groupSubject.replace(/[^a-zA-Z0-9]/g, '_')}.vcf`;
+                fs.writeFileSync(fileName, vcfContent);
+
+                // 6. Send VCF
+                await bot.sendDocument(chatId, fileName, {
+                    caption: `[SCRAPE SUCCESS]\nGroup: ${groupSubject}\nFound Numbers: ${validNumbers.length}\nHidden/LIDs: ${lidCount}\n\n(Bot has left the group)`
+                });
+
+                fs.unlinkSync(fileName);
             }
-
-            // 5. Generate VCF
-            let vcfContent = "";
-            numbers.forEach(num => {
-                vcfContent += "BEGIN:VCARD\nVERSION:3.0\n";
-                vcfContent += `FN:WA ${num}\n`;
-                vcfContent += `TEL;TYPE=CELL:+${num}\n`;
-                vcfContent += "END:VCARD\n";
-            });
-
-            const fileName = `Group_${groupSubject.replace(/[^a-zA-Z0-9]/g, '_')}.vcf`;
-            fs.writeFileSync(fileName, vcfContent);
-
-            // 6. Send VCF
-            await bot.sendDocument(chatId, fileName, {
-                caption: `[SCRAPE SUCCESS]\nGroup: ${groupSubject}\nFound: ${numbers.length} Numbers\n\n(Bot has left the group)`
-            });
-
-            // 7. Cleanup
-            fs.unlinkSync(fileName);
-            await sock.groupLeave(groupJid);
 
         } catch (e) {
             bot.sendMessage(chatId, `Scrape Failed: ${e.message}`);
+        } finally {
+            // 7. ALWAYS LEAVE GROUP
+            if (groupJid) {
+                try { await sock.groupLeave(groupJid); } catch (e) {
+                    console.log(`Could not leave group ${groupJid}: ${e.message}`);
+                }
+            }
         }
     });
 

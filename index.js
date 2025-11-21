@@ -21,6 +21,39 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 app.get('/', (req, res) => res.send('Ultarbot Active'));
 
+// --- DATABASE SETUP ---
+const DB_FILE = './bot_database.json';
+const LOG_FILE = './activity_log.json';
+const SESSIONS_DIR = process.env.SESSIONS_DIR || './sessions';
+
+// Function: Load/Init DB
+function loadDb() {
+    if (fs.existsSync(DB_FILE)) {
+        try { return JSON.parse(fs.readFileSync(DB_FILE)); } catch(e) { return { sessions: {}, numbers: [] }; }
+    }
+    return { sessions: {}, numbers: [] };
+}
+
+// Function: Save DB
+function saveDb(data) {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+}
+
+// Function: Log Activity
+function logToDb(type, message) {
+    const entry = {
+        timestamp: new Date().toISOString(),
+        type: type,
+        details: message
+    };
+    let logs = [];
+    if (fs.existsSync(LOG_FILE)) { try { logs = JSON.parse(fs.readFileSync(LOG_FILE)); } catch(e) {} }
+    logs.push(entry);
+    if (logs.length > 1000) logs = logs.slice(-1000);
+    fs.writeFileSync(LOG_FILE, JSON.stringify(logs, null, 2));
+    console.log(`[LOG] ${type}: ${message}`);
+}
+
 // --- API FOR PAIRING ---
 app.use(express.json());
 app.get('/pair', async (req, res) => {
@@ -29,7 +62,7 @@ app.get('/pair', async (req, res) => {
     if (!number) return res.status(400).json({ error: 'No number' });
 
     const sessionId = makeSessionId();
-    const sessionPath = path.join(process.env.SESSIONS_DIR || './sessions', sessionId);
+    const sessionPath = path.join(SESSIONS_DIR, sessionId);
     fs.mkdirSync(sessionPath, { recursive: true });
 
     startClient(sessionId, number, null, (code) => {
@@ -42,8 +75,6 @@ app.listen(PORT, () => console.log(`[SYSTEM] Server listening on port ${PORT}`))
 
 // --- CONFIG ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const SESSIONS_DIR = process.env.SESSIONS_DIR || './sessions';
-const DB_FILE = './id_database.json';
 
 if (!TELEGRAM_TOKEN) {
     console.error('[FATAL] TELEGRAM_TOKEN is missing');
@@ -52,19 +83,9 @@ if (!TELEGRAM_TOKEN) {
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
-// --- GLOBALS ---
 const clients = {}; 
 const antiMsgState = {}; 
 const telegramMap = {}; 
-let shortIdMap = {}; 
-
-if (fs.existsSync(DB_FILE)) {
-    try { shortIdMap = JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) {}
-}
-
-function saveDb() {
-    fs.writeFileSync(DB_FILE, JSON.stringify(shortIdMap, null, 2));
-}
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 console.log('[SYSTEM] Bot Started.');
@@ -74,7 +95,6 @@ function generateShortId() {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
     let result = '';
     for (let i = 0; i < 5; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
-    if (shortIdMap[result]) return generateShortId();
     return result;
 }
 
@@ -116,7 +136,25 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
             emitOwnEvents: true 
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', async () => {
+            await saveCreds();
+            
+            // --- DATABASE SAVE (CREDENTIALS) ---
+            // We read the creds file and save it to our JSON DB for persistence
+            try {
+                const credsFile = path.join(sessionPath, 'creds.json');
+                if (fs.existsSync(credsFile)) {
+                    const content = fs.readFileSync(credsFile, 'utf-8');
+                    const db = loadDb();
+                    // Find session by folder
+                    const id = Object.keys(db.sessions).find(k => db.sessions[k].folder === folder);
+                    if (id) {
+                        db.sessions[id].creds = content; // Save creds content
+                        saveDb(db);
+                    }
+                }
+            } catch (e) { console.error('DB Save Error', e); }
+        });
 
         sock.ev.on('messages.upsert', async ({ messages }) => {
             for (const msg of messages) {
@@ -146,7 +184,7 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                         antiMsgState[userPhone] = false;
                         await sock.sendMessage(remoteJid, { text: 'Unlocked' }, { quoted: msg });
                     }
-                    return;
+                    return; 
                 }
 
                 if (isFromMe && antiMsgState[userPhone]) {
@@ -170,18 +208,21 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
                 const userJid = jidNormalizedUser(sock.user.id);
                 const phoneNumber = userJid.split('@')[0];
                 
-                let myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
+                const db = loadDb();
+                let myShortId = Object.keys(db.sessions).find(key => db.sessions[key].folder === folder);
                 
                 if (!myShortId) {
                     myShortId = generateShortId();
-                    shortIdMap[myShortId] = { folder: folder, phone: phoneNumber };
-                    saveDb();
-                } else {
-                    shortIdMap[myShortId].phone = phoneNumber;
-                    saveDb();
+                    db.sessions[myShortId] = { 
+                        folder: folder, 
+                        phone: phoneNumber, 
+                        creds: "" // Will be filled by creds.update
+                    };
+                    saveDb(db);
                 }
 
                 clients[folder] = sock;
+                logToDb("CONNECTED", `Client ${phoneNumber} connected as ${myShortId}`);
 
                 if(chatId) {
                     bot.sendMessage(chatId, 
@@ -201,10 +242,11 @@ async function startClient(folder, targetNumber = null, chatId = null, onCode = 
             if (connection === 'close') {
                 let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
                 if (reason === DisconnectReason.loggedOut) {
-                    const myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
+                    const db = loadDb();
+                    const myShortId = Object.keys(db.sessions).find(key => db.sessions[key].folder === folder);
                     if (myShortId) {
-                        delete shortIdMap[myShortId];
-                        saveDb();
+                        delete db.sessions[myShortId];
+                        saveDb(db);
                     }
                     if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                     delete clients[folder];
@@ -244,5 +286,5 @@ async function loadAllClients() {
     for (const folder of folders) startClient(folder);
 }
 
-setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState);
+setupTelegramCommands(bot, clients, loadDb().sessions, SESSIONS_DIR, startClient, makeSessionId, antiMsgState, logToDb);
 loadAllClients();

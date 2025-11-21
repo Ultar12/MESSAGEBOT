@@ -32,17 +32,16 @@ app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
 // --- SETUP ---
 const clients = {}; 
-const shortIdMap = {}; // Memory cache of IDs
+const shortIdMap = {}; 
 const antiMsgState = {}; 
 
-// Init Local Folder
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
 // --- HELPERS ---
 function generateShortId() {
-    return Math.random().toString(36).substring(2, 7); // Random 5 chars
+    return Math.random().toString(36).substring(2, 7);
 }
 
 function makeSessionId() {
@@ -76,23 +75,19 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         emitOwnEvents: true 
     });
 
-    // PERSISTENCE: Save creds to DB on every update
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        // Read creds file
         try {
             const credsFile = path.join(sessionPath, 'creds.json');
             if (fs.existsSync(credsFile)) {
                 const content = fs.readFileSync(credsFile, 'utf-8');
-                // We need the phone number to save. If we don't have it yet, use "pending"
                 let phone = "pending";
-                // Try to find phone in memory
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 if (id) phone = shortIdMap[id].phone;
                 
                 await saveSessionToDb(folder, phone, content);
             }
-        } catch(e) { console.error('DB Save Fail', e); }
+        } catch(e) {}
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -102,8 +97,8 @@ async function startClient(folder, targetNumber = null, chatId = null) {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
             
-            // Register in Memory Map
             let myShortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder);
+            
             if (!myShortId) {
                 myShortId = generateShortId();
                 shortIdMap[myShortId] = { folder, phone: phoneNumber };
@@ -123,20 +118,37 @@ async function startClient(folder, targetNumber = null, chatId = null) {
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            if (reason === DisconnectReason.loggedOut) {
-                await deleteSessionFromDb(folder);
-                if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
-                delete clients[folder];
+            
+            // --- BAN or LOGOUT ---
+            // We treat 403 (Ban) and LoggedOut exactly the same: DELETE EVERYTHING
+            if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
+                const num = id ? shortIdMap[id].phone : "Unknown";
+                
+                let msg = `Session Logged Out.`;
+                if (reason === 403) msg = `CRITICAL: Account +${num} was BANNED. Deleting data.`;
+
+                console.log(msg);
+                if (chatId) bot.sendMessage(chatId, msg);
+                
+                // 1. Delete from PostgreSQL
+                await deleteSessionFromDb(folder);
+                
+                // 2. Delete Local Files
+                if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+                
+                // 3. Clean Memory
+                delete clients[folder];
                 if (id) delete shortIdMap[id];
+
             } else {
-                startClient(folder);
+                // Just a connection drop, try to reconnect
+                startClient(folder, null, chatId);
             }
         }
     });
 
-    // PAIRING
     if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
@@ -149,15 +161,13 @@ async function startClient(folder, targetNumber = null, chatId = null) {
     }
 }
 
-// --- RESTORE LOGIC ---
 async function boot() {
-    await initDb(); // Create tables
+    await initDb(); 
     const savedSessions = await getAllSessions();
     
     console.log(`[DB] Restoring ${savedSessions.length} sessions...`);
     
     for (const session of savedSessions) {
-        // Re-create local file from DB content
         const folderPath = path.join(SESSIONS_DIR, session.session_id);
         if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
         
@@ -165,10 +175,8 @@ async function boot() {
             fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
         }
         
-        // Start
         startClient(session.session_id);
         
-        // Restore Memory Map
         const shortId = generateShortId();
         shortIdMap[shortId] = { folder: session.session_id, phone: session.phone };
     }

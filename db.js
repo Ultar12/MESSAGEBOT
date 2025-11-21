@@ -9,15 +9,7 @@ const pool = new pg.Pool({
 export async function initDb() {
     const client = await pool.connect();
     try {
-        // IDs Table (Maps Session Folder to a permanent Short ID)
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS wa_ids (
-                session_folder TEXT PRIMARY KEY,
-                short_id TEXT UNIQUE
-            );
-        `);
-
-        // Sessions Table (Stores Credentials and Settings)
+        // 1. Sessions (Existing)
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -28,25 +20,45 @@ export async function initDb() {
                 telegram_user_id TEXT
             );
         `);
-        
-        // Safe Migration: Ensure all columns are present
-        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
-        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
-        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
-        
-        // Numbers Table
+
+        // 2. IDs (Existing)
         await client.query(`
-            CREATE TABLE IF NOT EXISTS broadcast_numbers (
-                phone TEXT PRIMARY KEY
+            CREATE TABLE IF NOT EXISTS wa_ids (
+                session_folder TEXT PRIMARY KEY,
+                short_id TEXT UNIQUE
             );
         `);
 
-        // Blacklist Table
+        // 3. Users (NEW - Points & Profile)
         await client.query(`
-            CREATE TABLE IF NOT EXISTS blacklist (
-                phone TEXT PRIMARY KEY
+            CREATE TABLE IF NOT EXISTS users (
+                telegram_id TEXT PRIMARY KEY,
+                points INTEGER DEFAULT 0,
+                referrer_id TEXT,
+                bank_name TEXT,
+                account_number TEXT,
+                account_name TEXT,
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+
+        // 4. Withdrawals (NEW)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS withdrawals (
+                id SERIAL PRIMARY KEY,
+                telegram_id TEXT,
+                amount_points INTEGER,
+                amount_ngn INTEGER,
+                status TEXT DEFAULT 'PENDING', -- PENDING, PAID, REJECTED
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        
+        // 5. Broadcast Numbers (Existing)
+        await client.query(`CREATE TABLE IF NOT EXISTS broadcast_numbers (phone TEXT PRIMARY KEY);`);
+        
+        // 6. Blacklist (Existing)
+        await client.query(`CREATE TABLE IF NOT EXISTS blacklist (phone TEXT PRIMARY KEY);`);
 
         console.log('[DB] Tables initialized.');
     } catch (err) {
@@ -56,33 +68,54 @@ export async function initDb() {
     }
 }
 
-// --- PERMANENT ID FUNCTIONS ---
-export async function getShortId(sessionFolder) {
-    try {
-        const res = await pool.query('SELECT short_id FROM wa_ids WHERE session_folder = $1', [sessionFolder]);
-        return res.rows[0]?.short_id || null;
-    } catch (e) { return null; }
+// --- USER & POINTS ---
+export async function getUser(telegramId) {
+    const res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
+    return res.rows[0];
 }
 
-export async function saveShortId(sessionFolder, shortId) {
+export async function createUser(telegramId, referrerId = null) {
     try {
         await pool.query(
-            `INSERT INTO wa_ids (session_folder, short_id) VALUES ($1, $2) ON CONFLICT (session_folder) DO NOTHING`,
-            [sessionFolder, shortId]
+            `INSERT INTO users (telegram_id, referrer_id) VALUES ($1, $2) ON CONFLICT (telegram_id) DO NOTHING`,
+            [telegramId, referrerId]
         );
-    } catch (e) { console.error('[DB] Save Short ID Error', e); }
+        // Reward Referrer (Optional: Add one-time bonus logic here if you want)
+    } catch (e) {}
 }
 
-export async function deleteShortId(sessionFolder) {
-    try {
-        await pool.query('DELETE FROM wa_ids WHERE session_folder = $1', [sessionFolder]);
-    } catch (e) { console.error('[DB] Delete Short ID Error', e); }
+export async function addPoints(telegramId, amount) {
+    await pool.query('UPDATE users SET points = points + $1 WHERE telegram_id = $2', [amount, telegramId]);
 }
 
-// --- SESSIONS ---
+export async function getReferrals(telegramId) {
+    const res = await pool.query('SELECT telegram_id, joined_at FROM users WHERE referrer_id = $1 ORDER BY joined_at DESC LIMIT 5', [telegramId]);
+    const countRes = await pool.query('SELECT COUNT(*) FROM users WHERE referrer_id = $1', [telegramId]);
+    return { list: res.rows, total: parseInt(countRes.rows[0].count) };
+}
+
+// --- BANKING ---
+export async function updateBank(telegramId, bankName, accNum, accName) {
+    await pool.query(
+        `UPDATE users SET bank_name = $1, account_number = $2, account_name = $3 WHERE telegram_id = $4`,
+        [bankName, accNum, accName, telegramId]
+    );
+}
+
+export async function createWithdrawal(telegramId, points, ngn) {
+    // Deduct points first
+    await pool.query('UPDATE users SET points = points - $1 WHERE telegram_id = $2', [points, telegramId]);
+    // Create record
+    const res = await pool.query(
+        `INSERT INTO withdrawals (telegram_id, amount_points, amount_ngn) VALUES ($1, $2, $3) RETURNING id`,
+        [telegramId, points, ngn]
+    );
+    return res.rows[0].id;
+}
+
+// --- SESSION HELPERS (Preserved) ---
 export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave) {
     try {
-        // Ensures all 6 parameters are passed correctly for ON CONFLICT UPDATE
         await pool.query(
             `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id) 
              VALUES ($1, $2, $3, $4, $5, $6) 
@@ -93,101 +126,48 @@ export async function saveSessionToDb(sessionId, phone, credsData, telegramUserI
     } catch (e) { console.error('[DB] Save Session Error', e); }
 }
 
-export async function setAntiMsgStatus(sessionId, status) {
-    try {
-        await pool.query('UPDATE wa_sessions SET antimsg = $1 WHERE session_id = $2', [status, sessionId]);
-    } catch (e) { console.error('[DB] AntiMsg Update Error', e); }
-}
-
-export async function setAutoSaveStatus(sessionId, status) {
-    try {
-        await pool.query('UPDATE wa_sessions SET autosave = $1 WHERE session_id = $2', [status, sessionId]);
-    } catch (e) { console.error('[DB] AutoSave Update Error', e); }
-}
-
 export async function getAllSessions(telegramUserId = null) {
     try {
-        let queryText = 'SELECT * FROM wa_sessions';
-        let queryParams = [];
-
+        let query = 'SELECT * FROM wa_sessions';
+        let params = [];
         if (telegramUserId) {
-            queryText += ' WHERE telegram_user_id = $1';
-            queryParams = [telegramUserId.toString()];
+            query += ' WHERE telegram_user_id = $1';
+            params = [telegramUserId];
         }
-        
-        const res = await pool.query(queryText, queryParams);
+        const res = await pool.query(query, params);
         return res.rows;
     } catch (e) { return []; }
 }
 
+// ... (Keep getShortId, saveShortId, deleteShortId, deleteSessionFromDb, setAntiMsgStatus, setAutoSaveStatus from previous version)
+// Re-adding them for completeness to avoid errors:
+export async function getShortId(sessionFolder) {
+    try { const res = await pool.query('SELECT short_id FROM wa_ids WHERE session_folder = $1', [sessionFolder]); return res.rows[0]?.short_id; } catch (e) { return null; }
+}
+export async function saveShortId(sessionFolder, shortId) {
+    try { await pool.query(`INSERT INTO wa_ids (session_folder, short_id) VALUES ($1, $2) ON CONFLICT (session_folder) DO NOTHING`, [sessionFolder, shortId]); } catch (e) {}
+}
+export async function deleteShortId(sessionFolder) {
+    try { await pool.query('DELETE FROM wa_ids WHERE session_folder = $1', [sessionFolder]); } catch (e) {}
+}
 export async function deleteSessionFromDb(sessionId) {
     try {
         await pool.query('DELETE FROM wa_sessions WHERE session_id = $1', [sessionId]);
-        await deleteShortId(sessionId); // Delete the associated permanent ID
-    } catch (e) { console.error('[DB] Delete Session Error', e); }
+        await deleteShortId(sessionId);
+    } catch (e) {}
 }
+export async function setAntiMsgStatus(sid, status) { await pool.query('UPDATE wa_sessions SET antimsg = $1 WHERE session_id = $2', [status, sid]); }
+export async function setAutoSaveStatus(sid, status) { await pool.query('UPDATE wa_sessions SET autosave = $1 WHERE session_id = $2', [status, sid]); }
 
-// --- NUMBERS ---
-export async function addNumbersToDb(numbersArray) {
-    if (numbersArray.length === 0) return;
+// ... (Keep Number/Blacklist functions from previous version)
+export async function addNumbersToDb(nums) { 
+    if(!nums.length) return;
     const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        for (const num of numbersArray) {
-            await client.query('INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', [num]);
-        }
-        await client.query('COMMIT');
-    } catch (e) {
-        await client.query('ROLLBACK');
-    } finally {
-        client.release();
-    }
+    try { await client.query('BEGIN'); for(const n of nums) await client.query('INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', [n]); await client.query('COMMIT'); } catch{ await client.query('ROLLBACK'); } finally { client.release(); }
 }
-
-export async function getAllNumbers() {
-    try {
-        const res = await pool.query('SELECT phone FROM broadcast_numbers');
-        return res.rows.map(r => r.phone);
-    } catch (e) { return []; }
-}
-
-export async function countNumbers() {
-    try {
-        const res = await pool.query('SELECT COUNT(*) FROM broadcast_numbers');
-        return parseInt(res.rows[0].count);
-    } catch (e) { return 0; }
-}
-
-export async function deleteNumbers(numbersArray) {
-    if (numbersArray.length === 0) return;
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        await client.query('DELETE FROM broadcast_numbers WHERE phone = ANY($1)', [numbersArray]);
-        await client.query('COMMIT');
-    } catch (e) {
-        await client.query('ROLLBACK');
-    } finally {
-        client.release();
-    }
-}
-
-export async function clearAllNumbers() {
-    try {
-        await pool.query('DELETE FROM broadcast_numbers');
-    } catch (e) { console.error('[DB] Clear Numbers Error', e); }
-}
-
-// --- BLACKLIST ---
-export async function addToBlacklist(phone) {
-    try {
-        await pool.query('INSERT INTO blacklist (phone) VALUES ($1) ON CONFLICT DO NOTHING', [phone]);
-    } catch (e) { console.error('[DB] Blacklist Add Error', e); }
-}
-
-export async function getBlacklist() {
-    try {
-        const res = await pool.query('SELECT phone FROM blacklist');
-        return res.rows.map(r => r.phone);
-    } catch (e) { return []; }
-}
+export async function getAllNumbers() { try { const r = await pool.query('SELECT phone FROM broadcast_numbers'); return r.rows.map(x=>x.phone); } catch { return []; } }
+export async function countNumbers() { try { const r = await pool.query('SELECT COUNT(*) FROM broadcast_numbers'); return parseInt(r.rows[0].count); } catch { return 0; } }
+export async function deleteNumbers(nums) { if(!nums.length) return; const c = await pool.connect(); try { await c.query('BEGIN'); await c.query('DELETE FROM broadcast_numbers WHERE phone = ANY($1)', [nums]); await c.query('COMMIT'); } catch { await c.query('ROLLBACK'); } finally { c.release(); } }
+export async function clearAllNumbers() { await pool.query('DELETE FROM broadcast_numbers'); }
+export async function addToBlacklist(p) { await pool.query('INSERT INTO blacklist (phone) VALUES ($1) ON CONFLICT DO NOTHING', [p]); }
+export async function getBlacklist() { const r = await pool.query('SELECT phone FROM blacklist'); return r.rows.map(x=>x.phone); }

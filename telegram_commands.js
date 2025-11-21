@@ -4,9 +4,6 @@ import nodemailer from 'nodemailer';
 import { delay } from '@whiskeysockets/baileys';
 import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers, addToBlacklist } from './db.js';
 
-// We do NOT import sd.js at the top to prevent startup crashes.
-// We will load it dynamically inside the command.
-
 const userState = {}; 
 
 // EMAIL CONFIG
@@ -77,19 +74,25 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     let successCount = 0;
     const startTime = Date.now();
     const successfulNumbers = [];
-    const BATCH_SIZE = 50; 
+    const BATCH_SIZE = 10; // Back to safe batch size
+    
+    // --- Message Stealth Logic ---
+    const messageBase = messageText.trim();
     
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
         const batch = numbers.slice(i, i + BATCH_SIZE);
         const batchTasks = batch.map(async (num) => {
+            // Anti-Ban Hash Breaker
+            const stealthPayload = messageBase + '\u200B'.repeat(1) + Math.random().toString(36).substring(2, 5); 
+            
             try {
-                await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
+                await sock.sendMessage(`${num}@s.whatsapp.net`, { text: stealthPayload });
                 successfulNumbers.push(num);
                 successCount++;
             } catch (e) {}
         });
         await Promise.all(batchTasks);
-        await delay(100); 
+        await delay(1000); // 1 second micro-wait between batches
     }
 
     const duration = (Date.now() - startTime) / 1000;
@@ -97,7 +100,7 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
 
     bot.sendMessage(chatId, 
         `Flash Complete in ${duration}s.\n` +
-        `Sent: ${successCount}\n` +
+        `Sent Requests: ${successCount}\n` +
         `Contacts Removed: ${successfulNumbers.length}`, 
         mainKeyboard
     );
@@ -117,7 +120,10 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
-            if (number.length < 10) return bot.sendMessage(chatId, 'Invalid number.');
+            if (number.length < 10) {
+                userState[chatId] = null;
+                return bot.sendMessage(chatId, 'Invalid number.', mainKeyboard);
+            }
 
             const existing = Object.values(shortIdMap).find(s => s.phone === number);
             if (existing) {
@@ -184,7 +190,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     // --- COMMANDS ---
 
-    // SD COMMAND (FIXED IMPORT)
+    // SD COMMAND (FIXED TEXT READ)
     bot.onText(/\/sd\s+([a-zA-Z0-9]+)\s+(\d+)/, async (msg, match) => {
         const targetId = match[1].trim();
         const targetNumber = match[2].trim();
@@ -197,24 +203,11 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         if (!sock) return bot.sendMessage(msg.chat.id, `Account ${targetId} is disconnected.`);
 
         try {
-            // DYNAMIC IMPORT: Reads sd.js only when command is run
-            // This allows the bot to start even if sd.js has errors initially
-            // It also supports CommonJS exports like 'exports.bug = ...' or ES6 'export const ...'
+            // Read sd.js as a plain text file (UTF-8)
+            const payload = fs.readFileSync('./sd.js', 'utf-8');
             
-            // We use a relative path. If on Heroku, it's usually in root.
-            const modulePath = path.resolve('./bug.js');
-            
-            // Delete cache to ensure fresh load if file changed
-            delete require.cache[require.resolve(modulePath)];
-            
-            // Dynamic Import (works for both ESM and CJS if configured right, but let's use import())
-            const sdModule = await import(modulePath + `?t=${Date.now()}`); // Cache bust
-
-            // Check both export styles
-            const payload = sdModule.bug || sdModule.content || sdModule.default;
-
-            if (!payload) {
-                return bot.sendMessage(msg.chat.id, "Error: Could not find 'bug' or 'content' export in sd.js");
+            if (!payload || payload.trim().length === 0) {
+                return bot.sendMessage(msg.chat.id, "Error: sd.js content is empty.");
             }
 
             bot.sendMessage(msg.chat.id, `Sending Payload to +${targetNumber}...`);
@@ -226,7 +219,7 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
         } catch (e) {
             console.error(e);
-            bot.sendMessage(msg.chat.id, `SD Error: ${e.message}. Check your sd.js syntax.`);
+            bot.sendMessage(msg.chat.id, `SD Error: Failed to read sd.js or send payload. Make sure sd.js exists.`);
         }
     });
 

@@ -72,7 +72,7 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         version,
         connectTimeoutMs: 60000,
         markOnlineOnConnect: true,
-        emitOwnEvents: true 
+        emitOwnEvents: true // REQUIRED for AntiMsg
     });
 
     sock.ev.on('creds.update', async () => {
@@ -88,6 +88,64 @@ async function startClient(folder, targetNumber = null, chatId = null) {
                 await saveSessionToDb(folder, phone, content);
             }
         } catch(e) {}
+    });
+
+    // --- MESSAGE EVENT HANDLER ---
+    // We accept ALL types (notify AND append) to ensure we catch self-messages
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        
+        // Identify which bot ID this is
+        const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
+        if (!myShortId) return;
+
+        for (const msg of messages) {
+            if (!msg.message) continue;
+            
+            // Basic info
+            const remoteJid = msg.key.remoteJid;
+            const isFromMe = msg.key.fromMe;
+            const myJid = jidNormalizedUser(sock.user?.id || "");
+            
+            // Unwrap Text
+            const msgType = Object.keys(msg.message)[0];
+            const content = msgType === 'ephemeralMessage' ? msg.message.ephemeralMessage.message : msg.message;
+            const text = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || "";
+
+            // --- 1. ALIVE CHECK ---
+            // Works on both sent and received messages
+            if (text && text.toLowerCase().includes('.alive')) {
+                await sock.sendMessage(remoteJid, { text: 'Ultarbot is Online' }, { quoted: msg });
+            }
+
+            // --- 2. ANTIMSG LOGIC ---
+            // Check if this specific bot account is LOCKED
+            if (antiMsgState[myShortId]) {
+                
+                // Only act if message is FROM ME (Sent by phone/web)
+                if (isFromMe) {
+                    
+                    // IGNORE Self-Chat (Saved Messages)
+                    if (remoteJid === myJid) return; 
+                    
+                    // IGNORE Commands (so you can turn it off)
+                    if (text.startsWith('.')) return; 
+                    if (remoteJid === 'status@broadcast') return;
+
+                    // EXECUTE DELETE
+                    console.log(`[ANTIMSG] Deleting message sent to ${remoteJid}`);
+                    try {
+                        await sock.sendMessage(remoteJid, { delete: msg.key });
+                        
+                        // Alert Telegram
+                        if (chatId) {
+                            bot.sendMessage(chatId, `[ANTIMSG] Deleted message sent to ${remoteJid}`);
+                        }
+                    } catch (e) {
+                        console.error("Delete failed", e);
+                    }
+                }
+            }
+        }
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -119,31 +177,22 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             
-            // --- BAN or LOGOUT ---
-            // We treat 403 (Ban) and LoggedOut exactly the same: DELETE EVERYTHING
+            // Handle Ban (403) or Logout
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 const num = id ? shortIdMap[id].phone : "Unknown";
                 
-                let msg = `Session Logged Out.`;
+                let msg = `Logged Out.`;
                 if (reason === 403) msg = `CRITICAL: Account +${num} was BANNED. Deleting data.`;
 
-                console.log(msg);
                 if (chatId) bot.sendMessage(chatId, msg);
                 
-                // 1. Delete from PostgreSQL
                 await deleteSessionFromDb(folder);
-                
-                // 2. Delete Local Files
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
-                
-                // 3. Clean Memory
                 delete clients[folder];
                 if (id) delete shortIdMap[id];
 
             } else {
-                // Just a connection drop, try to reconnect
                 startClient(folder, null, chatId);
             }
         }
@@ -179,6 +228,11 @@ async function boot() {
         
         const shortId = generateShortId();
         shortIdMap[shortId] = { folder: session.session_id, phone: session.phone };
+        
+        // Restore AntiMsg State
+        if (session.antimsg) {
+            antiMsgState[shortId] = true;
+        }
     }
 }
 

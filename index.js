@@ -34,6 +34,8 @@ app.listen(PORT, () => console.log(`Server on ${PORT}`));
 const clients = {}; 
 const shortIdMap = {}; 
 const antiMsgState = {}; 
+// New: Cache to stop spam { "targetNumber": timestamp }
+const notificationCache = {}; 
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
@@ -72,7 +74,7 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         version,
         connectTimeoutMs: 60000,
         markOnlineOnConnect: true,
-        emitOwnEvents: true // REQUIRED for AntiMsg
+        emitOwnEvents: true 
     });
 
     sock.ev.on('creds.update', async () => {
@@ -90,59 +92,59 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         } catch(e) {}
     });
 
-    // --- MESSAGE EVENT HANDLER ---
-    // We accept ALL types (notify AND append) to ensure we catch self-messages
+    // --- MESSAGE HANDLER ---
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         
-        // Identify which bot ID this is
         const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
         if (!myShortId) return;
 
         for (const msg of messages) {
             if (!msg.message) continue;
             
-            // Basic info
+            // --- SPAM FIX: Ignore Protocol Messages (Deletes/Edits) ---
+            if (msg.message.protocolMessage) continue; 
+
             const remoteJid = msg.key.remoteJid;
             const isFromMe = msg.key.fromMe;
             const myJid = jidNormalizedUser(sock.user?.id || "");
             
-            // Unwrap Text
+            // Text Extraction
             const msgType = Object.keys(msg.message)[0];
             const content = msgType === 'ephemeralMessage' ? msg.message.ephemeralMessage.message : msg.message;
             const text = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || "";
 
-            // --- 1. ALIVE CHECK ---
-            // Works on both sent and received messages
+            // Alive Check
             if (text && text.toLowerCase().includes('.alive')) {
                 await sock.sendMessage(remoteJid, { text: 'Ultarbot is Online' }, { quoted: msg });
             }
 
-            // --- 2. ANTIMSG LOGIC ---
-            // Check if this specific bot account is LOCKED
-            if (antiMsgState[myShortId]) {
-                
-                // Only act if message is FROM ME (Sent by phone/web)
-                if (isFromMe) {
-                    
-                    // IGNORE Self-Chat (Saved Messages)
-                    if (remoteJid === myJid) return; 
-                    
-                    // IGNORE Commands (so you can turn it off)
-                    if (text.startsWith('.')) return; 
-                    if (remoteJid === 'status@broadcast') return;
+            // --- ANTIMSG LOGIC ---
+            if (antiMsgState[myShortId] && isFromMe) {
+                if (remoteJid === myJid) return; // Ignore Self
+                if (text.startsWith('.')) return; // Ignore Commands
+                if (remoteJid === 'status@broadcast') return;
 
-                    // EXECUTE DELETE
-                    console.log(`[ANTIMSG] Deleting message sent to ${remoteJid}`);
-                    try {
-                        await sock.sendMessage(remoteJid, { delete: msg.key });
-                        
-                        // Alert Telegram
+                console.log(`[ANTIMSG] Deleting for ${myShortId}`);
+                
+                try {
+                    // 1. Delete Message
+                    await sock.sendMessage(remoteJid, { delete: msg.key });
+                    
+                    // 2. Send Notification (DEBOUNCED)
+                    // Check if we notified about this number in the last 10 seconds
+                    const target = remoteJid.split('@')[0];
+                    const now = Date.now();
+                    const lastNotif = notificationCache[target] || 0;
+
+                    if (now - lastNotif > 10000) { // 10 Seconds cooldown
                         if (chatId) {
-                            bot.sendMessage(chatId, `[ANTIMSG] Deleted message sent to ${remoteJid}`);
+                            bot.sendMessage(chatId, `[ANTIMSG] Deleted message sent to ${target}`);
                         }
-                    } catch (e) {
-                        console.error("Delete failed", e);
+                        notificationCache[target] = now; // Update timestamp
                     }
+
+                } catch (e) {
+                    console.error("Delete failed", e);
                 }
             }
         }
@@ -177,7 +179,6 @@ async function startClient(folder, targetNumber = null, chatId = null) {
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             
-            // Handle Ban (403) or Logout
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 const num = id ? shortIdMap[id].phone : "Unknown";
@@ -229,7 +230,6 @@ async function boot() {
         const shortId = generateShortId();
         shortIdMap[shortId] = { folder: session.session_id, phone: session.phone };
         
-        // Restore AntiMsg State
         if (session.antimsg) {
             antiMsgState[shortId] = true;
         }

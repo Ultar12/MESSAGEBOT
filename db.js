@@ -82,6 +82,7 @@ export async function deleteShortId(sessionFolder) {
 // --- SESSIONS ---
 export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave) {
     try {
+        // Ensures all 6 parameters are passed correctly for ON CONFLICT UPDATE
         await pool.query(
             `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id) 
              VALUES ($1, $2, $3, $4, $5, $6) 

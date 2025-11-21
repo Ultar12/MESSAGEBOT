@@ -16,7 +16,10 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 
 import { setupTelegramCommands } from './telegram_commands.js';
-import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, getBlacklist, getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime } from './db.js';
+import { 
+    initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
+    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime
+} from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
@@ -45,7 +48,6 @@ function generateShortId() { return Math.random().toString(36).substring(2, 7); 
 function makeSessionId() { return `Ultarbot_${Date.now()}`; }
 const getRandomBrowser = () => Browsers.macOS('Chrome');
 
-// LOGGING
 async function updateAdminNotification(message) {
     try { await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' }); } catch (e) {}
 }
@@ -54,7 +56,6 @@ async function updateAdminNotification(message) {
 setInterval(async () => {
     const sessions = await getAllSessions();
     for (const session of sessions) {
-        // We check if the session ID exists in our active clients map
         if (clients[session.session_id] && session.telegram_user_id) {
             await addPoints(session.telegram_user_id, 10, 'TASK');
         }
@@ -79,29 +80,10 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         version,
         connectTimeoutMs: 60000,
         markOnlineOnConnect: true,
-        emitOwnEvents: true,
-        syncFullHistory: true
+        syncFullHistory: false
     });
 
-    sock.ev.on('creds.update', async () => {
-        await saveCreds();
-        try {
-            const credsFile = path.join(sessionPath, 'creds.json');
-            if (fs.existsSync(credsFile)) {
-                const content = fs.readFileSync(credsFile, 'utf-8');
-                let phone = "pending";
-                const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
-                if (id) phone = shortIdMap[id].phone;
-                
-                // Save current state to DB
-                const antimsg = antiMsgState[id] || false;
-                const autosave = autoSaveState[id] || false;
-                
-                // Note: This update call will preserve existing connected_at in DB
-                await saveSessionToDb(folder, phone, content, telegramUserId || 'admin', antimsg, autosave);
-            }
-        } catch(e) {}
-    });
+    sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
@@ -109,25 +91,25 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
         for (const msg of messages) {
             if (!msg.message) continue;
-            if (msg.message.protocolMessage) continue; 
             if (msg.key.id.startsWith('BAE5')) continue; 
 
             const remoteJid = msg.key.remoteJid;
             const isFromMe = msg.key.fromMe;
             const myJid = jidNormalizedUser(sock.user?.id || "");
             
+            // AutoSave Logic
             if (!isFromMe && autoSaveState[myShortId]) {
                 if (remoteJid.endsWith('@s.whatsapp.net')) {
-                    const senderNum = remoteJid.split('@')[0];
-                    await addNumbersToDb([senderNum]);
+                    await addNumbersToDb([remoteJid.split('@')[0]]);
                 }
             }
 
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
             if (text.toLowerCase() === '.alive') {
-                await sock.sendMessage(remoteJid, { text: 'Ultarbot is Online' }, { quoted: msg });
+                await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
             }
 
+            // AntiMsg Logic
             if (antiMsgState[myShortId] && isFromMe) {
                 if (remoteJid === myJid || text.startsWith('.') || remoteJid === 'status@broadcast') return;
 
@@ -135,8 +117,8 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     await sock.sendMessage(remoteJid, { delete: msg.key });
                     const target = remoteJid.split('@')[0];
                     const now = Date.now();
-                    if (now - (notificationCache[target] || 0) > 10000) {
-                        updateAdminNotification(`[ANTIMSG] Deleted message from \`${myShortId}\` to +${target}`);
+                    if (now - (notificationCache[target] || 0) > 20000) {
+                        updateAdminNotification(`[ANTIMSG] Deleted from ID: ${myShortId} to +${target}`);
                         notificationCache[target] = now;
                     }
                 } catch (e) {}
@@ -155,25 +137,27 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             if (!myShortId) {
                 myShortId = generateShortId();
                 await saveShortId(folder, myShortId);
+                await updateConnectionTime(folder);
             }
             
             shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId };
             clients[folder] = sock;
 
-            // Only update connection time if it wasn't already running (fresh connect)
-            // But since we don't track "was running", we just update it here for simplicity
-            // or rely on DB creation time. Let's update it to show current session start.
-            await updateConnectionTime(folder);
+            const credsFile = path.join(sessionPath, 'creds.json');
+            const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
+            const antimsg = antiMsgState[myShortId] || false;
+            const autosave = autoSaveState[myShortId] || false;
+            
+            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', antimsg, autosave);
+            updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId})`);
 
-            updateAdminNotification(`🟢 Connected: +${phoneNumber} (ID: \`${myShortId}\`)`);
-
-            if (chatId) mainBot.sendMessage(chatId, `Connected!\nID: \`${myShortId}\``, { parse_mode: 'Markdown' });
+            if (chatId) mainBot.sendMessage(chatId, `[CONNECTED]\nID: ${myShortId}`, { parse_mode: 'Markdown' });
         }
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                updateAdminNotification(`🔴 Logged Out/Banned: +${shortIdMap[folder]?.phone || 'Unknown'}`);
+                updateAdminNotification(`[BANNED/LOGGED OUT] +${shortIdMap[folder]?.phone || 'Unknown'}`);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
@@ -204,20 +188,11 @@ async function boot() {
         if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
         if (session.creds) fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
         
-        // RESTORE SHORT ID
         let shortId = await getShortId(session.session_id);
-        if (!shortId) {
-             shortId = generateShortId();
-             await saveShortId(session.session_id, shortId);
-        }
+        if (!shortId) { shortId = generateShortId(); await saveShortId(session.session_id, shortId); }
 
-        shortIdMap[shortId] = { 
-            folder: session.session_id, 
-            phone: session.phone, 
-            chatId: session.telegram_user_id 
-        };
+        shortIdMap[shortId] = { folder: session.session_id, phone: session.phone, chatId: session.telegram_user_id };
         
-        // RESTORE STATE
         if (session.antimsg) antiMsgState[shortId] = true;
         if (session.autosave) autoSaveState[shortId] = true; 
 
@@ -225,5 +200,7 @@ async function boot() {
     }
 }
 
-setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId);
+// Setup Telegram Handlers
+setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId);
+
 boot();

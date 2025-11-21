@@ -1,14 +1,53 @@
 import fs from 'fs';
-import { delay, jidDecode } from '@whiskeysockets/baileys';
-import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers } from './db.js';
+import nodemailer from 'nodemailer'; // NEW IMPORT
+import { delay } from '@whiskeysockets/baileys';
+import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, setAutoSaveStatus, countNumbers, deleteNumbers, addToBlacklist } from './db.js';
 
 const userState = {}; 
+
+// --- EMAIL SETUP ---
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+    }
+});
+
+async function sendReportEmail(targetNumber) {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return "Email not configured in .env";
+
+    const jid = `${targetNumber}@s.whatsapp.net`;
+    const time = new Date().toISOString();
+
+    const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: 'support@whatsapp.com', // Official WhatsApp Support
+        subject: `Urgent: Report of Spam Activity - +${targetNumber}`,
+        text: `Hello WhatsApp Support,\n\n` +
+              `I am reporting the following account for violating Terms of Service (Spam/Scam/Abuse).\n\n` +
+              `Account Details:\n` +
+              `- Phone: +${targetNumber}\n` +
+              `- JID: ${jid}\n` +
+              `- Detected: ${time}\n\n` +
+              `This account is sending unsolicited automated messages. Please review and take action.\n\n` +
+              `Thank you.`
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        return "Email Sent Successfully";
+    } catch (error) {
+        return `Email Failed: ${error.message}`;
+    }
+}
 
 const mainKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: "Pair Account" }, { text: "List Active" }],
-            [{ text: "Broadcast" }, { text: "Delete Database" }]
+            [{ text: "Broadcast" }, { text: "Save VCF" }],
+            [{ text: "Delete Database" }, { text: "Generate Numbers" }]
         ],
         resize_keyboard: true
     }
@@ -44,7 +83,8 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
     const startTime = Date.now();
     const successfulNumbers = [];
 
-    const BATCH_SIZE = 10; 
+    // BATCH SIZE 50 for speed
+    const BATCH_SIZE = 50; 
     
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
         const batch = numbers.slice(i, i + BATCH_SIZE);
@@ -58,7 +98,7 @@ async function executeBroadcast(bot, clients, shortIdMap, chatId, targetId, mess
         });
 
         await Promise.all(batchTasks);
-        await delay(1000); 
+        await delay(100); 
     }
 
     const duration = (Date.now() - startTime) / 1000;
@@ -157,101 +197,44 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
     // --- COMMANDS ---
 
-    // SCRAPE GROUP (Fixed LID Filter + Guaranteed Exit)
-    bot.onText(/\/scrape (.+)/, async (msg, match) => {
-        const link = match[1];
-        const chatId = msg.chat.id;
+    // REPORT WITH EMAIL
+    bot.onText(/\/report (.+)/, async (msg, match) => {
+        const rawNumber = match[1].replace(/[^0-9]/g, '');
+        if (rawNumber.length < 7) return bot.sendMessage(msg.chat.id, "Invalid number.");
 
-        const firstId = Object.keys(shortIdMap)[0];
-        if (!firstId || !clients[shortIdMap[firstId].folder]) {
-            return bot.sendMessage(chatId, 'No active WhatsApp account found. Pair one first.');
-        }
-        const sock = clients[shortIdMap[firstId].folder];
+        // 1. Add to Blacklist
+        await addToBlacklist(rawNumber);
 
-        const regex = /chat\.whatsapp\.com\/([0-9A-Za-z]{20,24})/;
-        const codeMatch = link.match(regex);
-        if (!codeMatch) {
-            return bot.sendMessage(chatId, 'Invalid WhatsApp Group Link.');
-        }
-        const code = codeMatch[1];
+        const activeIds = Object.keys(shortIdMap);
+        if (activeIds.length === 0) return bot.sendMessage(msg.chat.id, "No accounts connected.");
 
-        let groupJid = null;
+        bot.sendMessage(msg.chat.id, `Executing Network Block & Report on +${rawNumber}...`);
 
-        try {
-            bot.sendMessage(chatId, 'Processing Group...');
-            
-            // 1. Get Invite Info
-            const inviteInfo = await sock.groupGetInviteInfo(code);
-            groupJid = inviteInfo.id;
-            const groupSubject = inviteInfo.subject || "Unknown Group";
+        // 2. Block on all accounts
+        let blockedCount = 0;
+        const jid = `${rawNumber}@s.whatsapp.net`;
 
-            // 2. Join (Ignore Conflict if already joined)
-            try { await sock.groupAcceptInvite(code); } catch (e) {}
-            
-            // 3. Get Metadata
-            const metadata = await sock.groupMetadata(groupJid);
-            
-            // 4. Extract & FILTER Numbers (Crucial Logic)
-            const validNumbers = [];
-            let lidCount = 0;
-
-            metadata.participants.forEach(p => {
-                const jid = p.id;
-                
-                // Case A: Explicit Phone JID (@s.whatsapp.net)
-                if (jid.includes('@s.whatsapp.net')) {
-                    const num = jid.split('@')[0];
-                    // Double check length (7-15 digits is standard for phone)
-                    if (num.length >= 7 && num.length <= 15 && !isNaN(num)) {
-                        validNumbers.push(num);
-                    }
-                } 
-                // Case B: LID or other (Ignore)
-                else {
-                    lidCount++;
-                }
-            });
-            
-            if (validNumbers.length === 0) {
-                bot.sendMessage(chatId, `⚠️ Warning: Only found ${lidCount} hidden IDs (LIDs). No phone numbers visible.`);
-                // Don't return here, let it proceed to finally block to leave
-            } else {
-                // 5. Generate VCF
-                let vcfContent = "";
-                validNumbers.forEach(num => {
-                    vcfContent += "BEGIN:VCARD\nVERSION:3.0\n";
-                    vcfContent += `FN:WA ${num}\n`;
-                    vcfContent += `TEL;TYPE=CELL:+${num}\n`;
-                    vcfContent += "END:VCARD\n";
-                });
-
-                const fileName = `Group_${groupSubject.replace(/[^a-zA-Z0-9]/g, '_')}.vcf`;
-                fs.writeFileSync(fileName, vcfContent);
-
-                // 6. Send VCF
-                await bot.sendDocument(chatId, fileName, {
-                    caption: `[SCRAPE SUCCESS]\nGroup: ${groupSubject}\nFound Numbers: ${validNumbers.length}\nHidden/LIDs: ${lidCount}\n\n(Bot has left the group)`
-                });
-
-                fs.unlinkSync(fileName);
-            }
-
-        } catch (e) {
-            bot.sendMessage(chatId, `Scrape Failed: ${e.message}`);
-        } finally {
-            // 7. ALWAYS LEAVE GROUP
-            if (groupJid) {
-                try { await sock.groupLeave(groupJid); } catch (e) {
-                    console.log(`Could not leave group ${groupJid}: ${e.message}`);
-                }
+        for (const id of activeIds) {
+            const session = shortIdMap[id];
+            const sock = clients[session.folder];
+            if (sock) {
+                try {
+                    await sock.updateBlockStatus(jid, "block");
+                    blockedCount++;
+                } catch (e) {}
             }
         }
-    });
 
-    bot.onText(/\/broadcast (.+)/, async (msg, match) => {
-        if (!msg.reply_to_message?.text) return bot.sendMessage(msg.chat.id, 'Reply to text with /broadcast <id>');
-        const targetId = match[1].trim();
-        await executeBroadcast(bot, clients, shortIdMap, msg.chat.id, targetId, msg.reply_to_message.text);
+        // 3. Send Email to WhatsApp
+        const emailStatus = await sendReportEmail(rawNumber);
+
+        bot.sendMessage(msg.chat.id, 
+            `[REPORT SUCCESS]\n` +
+            `Target: +${rawNumber}\n` +
+            `Blocked on: ${blockedCount} accounts\n` +
+            `Email Status: ${emailStatus}\n` +
+            `Action: Added to blacklist.`
+        );
     });
 
     bot.onText(/\/antimsg\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
@@ -261,7 +244,6 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
         const sessionId = shortIdMap[id].folder;
         const newState = (action === 'on');
-        
         antiMsgState[id] = newState;
         await setAntiMsgStatus(sessionId, newState);
 
@@ -275,7 +257,6 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
 
         const sessionId = shortIdMap[id].folder;
         const newState = (action === 'on');
-        
         autoSaveState[id] = newState;
         await setAutoSaveStatus(sessionId, newState);
 

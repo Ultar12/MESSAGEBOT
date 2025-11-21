@@ -1,10 +1,9 @@
 import fs from 'fs';
 import { delay } from '@whiskeysockets/baileys';
-import { addNumbersToDb, getAllNumbers, clearAllNumbers } from './db.js';
+import { addNumbersToDb, getAllNumbers, clearAllNumbers, setAntiMsgStatus, getAllSessions } from './db.js';
 
 const userState = {}; 
 
-// Persistent Keyboard (Buttons)
 const mainKeyboard = {
     reply_markup: {
         keyboard: [
@@ -36,44 +35,70 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         bot.sendMessage(msg.chat.id, 'Ultarbot Pro Active. Select an option:', mainKeyboard);
     });
 
-    // --- 2. INPUT LISTENER (Fixes the "Nothing Happens" bug) ---
+    // --- 2. INPUT LISTENER ---
     bot.on('message', async (msg) => {
         if (!msg.text) return;
-        
         const chatId = msg.chat.id;
         const text = msg.text;
 
-        // PRIORITY 1: CHECK STATE (Are we waiting for a number?)
+        // A. PAIRING INPUT
         if (userState[chatId] === 'WAITING_PAIR') {
-            // Remove spaces, dashes, plus signs
             const number = text.replace(/[^0-9]/g, '');
             
-            // Validate
             if (number.length < 10) {
-                return bot.sendMessage(chatId, 'Invalid format. Please send only the number (e.g. 2349012345678).');
+                return bot.sendMessage(chatId, 'Invalid number. Try again (e.g. 23490...):');
             }
 
-            // Check duplicates
             const existing = Object.values(shortIdMap).find(s => s.phone === number);
             if (existing) {
-                userState[chatId] = null; // Reset state
+                userState[chatId] = null;
                 return bot.sendMessage(chatId, `Account +${number} is already connected.`, mainKeyboard);
             }
 
-            // Proceed
-            userState[chatId] = null; // Reset state
-            bot.sendMessage(chatId, `Initializing +${number}... Code coming soon.`);
+            userState[chatId] = null;
+            bot.sendMessage(chatId, `Initializing +${number}... Please wait for code.`);
             
             const sessionId = makeSessionId();
             startClient(sessionId, number, chatId);
-            return; // Stop here, don't process other commands
+            return;
         }
 
-        // PRIORITY 2: BUTTON HANDLERS
+        // B. BROADCAST INPUT
+        if (userState[chatId] === 'WAITING_BROADCAST') {
+            const messageText = text;
+            const targetId = userState[chatId + '_target']; 
+            userState[chatId] = null;
+
+            const sessionData = shortIdMap[targetId];
+            if (!sessionData || !clients[sessionData.folder]) {
+                return bot.sendMessage(chatId, 'Client disconnected or invalid.', mainKeyboard);
+            }
+
+            const sock = clients[sessionData.folder];
+            const numbers = await getAllNumbers();
+
+            if (numbers.length === 0) return bot.sendMessage(chatId, 'Database empty. Use Generate or Save VCF.', mainKeyboard);
+
+            bot.sendMessage(chatId, `Flashing message to ${numbers.length} contacts...`);
+            
+            let success = 0;
+            const tasks = numbers.map(async (num) => {
+                try {
+                    await sock.sendMessage(`${num}@s.whatsapp.net`, { text: messageText });
+                    success++;
+                } catch (e) {}
+            });
+
+            await Promise.all(tasks);
+            bot.sendMessage(chatId, `Flash Complete. Sent Requests: ${success}`, mainKeyboard);
+            return;
+        }
+
+        // C. BUTTON COMMANDS
         switch (text) {
             case "Pair Account":
                 userState[chatId] = 'WAITING_PAIR';
-                bot.sendMessage(chatId, 'Please reply with your WhatsApp number (Country Code + Number):', {
+                bot.sendMessage(chatId, 'Please enter the WhatsApp number (Country code + Number):', {
                     reply_markup: { force_reply: true }
                 });
                 break;
@@ -85,7 +110,8 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
                 } else {
                     let list = "Active Sessions:\n";
                     ids.forEach(id => {
-                        list += `ID: ${id} | +${shortIdMap[id].phone}\n`;
+                        const status = antiMsgState[id] ? "[LOCKED]" : "[ACTIVE]";
+                        list += `ID: ${id} | +${shortIdMap[id].phone} ${status}\n`;
                     });
                     bot.sendMessage(chatId, list);
                 }
@@ -104,26 +130,13 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             case "Broadcast":
                 const activeIds = Object.keys(shortIdMap);
                 if (activeIds.length === 0) return bot.sendMessage(chatId, "Pair an account first.");
-                
-                // Pick first available for now
-                const targetId = activeIds[0];
-                const sock = clients[shortIdMap[targetId].folder];
-                const numbers = await getAllNumbers();
-
-                if (numbers.length === 0) return bot.sendMessage(chatId, "Database empty.", mainKeyboard);
-
-                bot.sendMessage(chatId, `Flashing message to ${numbers.length} contacts using ID ${targetId}...\n\nPlease wait.`);
-                
-                let success = 0;
-                const tasks = numbers.map(async (num) => {
-                    try {
-                        await sock.sendMessage(`${num}@s.whatsapp.net`, { text: "Hello" }); // Update text logic if needed
-                        success++;
-                    } catch (e) {}
-                });
-
-                await Promise.all(tasks);
-                bot.sendMessage(chatId, `Flash Complete. Sent: ${success}`, mainKeyboard);
+                if (activeIds.length === 1) {
+                    userState[chatId] = 'WAITING_BROADCAST';
+                    userState[chatId + '_target'] = activeIds[0];
+                    bot.sendMessage(chatId, `Using ID ${activeIds[0]}. Enter your message text now:`);
+                } else {
+                    bot.sendMessage(chatId, `Use command: /broadcast <id> <message>`);
+                }
                 break;
                 
             case "Save VCF":
@@ -132,8 +145,29 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         }
     });
 
-    // --- COMMANDS (Manual override) ---
-    
+    // --- COMMANDS ---
+
+    // NEW: ANTIMSG TOGGLE
+    bot.onText(/\/antimsg (.+)/, async (msg, match) => {
+        const id = match[1].trim();
+        
+        if (!shortIdMap[id]) {
+            return bot.sendMessage(msg.chat.id, `Invalid ID. check /list`);
+        }
+
+        const sessionId = shortIdMap[id].folder;
+        const currentState = antiMsgState[id] || false;
+        const newState = !currentState;
+
+        // Update Memory
+        antiMsgState[id] = newState;
+        // Update Database
+        await setAntiMsgStatus(sessionId, newState);
+
+        const statusText = newState ? "LOCKED (Auto-Delete ON)" : "UNLOCKED (Normal Mode)";
+        bot.sendMessage(msg.chat.id, `Account +${shortIdMap[id].phone} is now: ${statusText}`);
+    });
+
     bot.onText(/\/generate (.+)/, async (msg, match) => {
         const args = msg.text.split(' ');
         const code = args[1];
@@ -143,8 +177,9 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
         for (let i = 0; i < amount; i++) {
             newNumbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
         }
+        
         await addNumbersToDb(newNumbers);
-        bot.sendMessage(msg.chat.id, `Added ${amount} numbers to DB.`);
+        bot.sendMessage(msg.chat.id, `Added ${amount} numbers to Postgres DB.`);
     });
 
     bot.onText(/\/save/, async (msg) => {
@@ -175,7 +210,20 @@ export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, st
             }
 
             await addNumbersToDb(validNumbers);
-            bot.sendMessage(msg.chat.id, `Saved ${validNumbers.length} verified numbers.`);
+
+            // FORMAT THE LIST FOR TELEGRAM
+            let listMsg = `Saved ${validNumbers.length} verified numbers to Postgres:\n\n`;
+            
+            // If too long, split logic would be needed, but for now lets list them
+            // Telegram max is 4096 chars. 100 numbers is ~1200 chars.
+            if (validNumbers.length > 300) {
+                listMsg += validNumbers.slice(0, 300).join('\n');
+                listMsg += `\n...and ${validNumbers.length - 300} more (truncated).`;
+            } else {
+                listMsg += validNumbers.join('\n');
+            }
+
+            bot.sendMessage(msg.chat.id, listMsg);
 
         } catch (e) {
             bot.sendMessage(msg.chat.id, "Error: " + e.message);

@@ -9,7 +9,7 @@ const pool = new pg.Pool({
 export async function initDb() {
     const client = await pool.connect();
     try {
-        // Sessions Table
+        // Sessions
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -22,12 +22,13 @@ export async function initDb() {
             );
         `);
         
+        // Migrations
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
 
-        // IDs Table
+        // IDs
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_ids (
                 session_folder TEXT PRIMARY KEY,
@@ -35,7 +36,7 @@ export async function initDb() {
             );
         `);
         
-        // Users & Data Tables
+        // Data Tables
         await client.query(`CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, referral_earnings INTEGER DEFAULT 0, referrer_id TEXT, bank_name TEXT, account_number TEXT, account_name TEXT, is_banned BOOLEAN DEFAULT FALSE, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS broadcast_numbers (phone TEXT PRIMARY KEY);`);
         await client.query(`CREATE TABLE IF NOT EXISTS blacklist (phone TEXT PRIMARY KEY);`);
@@ -50,10 +51,9 @@ export async function initDb() {
     }
 }
 
-// --- SESSION MANAGEMENT ---
+// --- SESSIONS ---
 export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave) {
     try {
-        // We do NOT update connected_at here to preserve the original login time
         await pool.query(
             `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id, connected_at) 
              VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
@@ -65,9 +65,7 @@ export async function saveSessionToDb(sessionId, phone, credsData, telegramUserI
 }
 
 export async function updateConnectionTime(sessionId) {
-    try { 
-        await pool.query('UPDATE wa_sessions SET connected_at = CURRENT_TIMESTAMP WHERE session_id = $1', [sessionId]); 
-    } catch(e) {}
+    try { await pool.query('UPDATE wa_sessions SET connected_at = CURRENT_TIMESTAMP WHERE session_id = $1', [sessionId]); } catch(e) {}
 }
 
 export async function setAntiMsgStatus(sessionId, status) {
@@ -102,7 +100,7 @@ export async function deleteSessionFromDb(sessionId) {
     } catch (e) { console.error('[DB] Delete Session Error', e); }
 }
 
-// --- SHORT IDs ---
+// --- SHORT IDS ---
 export async function getShortId(sessionFolder) {
     try {
         const res = await pool.query('SELECT short_id FROM wa_ids WHERE session_folder = $1', [sessionFolder]);
@@ -122,7 +120,7 @@ export async function deleteShortId(sessionFolder) {
     } catch (e) {}
 }
 
-// --- NUMBERS & USER STATS ---
+// --- NUMBERS ---
 export async function addNumbersToDb(numbersArray) {
     if (numbersArray.length === 0) return;
     const client = await pool.connect();
@@ -163,7 +161,7 @@ export async function clearAllNumbers() {
     try { await pool.query('DELETE FROM broadcast_numbers'); } catch (e) {}
 }
 
-// --- USER FUNCTIONS (Simplified for brevity) ---
+// --- USERS ---
 export async function getUser(telegramId) {
     const res = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
     return res.rows[0];

@@ -2,11 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
-// Configuration
 const NUMBERS_FILE = './numbers.json';
 const VCF_FILE = './contacts.vcf';
 
-// Helper: Extract Numbers from VCF Content
+// Helper: Fast VCF Parser
 function parseVcf(vcfContent) {
     const numbers = new Set(); 
     const regex = /TEL;?[^:]*:(?:[\+]?)([\d\s-]+)/gi;
@@ -18,17 +17,18 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, makeSessionId, antiMsgState) {
+export function setupTelegramCommands(bot, clients, shortIdMap, SESSIONS_DIR, startClient, makeSessionId, antiMsgState) {
 
     // --- 1. START ---
     bot.onText(/\/start/, (msg) => {
         bot.sendMessage(msg.chat.id, 
-            '🤖 *Ultarbot Command Center*\n\n' +
-            '/pair <number> - Connect WhatsApp\n' +
-            '/list - View active sessions\n' +
-            '/generate <code 234> <amount> - Create numbers\n' +
-            '/save - Reply to .vcf to load contacts\n' +
-            '/broadcast - Reply to text to BLAST message\n' +
+            '🚀 *Ultarbot Flash*\n\n' +
+            '/pair <number> - Connect Account\n' +
+            '/list - Show IDs & Accounts\n' +
+            '/generate <code 234> <amount> - Gen Numbers\n' +
+            '/save - Reply to .vcf to load list\n' +
+            '/delnum - 🗑️ Delete saved numbers/VCF\n' +
+            '/broadcast <id> - ⚡ FLASH SEND (Reply to text)\n' +
             '/send <number> <msg> - Direct message',
             { parse_mode: 'Markdown' }
         );
@@ -40,31 +40,33 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
         const number = match[1].replace(/[^0-9]/g, '');
         if (!number) return bot.sendMessage(chatId, 'Usage: /pair 2349012345678');
         
-        if (clients[number]) return bot.sendMessage(chatId, `+${number} is already connected.`);
+        const existingSession = Object.values(shortIdMap).find(s => s.phone === number);
+        if (existingSession) return bot.sendMessage(chatId, `⚠️ +${number} is already connected (ID: ${existingSession.id})`);
 
-        const sessionId = makeSessionId();
+        const sessionId = makeSessionId(); 
         const sessionPath = path.join(SESSIONS_DIR, sessionId);
-        
         fs.mkdirSync(sessionPath, { recursive: true });
 
-        bot.sendMessage(chatId, `Initializing +${number}...\nSession ID: ${sessionId}`);
+        bot.sendMessage(chatId, `Initializing +${number}...`);
         startClient(sessionId, number, chatId);
     });
 
     // --- 3. LIST ---
     bot.onText(/\/list/, (msg) => {
-        const active = Object.keys(clients);
-        if (active.length === 0) return bot.sendMessage(msg.chat.id, "No WhatsApp numbers connected.");
+        const ids = Object.keys(shortIdMap);
+        if (ids.length === 0) return bot.sendMessage(msg.chat.id, "No accounts connected.");
         
-        let listText = "🟢 *Connected Clients:*\n";
-        active.forEach((num, i) => {
-            const status = antiMsgState[num] ? "🔒 LOCKED" : "✅ ACTIVE";
-            listText += `${i + 1}. +${num} [${status}]\n`;
+        let listText = "🔑 *Active Accounts:*\n\n";
+        ids.forEach((id) => {
+            const session = shortIdMap[id];
+            const phone = session.phone || "Connecting...";
+            const status = antiMsgState[phone] ? "🔒 LOCKED" : "⚡ READY";
+            listText += `🆔 \`${id}\` : +${phone} [${status}]\n`;
         });
         bot.sendMessage(msg.chat.id, listText, { parse_mode: 'Markdown' });
     });
 
-    // --- 4. GENERATE NUMBERS ---
+    // --- 4. GENERATE ---
     bot.onText(/\/generate (.+)/, (msg, match) => {
         const args = msg.text.split(' ');
         const code = args[1];
@@ -76,121 +78,114 @@ export function setupTelegramCommands(bot, clients, SESSIONS_DIR, startClient, m
             numbers.push(`${code}${Math.floor(100000000 + Math.random() * 900000000)}`);
         }
         fs.writeFileSync(NUMBERS_FILE, JSON.stringify(numbers, null, 2));
-        bot.sendMessage(msg.chat.id, `✅ Generated ${amount} random numbers.`);
+        bot.sendMessage(msg.chat.id, `✅ Generated ${amount} numbers.`);
     });
 
     // --- 5. SAVE VCF ---
     bot.onText(/\/save/, async (msg) => {
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(msg.chat.id, '❌ Please reply to a VCF file with /save');
-        }
-
-        const doc = msg.reply_to_message.document;
-        // Basic check for VCF extension
-        if (!doc.file_name.toLowerCase().endsWith('.vcf') && !doc.mime_type.includes('vcard')) {
-            return bot.sendMessage(msg.chat.id, '❌ This does not look like a VCF file.');
-        }
+        if (!msg.reply_to_message?.document) return bot.sendMessage(msg.chat.id, 'Reply to a VCF file.');
 
         try {
-            const fileLink = await bot.getFileLink(doc.file_id);
+            const fileLink = await bot.getFileLink(msg.reply_to_message.document.file_id);
             const response = await fetch(fileLink);
             const text = await response.text();
 
             fs.writeFileSync(VCF_FILE, text);
             const numbers = parseVcf(text);
-            
-            bot.sendMessage(msg.chat.id, `✅ VCF Saved!\nFound ${numbers.length} unique contacts.\nReady to /broadcast.`);
+            bot.sendMessage(msg.chat.id, `✅ VCF Loaded: ${numbers.length} contacts ready for Flash.`);
         } catch (e) {
-            bot.sendMessage(msg.chat.id, `Error saving VCF: ${e.message}`);
+            bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
         }
     });
 
-    // --- 6. BROADCAST / SEND (PARALLEL MODE) ---
-    const handleBroadcast = async (msg, isBroadcastCmd) => {
-        const chatId = msg.chat.id;
-        const activeClients = Object.values(clients);
+    // --- 6. DELETE NUMBERS (NEW) ---
+    bot.onText(/\/delnum/, (msg) => {
+        let deletedItems = [];
+
+        // Delete JSON List
+        if (fs.existsSync(NUMBERS_FILE)) {
+            fs.unlinkSync(NUMBERS_FILE);
+            deletedItems.push("Generated List");
+        }
+
+        // Delete VCF File
+        if (fs.existsSync(VCF_FILE)) {
+            fs.unlinkSync(VCF_FILE);
+            deletedItems.push("VCF Contacts");
+        }
+
+        if (deletedItems.length > 0) {
+            bot.sendMessage(msg.chat.id, `🗑️ Deleted successfully:\n- ${deletedItems.join('\n- ')}`);
+        } else {
+            bot.sendMessage(msg.chat.id, '⚠️ Database is already empty.');
+        }
+    });
+
+    // --- 7. FLASH BROADCAST ---
+    bot.onText(/\/broadcast (.+)/, async (msg, match) => {
+        if (!msg.reply_to_message?.text) return bot.sendMessage(msg.chat.id, '❌ Reply to a text message with /broadcast <id>');
         
-        if (activeClients.length === 0) return bot.sendMessage(chatId, '❌ No WhatsApp connected. Use /pair first.');
+        const targetId = match[1].trim();
+        const sessionData = shortIdMap[targetId];
 
-        // A. DIRECT MESSAGE (/send number text)
-        if (!msg.reply_to_message && !isBroadcastCmd) {
-            const directMatch = msg.text.match(/\/send\s+(\d+)\s+(.+)/);
-            if (directMatch) {
-                const targetNumber = directMatch[1];
-                const messageContent = directMatch[2];
-                const sock = activeClients[0]; 
-                
-                const senderPhone = jidNormalizedUser(sock.user?.id).split('@')[0];
-                if (antiMsgState[senderPhone]) return bot.sendMessage(chatId, `❌ Locked (AntiMsg ON).`);
+        if (!sessionData) return bot.sendMessage(msg.chat.id, `❌ Invalid ID: ${targetId}. Use /list to see IDs.`);
+        
+        const sock = clients[sessionData.folder];
+        if (!sock) return bot.sendMessage(msg.chat.id, '❌ Client not active. Wait for it to connect.');
 
-                try {
-                    await sock.sendMessage(`${targetNumber}@s.whatsapp.net`, { text: messageContent });
-                    bot.sendMessage(chatId, `✅ Sent to ${targetNumber}`);
-                } catch (e) {
-                    bot.sendMessage(chatId, `❌ Failed: ${e.message}`);
-                }
-                return;
-            }
+        // Get Numbers
+        let numbers = [];
+        let source = '';
+        if (fs.existsSync(VCF_FILE)) {
+            numbers = parseVcf(fs.readFileSync(VCF_FILE, 'utf-8'));
+            source = 'VCF';
+        } else if (fs.existsSync(NUMBERS_FILE)) {
+            numbers = JSON.parse(fs.readFileSync(NUMBERS_FILE));
+            source = 'JSON';
+        } else {
+            return bot.sendMessage(msg.chat.id, '❌ No numbers found.');
         }
 
-        // B. MASS BROADCAST (IMMEDIATE MODE)
-        if (msg.reply_to_message && msg.reply_to_message.text) {
-            let numbers = [];
-            let source = '';
+        bot.sendMessage(msg.chat.id, `⚡ FLASHING message to ${numbers.length} numbers using ${targetId}...`);
 
-            // 1. Try VCF
-            if (fs.existsSync(VCF_FILE)) {
-                const vcfContent = fs.readFileSync(VCF_FILE, 'utf-8');
-                numbers = parseVcf(vcfContent);
-                source = 'VCF File';
-            } 
-            // 2. Try JSON
-            else if (fs.existsSync(NUMBERS_FILE)) {
-                numbers = JSON.parse(fs.readFileSync(NUMBERS_FILE));
-                source = 'Random List';
-            } else {
-                return bot.sendMessage(chatId, '❌ No contact list found. Upload a .vcf with /save or use /generate.');
+        const messageContent = { text: msg.reply_to_message.text };
+        let successCount = 0;
+
+        const startTime = Date.now();
+        
+        // Instant Parallel Execution
+        const tasks = numbers.map(async (num) => {
+            try {
+                const jid = `${num}@s.whatsapp.net`;
+                await sock.sendMessage(jid, messageContent);
+                successCount++;
+            } catch (e) {
+                // Silent fail
             }
+        });
 
-            if (numbers.length === 0) return bot.sendMessage(chatId, '❌ List is empty.');
+        await Promise.all(tasks);
+        
+        const duration = (Date.now() - startTime) / 1000;
+        bot.sendMessage(msg.chat.id, `✅ Flash Complete in ${duration}s.\nSent Requests: ${successCount}`);
+    });
 
-            bot.sendMessage(chatId, `🚀 BLASTING message to ${numbers.length} numbers (Instant Mode)...`);
+    // --- 8. DIRECT SEND ---
+    bot.onText(/\/send/, async (msg) => {
+        if (msg.reply_to_message) return; 
+        
+        const directMatch = msg.text.match(/\/send\s+(\d+)\s+(.+)/);
+        if (!directMatch) return bot.sendMessage(msg.chat.id, 'Usage: /send <number> <msg>');
 
-            // --- PARALLEL EXECUTION LOGIC ---
-            // This maps every number to a sending task and fires them ALL AT ONCE.
-            const broadcastTasks = numbers.map(async (num, index) => {
-                // Round-robin client selection
-                const sock = activeClients[index % activeClients.length];
-                
-                // Skip if client is locked
-                const senderPhone = jidNormalizedUser(sock.user?.id).split('@')[0];
-                if (antiMsgState[senderPhone]) return { status: 'skipped', num };
+        const firstId = Object.keys(shortIdMap)[0];
+        if(!firstId) return bot.sendMessage(msg.chat.id, 'No clients.');
 
-                try {
-                    const jid = `${num}@s.whatsapp.net`;
-                    // Note: We SKIP 'onWhatsApp' check to make it instant.
-                    // If the number is invalid, it will just fail silently.
-                    await sock.sendMessage(jid, { text: msg.reply_to_message.text });
-                    return { status: 'sent', num };
-                } catch (e) {
-                    return { status: 'failed', num };
-                }
-            });
-
-            // Wait for all to finish (happens very fast)
-            const results = await Promise.allSettled(broadcastTasks);
-
-            // Calculate stats
-            const sentCount = results.filter(r => r.status === 'fulfilled' && r.value.status === 'sent').length;
-            const failCount = results.length - sentCount;
-
-            bot.sendMessage(chatId, `✅ Broadcast Done.\nSent: ${sentCount}\nFailed/Skipped: ${failCount}`);
-            return;
+        const sock = clients[shortIdMap[firstId].folder];
+        try {
+            await sock.sendMessage(`${directMatch[1]}@s.whatsapp.net`, { text: directMatch[2] });
+            bot.sendMessage(msg.chat.id, '✅ Sent.');
+        } catch (e) {
+            bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`);
         }
-
-        bot.sendMessage(chatId, 'Usage:\nReply to a message with /broadcast to send to all instantly.');
-    };
-
-    bot.onText(/\/send/, (msg) => handleBroadcast(msg, false));
-    bot.onText(/\/broadcast/, (msg) => handleBroadcast(msg, true));
+    });
 }

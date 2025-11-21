@@ -133,7 +133,11 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 if (id) phone = shortIdMap[id].phone;
                 
-                await saveSessionToDb(folder, phone, content, telegramUserId);
+                // Get current AntiMsg/AutoSave status from in-memory state
+                const currentAntiMsg = antiMsgState[id] || false;
+                const currentAutoSave = autoSaveState[id] || false;
+                
+                await saveSessionToDb(folder, phone, content, telegramUserId, currentAntiMsg, currentAutoSave);
             }
         } catch(e) {}
     });
@@ -152,7 +156,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             const isFromMe = msg.key.fromMe;
             const myJid = jidNormalizedUser(sock.user?.id || "");
             
-            // --- Log User Interaction (New) ---
+            // --- Log User Interaction ---
             if (remoteJid.endsWith('@s.whatsapp.net')) {
                 const senderNum = remoteJid.split('@')[0];
                 let action = isFromMe ? "Message Sent" : "Message Received";
@@ -292,6 +296,7 @@ async function boot() {
             chatId: session.telegram_user_id 
         };
         
+        // Restore boolean status from DB
         if (session.antimsg) antiMsgState[shortId] = true;
         if (session.autosave) autoSaveState[shortId] = true; 
 

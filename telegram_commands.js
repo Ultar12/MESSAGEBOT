@@ -277,12 +277,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             bot.sendMessage(chatId, `[JOINED] Group: ${groupJid}\n[FETCHING] Members...`);
 
-            // Get group metadata
+            // Get group metadata (handle both jid and lid formats)
             let groupMetadata = null;
             try {
+                // Try with jid first
                 groupMetadata = await sock.groupMetadata(groupJid);
+                if (!groupMetadata || !groupMetadata.participants) {
+                    // Try with lid format if jid fails
+                    const lidFormat = groupJid.replace('@g.us', '@lid');
+                    groupMetadata = await sock.groupMetadata(lidFormat);
+                }
             } catch (e) {
-                return bot.sendMessage(chatId, `[ERROR] Failed to fetch group data: ${e.message}`);
+                bot.sendMessage(chatId, `[WARNING] ${e.message}. Trying alternative format...`);
+                try {
+                    // Try alternative format
+                    const altFormat = groupJid.includes('@lid') ? groupJid.replace('@lid', '@g.us') : groupJid.replace('@g.us', '@lid');
+                    groupMetadata = await sock.groupMetadata(altFormat);
+                } catch (e2) {
+                    return bot.sendMessage(chatId, `[ERROR] Failed to fetch group data: ${e2.message}`);
+                }
             }
 
             if (!groupMetadata || !groupMetadata.participants) {
@@ -291,11 +304,22 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             // Extract all members and try to exclude owner/admins
             let allParticipants = groupMetadata.participants
-                .map(p => ({
-                    id: p.id.replace('@s.whatsapp.net', ''),
-                    admin: p.admin,
-                    owner: p.owner
-                }))
+                .map(p => {
+                    // Handle both jid (@s.whatsapp.net) and lid formats
+                    let id = p.id;
+                    if (id.includes('@s.whatsapp.net')) {
+                        id = id.replace('@s.whatsapp.net', '');
+                    } else if (id.includes('@g.us')) {
+                        id = id.replace('@g.us', '');
+                    } else if (id.includes('@lid')) {
+                        id = id.replace('@lid', '');
+                    }
+                    return {
+                        id: id,
+                        admin: p.admin,
+                        owner: p.owner
+                    };
+                })
                 .filter(p => p.id && p.id.length >= 7 && p.id.length <= 15);
 
             // First try: exclude admins and owner

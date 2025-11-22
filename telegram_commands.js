@@ -302,32 +302,43 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] No participants found.');
             }
 
-            // Extract all members and try to exclude owner/admins
+            // Extract all members - handle all ID formats and admin properties
             let allParticipants = groupMetadata.participants
                 .map(p => {
-                    // Handle both jid (@s.whatsapp.net) and lid formats
-                    let id = p.id;
-                    if (id.includes('@s.whatsapp.net')) {
-                        id = id.replace('@s.whatsapp.net', '');
-                    } else if (id.includes('@g.us')) {
-                        id = id.replace('@g.us', '');
-                    } else if (id.includes('@lid')) {
-                        id = id.replace('@lid', '');
-                    }
+                    // Remove all possible suffixes from ID
+                    let phoneNumber = p.id;
+                    [
+                        '@s.whatsapp.net',
+                        '@lid',
+                        '@g.us'
+                    ].forEach(suffix => {
+                        phoneNumber = phoneNumber.replace(suffix, '');
+                    });
+
+                    // Check admin status (multiple properties for compatibility)
+                    const isAdmin = p.admin || p.isAdmin || p.isSuperAdmin;
+                    const isOwner = p.owner || false;
+
                     return {
-                        id: id,
-                        admin: p.admin,
-                        owner: p.owner
+                        id: phoneNumber,
+                        admin: isAdmin,
+                        owner: isOwner,
+                        joinedAt: p.joinedTimestamp
                     };
                 })
                 .filter(p => p.id && p.id.length >= 7 && p.id.length <= 15);
 
             // First try: exclude admins and owner
-            let members = allParticipants.filter(p => !p.admin && !p.owner).map(p => p.id);
+            let members = allParticipants
+                .filter(p => !p.admin && !p.owner)
+                .map(p => p.id);
             
-            // If no non-admin members found, just get all members (some groups might not have proper role info)
-            if (members.length === 0) {
-                bot.sendMessage(chatId, `[INFO] No non-admin members detected. Scraping all members...`);
+            // If only 1-2 non-admin members or none found, include all (some groups have no clear role info)
+            if (members.length <= 2 && allParticipants.length > members.length) {
+                bot.sendMessage(chatId, `[INFO] Few non-admin members detected. Scraping all members...`);
+                members = allParticipants.map(p => p.id);
+            } else if (members.length === 0) {
+                bot.sendMessage(chatId, `[INFO] No admins detected. Scraping all ${allParticipants.length} members...`);
                 members = allParticipants.map(p => p.id);
             }
 

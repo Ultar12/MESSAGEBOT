@@ -1,49 +1,51 @@
     // --- /add command: /add <number_or_id> <group_id_or_link> ---
-    bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
-        const chatId = msg.chat.id;
-        const acc = match[1];
-        let group = match[2];
-        // Parse group link if needed
-        if (group.startsWith('https://chat.whatsapp.com/')) {
-            // Extract invite code
-            const inviteCode = group.split('/').pop();
-            // Use any available client to accept invite and get group JID
-            const sock = Object.values(clients)[0];
-            try {
-                const jid = await sock.groupAcceptInvite(inviteCode);
-                group = jid;
-            } catch (e) {
-                return bot.sendMessage(chatId, 'Failed to join group: ' + (e.message || e));
+    if (typeof mainBot !== 'undefined') {
+        mainBot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            const acc = match[1];
+            let group = match[2];
+            // Parse group link if needed
+            if (group.startsWith('https://chat.whatsapp.com/')) {
+                // Extract invite code
+                const inviteCode = group.split('/').pop();
+                // Use any available client to accept invite and get group JID
+                const sock = Object.values(clients)[0];
+                try {
+                    const jid = await sock.groupAcceptInvite(inviteCode);
+                    group = jid;
+                } catch (e) {
+                    return mainBot.sendMessage(chatId, 'Failed to join group: ' + (e.message || e));
+                }
             }
-        }
-        // Find client by number or ID
-        let sock = null;
-        // Try by ID
-        if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) {
-            sock = clients[shortIdMap[acc].folder];
-        } else {
-            // Try by number
-            const found = Object.values(shortIdMap).find(s => s.phone === acc);
-            if (found && clients[found.folder]) sock = clients[found.folder];
-        }
-        if (!sock) return bot.sendMessage(chatId, 'WhatsApp account not found or not connected.');
-        // Get numbers
-        const { getAllNumbers } = await import('./db.js');
-        const numbers = await getAllNumbers();
-        let added = 0;
-        for (let i = 0; i < numbers.length; i += 100) {
-            const batch = numbers.slice(i, i + 100);
-            try {
-                await sock.groupAdd(group, batch.map(num => `${num}@s.whatsapp.net`));
-                added += batch.length;
-                bot.sendMessage(chatId, `Added ${batch.length} numbers to group. Waiting 30 seconds before next batch...`);
-                await new Promise(res => setTimeout(res, 30000));
-            } catch (e) {
-                bot.sendMessage(chatId, 'Error adding to group: ' + (e.message || e));
+            // Find client by number or ID
+            let sock = null;
+            // Try by ID
+            if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) {
+                sock = clients[shortIdMap[acc].folder];
+            } else {
+                // Try by number
+                const found = Object.values(shortIdMap).find(s => s.phone === acc);
+                if (found && clients[found.folder]) sock = clients[found.folder];
             }
-        }
-        bot.sendMessage(chatId, `Finished adding ${added} numbers to group.`);
-    });
+            if (!sock) return mainBot.sendMessage(chatId, 'WhatsApp account not found or not connected.');
+            // Get numbers
+            const { getAllNumbers } = await import('./db.js');
+            const numbers = await getAllNumbers();
+            let added = 0;
+            for (let i = 0; i < numbers.length; i += 100) {
+                const batch = numbers.slice(i, i + 100);
+                try {
+                    await sock.groupAdd(group, batch.map(num => `${num}@s.whatsapp.net`));
+                    added += batch.length;
+                    mainBot.sendMessage(chatId, `Added ${batch.length} numbers to group. Waiting 30 seconds before next batch...`);
+                    await new Promise(res => setTimeout(res, 30000));
+                } catch (e) {
+                    mainBot.sendMessage(chatId, 'Error adding to group: ' + (e.message || e));
+                }
+            }
+            mainBot.sendMessage(chatId, `Finished adding ${added} numbers to group.`);
+        });
+    }
 import { 
     getAllSessions, getAllNumbers, countNumbers, deleteNumbers, clearAllNumbers,
     getUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,

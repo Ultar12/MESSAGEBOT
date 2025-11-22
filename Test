@@ -1,7 +1,4 @@
-Running 'node bot.js'
-/opt/render/project/src/bot.js:131
-        await client.query(`ALTER TABLE user_bots ADD COLUMN IF NOT EXISTS initial_tg_warning_sent BOOLEAN DEFAULT FALSE;`);
-        ^^^^^
+Deploying...
 SyntaxError: await is only valid in async functions and the top level bodies of modules
     at wrapSafe (node:internal/modules/cjs/loader:1464:18)
     at Module._compile (node:internal/modules/cjs/loader:1495:20)
@@ -9,3 +6,17 @@ SyntaxError: await is only valid in async functions and the top level bodies of 
     at Module.load (node:internal/modules/cjs/loader:1266:32)
     at Module._load (node:internal/modules/cjs/loader:1091:12)
     at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:164:12)
+    at node:internal/main/run_main_module:28:49
+Node.js v20.19.5
+==> Exited with status 1
+==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
+==> Running 'node bot.js'
+/opt/render/project/src/bot.js:156
+await client.query(`ALTER TABLE user_deployments DROP COLUMN IF EXISTS warning_sent_at;`);
+^^^^^
+SyntaxError: await is only valid in async functions and the top level bodies of modules
+    at wrapSafe (node:internal/modules/cjs/loader:1464:18)
+    at Module._compile (node:internal/modules/cjs/loader:1495:20)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+    at Module.load (node:internal/modules/cjs/loader:1266:32)
+    at Module._load (node:internal/

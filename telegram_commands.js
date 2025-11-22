@@ -43,7 +43,7 @@ function getDuration(startDate) {
     return `${days}d ${hours}h ${minutes}m`;
 }
 
-// --- EXACT OLD SAVE LOGIC ---
+// --- OLD SAVE LOGIC (STRICT) ---
 function parseVcf(vcfContent) {
     const numbers = new Set();
     const lines = vcfContent.split(/\r?\n/);
@@ -78,6 +78,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
             const batch = numbers.slice(i, i + BATCH_SIZE);
+            
             const batchPromises = batch.map(async (num) => {
                 try {
                     const jid = `${num}@s.whatsapp.net`;
@@ -210,7 +211,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         sendMenu(bot, chatId, `[DONE] Added ${addedCount}.`);
     });
 
-    // --- SAVE COMMAND (RESTORED EXACTLY) ---
+    // Save - OLD LOGIC (Iterative)
     bot.onText(/\/save/, async (msg) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         
@@ -242,14 +243,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(msg.chat.id, `[SCANNING] ${rawNumbers.length} numbers (One by One)...`);
 
             const validNumbers = [];
-            
-            // EXACT OLD LOGIC: Loop one by one
             for (const num of rawNumbers) {
                 try {
                     const [res] = await sock.onWhatsApp(`${num}@s.whatsapp.net`);
                     if (res?.exists) validNumbers.push(res.jid.split('@')[0]);
                 } catch (e) {}
-                await delay(100); // Small delay to prevent overload
+                await delay(100); 
             }
 
             await addNumbersToDb(validNumbers);
@@ -271,7 +270,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const caption = msg.caption || "";
         if (caption.startsWith('/save')) {
-            // Re-use logic above by triggering manual check, or just copy paste to ensure it works
             const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
             if (!firstId) return bot.sendMessage(msg.chat.id, '[ERROR] Pair an account.');
             const sock = clients[shortIdMap[firstId].folder];
@@ -349,6 +347,21 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 bot.sendMessage(chatId, 'Enter WhatsApp number:', { reply_markup: { force_reply: true } });
                 break;
 
+            case "My Account":
+                const mySessions = await getAllSessions(userId);
+                let accMsg = `[MY ACCOUNTS]\n\n`;
+                if (mySessions.length === 0) accMsg += "No active accounts.";
+                else {
+                    mySessions.forEach(s => {
+                         const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
+                         const dur = getDuration(s.connected_at);
+                         // Added backticks for copyable ID
+                         if(id) accMsg += `ID: \`${id}\`\nNUM: +${s.phone}\nTIME: ${dur}\n\n`;
+                    });
+                }
+                sendMenu(bot, chatId, accMsg);
+                break;
+
             case "List All":
                 if (!isUserAdmin) return;
                 const allSessions = await getAllSessions(null);
@@ -359,14 +372,14 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 else {
                     for (const s of allSessions) {
                         let id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
-                        if (!id) id = await getShortId(s.session_id); // Fetch ID from DB if missing in RAM
+                        if (!id) id = await getShortId(s.session_id); 
                         
-                        // Only list if we found an ID
                         if (id) {
                             const dur = getDuration(s.connected_at);
                             const status = clients[s.session_id] ? '[ON]' : '[OFF]';
                             const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
-                            list += `${status} ${id} | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
+                            // Added backticks around ${id} to make it copyable
+                            list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
                         }
                     }
                 }
@@ -381,7 +394,28 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 bot.sendMessage(chatId, `[BROADCAST]\nID: ${activeIds[0]}\n\nEnter message:`, { reply_markup: { force_reply: true } });
                 break;
 
-            // ... other cases
+            case "Dashboard":
+                const user = await getUser(userId);
+                sendMenu(bot, chatId, `POINTS: ${user.points}`);
+                break;
+
+            case "Withdraw":
+                const wUser = await getUser(userId);
+                if (!wUser.bank_name) {
+                    userState[chatId] = 'WAITING_BANK_DETAILS';
+                    bot.sendMessage(chatId, `Send: Bank | Account | Name`, { reply_markup: { force_reply: true } });
+                } else {
+                    userState[chatId] = 'WAITING_WITHDRAW_AMOUNT';
+                    bot.sendMessage(chatId, `Enter amount:`, { reply_markup: { force_reply: true } });
+                }
+                break;
+
+            case "Clear Contact List":
+                if(isUserAdmin) {
+                    await clearAllNumbers();
+                    sendMenu(bot, chatId, "[CLEARED] Database.");
+                }
+                break;
         }
     });
 }

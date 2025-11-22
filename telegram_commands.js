@@ -48,60 +48,57 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- HELPER: VERIFY & SAVE ---
     async function verifyAndSaveNumbers(chatId, numbersRaw) {
-        // 1. Get Active Bot for Checking
         const activeId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
         if (!activeId) {
-            return bot.sendMessage(chatId, '⚠️ No connected bot available to verify WhatsApp numbers.');
+            return bot.sendMessage(chatId, '⚠️ No connected bot available to verify numbers.');
         }
         const sock = clients[shortIdMap[activeId].folder];
 
-        // 2. Clean & Unique
         const uniqueRaw = [...new Set(numbersRaw)];
-        bot.sendMessage(chatId, `🔍 Verifying ${uniqueRaw.length} numbers on WhatsApp...`);
+        bot.sendMessage(chatId, `🔍 Verifying ${uniqueRaw.length} numbers...`);
 
         const validNumbers = [];
-        const BATCH_SIZE = 50; // Check 50 at a time
+        const BATCH_SIZE = 50;
 
         for (let i = 0; i < uniqueRaw.length; i += BATCH_SIZE) {
             const batch = uniqueRaw.slice(i, i + BATCH_SIZE);
             const jidsToCheck = batch.map(n => `${n}@s.whatsapp.net`);
-            
             try {
                 const results = await sock.onWhatsApp(jidsToCheck);
                 results.forEach(res => {
                     if (res.exists) validNumbers.push(res.jid.split('@')[0]);
                 });
-                await delay(500); // Brief pause for safety
-            } catch (e) {
-                console.log('Verification error on batch:', e.message);
-            }
+                await delay(500); 
+            } catch (e) { console.log('Verification error:', e.message); }
         }
 
         if (validNumbers.length > 0) {
             await addNumbersToDb(validNumbers);
-            sendMenu(bot, chatId, `✅ **SAVE COMPLETE**\n\n📥 Input: ${uniqueRaw.length}\n✅ Valid WA: ${validNumbers.length}\n🗑️ Invalid: ${uniqueRaw.length - validNumbers.length}`);
+            sendMenu(bot, chatId, `✅ **SAVED**\n\n📥 Input: ${uniqueRaw.length}\n✅ Valid: ${validNumbers.length}`);
         } else {
-            sendMenu(bot, chatId, `❌ No valid WhatsApp numbers found.`);
+            sendMenu(bot, chatId, `❌ No valid numbers found.`);
         }
     }
 
-    // --- FLASH BROADCAST ---
-    async function executeBroadcast(chatId, targetId, rawMessage) {
+    // --- FLASH BROADCAST ENGINE ---
+    async function executeBroadcast(chatId, targetId, contentObj) {
         const sessionData = shortIdMap[targetId];
         if (!sessionData || !clients[sessionData.folder]) {
-            return sendMenu(bot, chatId, 'Client disconnected or invalid ID.');
+            return sendMenu(bot, chatId, '❌ Client disconnected or invalid ID.');
         }
         
         const sock = clients[sessionData.folder];
         const numbers = await getAllNumbers();
-        if (numbers.length === 0) return sendMenu(bot, chatId, 'Contact list is empty.');
+        if (numbers.length === 0) return sendMenu(bot, chatId, '❌ Contact list is empty.');
 
-        bot.sendMessage(chatId, `🚀 FLASHING ${numbers.length} numbers...\nID: ${targetId}`);
+        bot.sendMessage(chatId, `🚀 **FLASHING** ${numbers.length} recipients...\nBot ID: ${targetId}\nType: ${contentObj.type.toUpperCase()}`);
         
         let successCount = 0;
         const startTime = Date.now();
         const successfulNumbers = [];
-        const BATCH_SIZE = 250; 
+        
+        // Lower batch size for media to prevent memory leaks/socket timeouts
+        const BATCH_SIZE = contentObj.type === 'text' ? 250 : 50; 
         
         for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
             const batch = numbers.slice(i, i + BATCH_SIZE);
@@ -109,40 +106,124 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const batchPromises = batch.map(async (num) => {
                 try {
                     const jid = `${num}@s.whatsapp.net`;
+                    
+                    // Anti-Ban: Add invisible random tag + Ref ID
                     const antiBanTag = `\n\n` + '\u200B'.repeat(Math.floor(Math.random() * 5) + 1) + `Ref: ${Math.random().toString(36).substring(7)}`;
-                    const finalMsg = rawMessage + antiBanTag;
+                    
+                    if (contentObj.type === 'text') {
+                        await sock.sendMessage(jid, { text: contentObj.text + antiBanTag });
+                    } 
+                    else if (contentObj.type === 'image') {
+                        await sock.sendMessage(jid, { 
+                            image: contentObj.buffer, 
+                            caption: (contentObj.caption || "") + antiBanTag 
+                        });
+                    } 
+                    else if (contentObj.type === 'video') {
+                        await sock.sendMessage(jid, { 
+                            video: contentObj.buffer, 
+                            caption: (contentObj.caption || "") + antiBanTag 
+                        });
+                    }
 
-                    await sock.sendMessage(jid, { text: finalMsg });
                     successfulNumbers.push(num);
                     successCount++;
-                } catch (e) {}
+                } catch (e) {
+                    // Fail silently for speed
+                }
             });
 
             await Promise.all(batchPromises);
-            await delay(1000);
+            
+            // Brief pause for media to allow buffer flush
+            if (contentObj.type !== 'text') await delay(1500); 
+            else await delay(1000);
         }
 
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
         if (successfulNumbers.length > 0) await deleteNumbers(successfulNumbers);
 
         sendMenu(bot, chatId, 
-            `✅ **DONE**\n` +
+            `✅ **BROADCAST DONE**\n` +
             `⏱️ ${duration}s\n` +
             `📤 Sent: ${successCount}\n` +
-            `🗑️ Cleared DB`
+            `🗑️ DB Cleared`
         );
     }
 
-    // --- COMMANDS ---
+    // --- SLASH COMMANDS ---
 
-    // 1. /add <acc_id_or_number> <group_link>
+    // 1. /broadcast [id] (Handles Replies & Text)
+    bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+        let inputId = match[1] ? match[1].trim() : null;
+
+        // 1. Determine Target Bot ID
+        const activeIds = Object.keys(shortIdMap).filter(id => clients[shortIdMap[id].folder]);
+        if (activeIds.length === 0) return sendMenu(bot, chatId, "❌ No active bots found.");
+        
+        // If inputId is provided, use it. Otherwise use first active.
+        // If the user typed "/broadcast Hello", we need to check if "Hello" is an ID or message.
+        // Simple heuristic: If it's a reply, the text is the ID. If not, the text is the message.
+        
+        let targetId = activeIds[0];
+        let contentObj = null;
+
+        // --- SCENARIO A: REPLYING TO A MESSAGE (Media or Text) ---
+        if (msg.reply_to_message) {
+            // If user typed "/broadcast 5x7zq", use that ID. If just "/broadcast", use default.
+            if (inputId && shortIdMap[inputId]) targetId = inputId;
+
+            const reply = msg.reply_to_message;
+
+            if (reply.text) {
+                contentObj = { type: 'text', text: reply.text };
+            } 
+            else if (reply.photo) {
+                bot.sendMessage(chatId, '📥 Downloading Image...');
+                const fileId = reply.photo[reply.photo.length - 1].file_id; // Get largest
+                const url = await bot.getFileLink(fileId);
+                const buffer = await (await fetch(url)).buffer();
+                contentObj = { type: 'image', buffer: buffer, caption: reply.caption || "" };
+            } 
+            else if (reply.video) {
+                bot.sendMessage(chatId, '📥 Downloading Video...');
+                const fileId = reply.video.file_id;
+                const url = await bot.getFileLink(fileId);
+                const buffer = await (await fetch(url)).buffer();
+                contentObj = { type: 'video', buffer: buffer, caption: reply.caption || "" };
+            }
+            else {
+                return bot.sendMessage(chatId, "❌ Unsupported media type in reply.");
+            }
+        } 
+        // --- SCENARIO B: DIRECT COMMAND (Text Only) ---
+        else {
+            if (inputId) {
+                // User typed: /broadcast Hello World
+                contentObj = { type: 'text', text: inputId };
+            } else {
+                // User typed: /broadcast (trigger interactive mode)
+                userState[chatId] = 'WAITING_BROADCAST_MSG';
+                userState[chatId + '_target'] = targetId;
+                return bot.sendMessage(chatId, `📢 **BROADCAST**\nUsing Bot ID: \`${targetId}\`\n\nEnter your message:`, { reply_markup: { force_reply: true } });
+            }
+        }
+
+        // Execute if we have content
+        if (contentObj) {
+            executeBroadcast(chatId, targetId, contentObj);
+        }
+    });
+
+    // 2. /add <acc> <group>
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         const acc = match[1];
         let groupLinkOrId = match[2];
         
-        // Find Client
         let sock = null;
         if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) {
             sock = clients[shortIdMap[acc].folder];
@@ -151,103 +232,59 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             if (found && clients[found.folder]) sock = clients[found.folder];
         }
 
-        if (!sock) return bot.sendMessage(chatId, '❌ Account not found or disconnected.');
+        if (!sock) return bot.sendMessage(chatId, '❌ Account not found/disconnected.');
 
-        // Resolve Group ID
         let groupJid = groupLinkOrId;
         if (groupLinkOrId.includes('chat.whatsapp.com')) {
             try {
                 const code = groupLinkOrId.split('chat.whatsapp.com/')[1];
                 groupJid = await sock.groupAcceptInvite(code);
-                bot.sendMessage(chatId, `✅ Joined group successfully! ID: ${groupJid}`);
+                bot.sendMessage(chatId, `✅ Joined group! ID: ${groupJid}`);
             } catch (e) {
-                return bot.sendMessage(chatId, `❌ Failed to join group: ${e.message}`);
+                return bot.sendMessage(chatId, `❌ Failed to join: ${e.message}`);
             }
         }
 
-        // Add Numbers
         const numbers = await getAllNumbers();
-        if (numbers.length === 0) return bot.sendMessage(chatId, '❌ Database is empty.');
+        if (numbers.length === 0) return bot.sendMessage(chatId, '❌ Database empty.');
 
-        bot.sendMessage(chatId, `⏳ Starting Batch Add (${numbers.length} users)...`);
+        bot.sendMessage(chatId, `⏳ Adding ${numbers.length} users (100 per 30s)...`);
         
         let addedCount = 0;
-        // Batch 100 numbers
         for (let i = 0; i < numbers.length; i += 100) {
             const batch = numbers.slice(i, i + 100);
             const participants = batch.map(n => `${n}@s.whatsapp.net`);
-            
             try {
                 await sock.groupParticipantsUpdate(groupJid, participants, "add");
                 addedCount += batch.length;
-                bot.sendMessage(chatId, `✅ Batch ${Math.floor(i/100)+1}: Added ${batch.length} members.`);
-                
-                // 30 Second Pause (Anti-Ban)
-                if (i + 100 < numbers.length) {
-                    bot.sendMessage(chatId, `⏳ Waiting 30s to prevent ban...`);
-                    await delay(30000);
-                }
+                bot.sendMessage(chatId, `✅ Added batch ${Math.floor(i/100)+1}`);
+                if (i + 100 < numbers.length) await delay(30000);
             } catch (e) {
-                bot.sendMessage(chatId, `⚠️ Error on batch ${Math.floor(i/100)+1}: ${e.message}`);
+                bot.sendMessage(chatId, `⚠️ Error batch ${Math.floor(i/100)+1}: ${e.message}`);
             }
         }
-        
-        sendMenu(bot, chatId, `🎉 Finished! Added ${addedCount} numbers to group.`);
+        sendMenu(bot, chatId, `🎉 Done! Added ${addedCount} members.`);
     });
 
-    // 2. /save (via Document or Reply)
-    bot.on('document', async (msg) => {
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
-        
-        const caption = msg.caption || "";
-        const fileName = msg.document.file_name || "";
-
-        if (caption.startsWith('/save') || fileName.endsWith('.vcf') || fileName.endsWith('.txt')) {
-            bot.sendMessage(msg.chat.id, '📂 Downloading & Extracting...');
-            try {
-                const fileUrl = await bot.getFileLink(msg.document.file_id);
-                const res = await fetch(fileUrl);
-                const text = await res.text();
-                
-                const extracted = text.match(/[0-9]{10,15}/g);
-                if (!extracted || extracted.length === 0) {
-                    return bot.sendMessage(msg.chat.id, '❌ No numbers found.');
-                }
-                await verifyAndSaveNumbers(msg.chat.id, extracted);
-            } catch (e) {
-                bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
-            }
-        }
-    });
-
-    // 3. /save (via text reply)
+    // 3. /save (Text Reply)
     bot.onText(/\/save/, async (msg) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         if (msg.reply_to_message && msg.reply_to_message.document) {
-            // Reuse document logic manually if needed, or just let the doc handler catch it if caption was missing
-            // This handles VCFs replied to with /save that didn't have caption
-            bot.sendMessage(msg.chat.id, '📂 Processing replied file...');
+            bot.sendMessage(msg.chat.id, '📂 Processing file...');
             try {
                  const fileUrl = await bot.getFileLink(msg.reply_to_message.document.file_id);
                  const res = await fetch(fileUrl);
                  const text = await res.text();
                  const extracted = text.match(/[0-9]{10,15}/g);
                  if (extracted) await verifyAndSaveNumbers(msg.chat.id, extracted);
-            } catch (e) {
-                bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
-            }
+            } catch (e) { bot.sendMessage(msg.chat.id, `Error: ${e.message}`); }
         } else if (msg.reply_to_message && msg.reply_to_message.text) {
              const extracted = msg.reply_to_message.text.match(/[0-9]{10,15}/g);
              if (extracted) await verifyAndSaveNumbers(msg.chat.id, extracted);
         }
     });
 
-    // 4. Standard Listeners
-    bot.onText(/\/start/, (msg) => {
-        userState[msg.chat.id] = null;
-        sendMenu(bot, msg.chat.id, 'Welcome to Ultarbot Pro.');
-    });
-
+    // 4. /antimsg
     bot.onText(/\/antimsg\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const id = match[1].trim();
@@ -259,6 +296,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+    // 5. /start
+    bot.onText(/\/start/, (msg) => {
+        userState[msg.chat.id] = null;
+        sendMenu(bot, msg.chat.id, 'Welcome to Ultarbot Pro.');
+    });
+
+    // --- MESSAGE HANDLER (Menu Buttons & Inputs) ---
     bot.on('message', async (msg) => {
         if (!msg.text || msg.text.startsWith('/')) return;
         const chatId = msg.chat.id;
@@ -266,6 +310,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const userId = chatId.toString();
         const isUserAdmin = (userId === ADMIN_ID);
 
+        // State: Pairing
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
             if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
@@ -276,36 +321,39 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return;
         }
         
+        // State: Broadcast (from Button)
         if (userState[chatId] === 'WAITING_BROADCAST_MSG') {
             const targetId = userState[chatId + '_target'];
             userState[chatId] = null;
-            executeBroadcast(chatId, targetId, text);
+            executeBroadcast(chatId, targetId, { type: 'text', text: text }); // Text only via this input
             return;
         }
 
+        // State: Bank
         if (userState[chatId] === 'WAITING_BANK_DETAILS') {
             const parts = text.split('|');
             if (parts.length !== 3) return sendMenu(bot, chatId, 'Use: Bank | Account | Name');
             await updateBank(userId, parts[0].trim(), parts[1].trim(), parts[2].trim());
             userState[chatId] = null;
-            sendMenu(bot, chatId, '[SUCCESS] Bank details saved.');
+            sendMenu(bot, chatId, '✅ Bank saved.');
             return;
         }
 
+        // State: Withdraw
         if (userState[chatId] === 'WAITING_WITHDRAW_AMOUNT') {
             const amount = parseInt(text);
             const user = await getUser(userId);
-            if (isNaN(amount) || amount < 1000) return sendMenu(bot, chatId, `Min withdrawal: 1000 pts.`);
+            if (isNaN(amount) || amount < 1000) return sendMenu(bot, chatId, `Min 1000 pts.`);
             if (user.points < amount) return sendMenu(bot, chatId, `Insufficient balance.`);
-            
             const ngnValue = amount * 0.6;
             const wid = await createWithdrawal(userId, amount, ngnValue);
             notificationBot.sendMessage(ADMIN_ID, `[WITHDRAWAL] ID: ${wid}\nUser: ${userId}\nAmt: NGN ${ngnValue}`);
             userState[chatId] = null;
-            sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${wid} submitted.`);
+            sendMenu(bot, chatId, `✅ Request #${wid} sent.`);
             return;
         }
 
+        // --- BUTTONS ---
         switch (text) {
             case "Connect Account":
                 userState[chatId] = 'WAITING_PAIR';
@@ -320,7 +368,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     mySessions.forEach(s => {
                          const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
                          const dur = getDuration(s.connected_at);
-                         if(id) accMsg += `🆔 \`${id}\`\n📞 +${s.phone}\n⏳ ${dur}\n\n`;
+                         if(id) accMsg += `ID: \`${id}\`\nNUM: +${s.phone}\n⏳ ${dur}\n\n`;
                     });
                 }
                 sendMenu(bot, chatId, accMsg);
@@ -372,6 +420,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     sendMenu(bot, chatId, "🗑️ Database cleared.");
                 }
                 break;
+        }
+    });
+
+    // Document handler (Direct /save with caption)
+    bot.on('document', async (msg) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const caption = msg.caption || "";
+        if (caption.startsWith('/save')) {
+            bot.sendMessage(msg.chat.id, '📂 Extracting numbers...');
+            try {
+                const fileUrl = await bot.getFileLink(msg.document.file_id);
+                const res = await fetch(fileUrl);
+                const text = await res.text();
+                const extracted = text.match(/[0-9]{10,15}/g);
+                if (extracted) await verifyAndSaveNumbers(msg.chat.id, extracted);
+                else bot.sendMessage(msg.chat.id, '❌ No numbers found.');
+            } catch (e) {
+                bot.sendMessage(msg.chat.id, `Error: ${e.message}`);
+            }
         }
     });
 }

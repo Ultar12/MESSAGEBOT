@@ -565,10 +565,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         try {
             // Check if input is account ID or phone number
             let targetJid = numberOrId;
+            let displayNumber = numberOrId;
             
             // If it's an account ID, get the phone number
             if (shortIdMap[numberOrId]) {
                 targetJid = `${shortIdMap[numberOrId].phone}@s.whatsapp.net`;
+                displayNumber = shortIdMap[numberOrId].phone;
             } else {
                 // Assume it's a phone number
                 const cleanNum = numberOrId.replace(/[^0-9]/g, '');
@@ -576,29 +578,67 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     return bot.sendMessage(chatId, '[ERROR] Invalid number format.');
                 }
                 targetJid = `${cleanNum}@s.whatsapp.net`;
+                displayNumber = cleanNum;
             }
 
-            bot.sendMessage(chatId, `[FETCHING] Profile picture for ${targetJid.split('@')[0]}...`);
+            bot.sendMessage(chatId, `[FETCHING] Profile picture for +${displayNumber}...`);
 
-            // Get profile picture
-            const picUrl = await sock.profilePictureUrl(targetJid);
+            // Try to get profile picture with different privacy levels
+            let picUrl = null;
+            
+            try {
+                // Try getting the picture URL
+                picUrl = await sock.profilePictureUrl(targetJid);
+            } catch (picError) {
+                // If we get authorization error, provide fallback info
+                if (picError.message.includes('401') || picError.message.includes('403') || picError.message.includes('not authorized')) {
+                    bot.sendMessage(chatId, `[PRIVACY] +${displayNumber} has restricted who can view their profile picture.\n[ALTERNATIVES] Try:\n1. Message them first\n2. Add to group\n3. Use a closer contact account`);
+                    
+                    // Try to get other info about the contact
+                    try {
+                        const [result] = await sock.onWhatsApp(targetJid);
+                        if (result && result.exists) {
+                            return sendMenu(bot, chatId, `[INFO]\n✅ Number exists on WhatsApp\n❌ Profile picture is private\nNumber: +${displayNumber}`);
+                        }
+                    } catch (e) {}
+                    
+                    return;
+                } else {
+                    throw picError;
+                }
+            }
 
             if (!picUrl) {
-                return bot.sendMessage(chatId, `[INFO] No profile picture set for +${targetJid.split('@')[0]}`);
+                return bot.sendMessage(chatId, `[INFO] No profile picture set for +${displayNumber}`);
             }
 
             // Download and send the picture
-            const response = await fetch(picUrl);
-            const buffer = await response.buffer();
+            try {
+                const response = await fetch(picUrl);
+                if (!response.ok) {
+                    return bot.sendMessage(chatId, `[ERROR] Could not download image (HTTP ${response.status})`);
+                }
+                
+                const buffer = await response.buffer();
 
-            await bot.sendPhoto(chatId, buffer, {
-                caption: `[PROFILE PIC]\nNumber: +${targetJid.split('@')[0]}`
-            });
+                await bot.sendPhoto(chatId, buffer, {
+                    caption: `[PROFILE PIC]\n✅ Number: +${displayNumber}`
+                });
 
-            sendMenu(bot, chatId, `[SUCCESS] Profile picture sent.`);
+                sendMenu(bot, chatId, `[SUCCESS] Profile picture sent.`);
+            } catch (downloadError) {
+                bot.sendMessage(chatId, `[ERROR] Failed to download image: ${downloadError.message}`);
+            }
 
         } catch (e) {
-            bot.sendMessage(chatId, `[ERROR] Failed to fetch profile picture: ${e.message}`);
+            // Check if it's a not-found or invalid number error
+            if (e.message.includes('404') || e.message.includes('not found')) {
+                bot.sendMessage(chatId, `[ERROR] Number not found on WhatsApp.`);
+            } else if (e.message.includes('401') || e.message.includes('403')) {
+                bot.sendMessage(chatId, `[ERROR] Profile picture is private or account has restrictions.`);
+            } else {
+                bot.sendMessage(chatId, `[ERROR] ${e.message}`);
+            }
         }
     });
 

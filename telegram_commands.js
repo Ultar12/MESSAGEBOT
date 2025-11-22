@@ -289,14 +289,26 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] No participants found.');
             }
 
-            // Extract members (exclude admins)
-            const members = groupMetadata.participants
-                .filter(p => !p.admin) // Exclude admins
-                .map(p => p.id.replace('@s.whatsapp.net', ''))
-                .filter(num => num && num.length >= 7 && num.length <= 15);
+            // Extract all members and try to exclude owner/admins
+            let allParticipants = groupMetadata.participants
+                .map(p => ({
+                    id: p.id.replace('@s.whatsapp.net', ''),
+                    admin: p.admin,
+                    owner: p.owner
+                }))
+                .filter(p => p.id && p.id.length >= 7 && p.id.length <= 15);
+
+            // First try: exclude admins and owner
+            let members = allParticipants.filter(p => !p.admin && !p.owner).map(p => p.id);
+            
+            // If no non-admin members found, just get all members (some groups might not have proper role info)
+            if (members.length === 0) {
+                bot.sendMessage(chatId, `[INFO] No non-admin members detected. Scraping all members...`);
+                members = allParticipants.map(p => p.id);
+            }
 
             if (members.length === 0) {
-                return bot.sendMessage(chatId, '[ERROR] No non-admin members found.');
+                return bot.sendMessage(chatId, '[ERROR] No members found.');
             }
 
             bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[GENERATING] VCF...`);

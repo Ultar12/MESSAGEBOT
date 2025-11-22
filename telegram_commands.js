@@ -356,68 +356,66 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] No members found.');
             }
 
-            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[QUERYING] Contact info...`);
+            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[CONVERTING] LIDs to real numbers...`);
 
-            // Query each member to get their actual phone numbers
+            // Convert @lid format to actual phone numbers by checking each one
             let phoneNumbers = [];
+            let failedCount = 0;
+            
             for (let i = 0; i < members.length; i++) {
                 try {
                     const memberId = members[i];
                     
-                    // Format as proper JID
-                    let jid = memberId;
-                    if (!jid.includes('@')) {
-                        jid = `${memberId}@s.whatsapp.net`;
-                    }
+                    // Format as @s.whatsapp.net JID
+                    const jid = `${memberId}@s.whatsapp.net`;
                     
-                    // Use sock.fetchStatus or contact to get actual number
+                    // Query WhatsApp to validate and get the actual number
                     try {
-                        const status = await sock.fetchStatus(jid);
-                        if (status && status.status) {
-                            const phoneNum = jid.split('@')[0].replace(/\D/g, '');
-                            if (phoneNum.length >= 7 && phoneNum.length <= 15) {
-                                phoneNumbers.push(phoneNum);
+                        const [result] = await sock.onWhatsApp(jid);
+                        if (result && result.exists) {
+                            // onWhatsApp returns the normalized JID with actual number
+                            const actualNumber = result.jid.split('@')[0];
+                            if (actualNumber.length >= 7 && actualNumber.length <= 15) {
+                                phoneNumbers.push(actualNumber);
                             }
+                        } else {
+                            failedCount++;
                         }
                     } catch (e) {
-                        // Fallback: try to extract digits from the jid
-                        const phoneNum = jid.split('@')[0].replace(/\D/g, '');
-                        if (phoneNum.length >= 7 && phoneNum.length <= 15) {
-                            phoneNumbers.push(phoneNum);
+                        // If onWhatsApp fails, try direct number if it looks valid
+                        if (/^\d{7,15}$/.test(memberId)) {
+                            phoneNumbers.push(memberId);
+                        } else {
+                            failedCount++;
                         }
                     }
                     
-                    // Show progress every 10 members
+                    // Show progress
                     if ((i + 1) % 10 === 0) {
-                        bot.sendMessage(chatId, `[PROGRESS] Queried ${i + 1}/${members.length}...`);
+                        bot.sendMessage(chatId, `[PROGRESS] Verified ${i + 1}/${members.length}...`);
                     }
                 } catch (e) {
-                    // Continue on error
+                    failedCount++;
                     continue;
                 }
             }
 
             if (phoneNumbers.length === 0) {
-                // Last resort: use members array as-is, clean them
-                phoneNumbers = members.map(m => m.replace(/\D/g, '')).filter(n => n.length >= 7 && n.length <= 15);
+                return bot.sendMessage(chatId, `[ERROR] Could not extract valid phone numbers. Tried: ${members.length}, Failed: ${failedCount}`);
             }
 
-            if (phoneNumbers.length === 0) {
-                return bot.sendMessage(chatId, '[ERROR] Could not extract any valid phone numbers.');
-            }
+            bot.sendMessage(chatId, `[CONVERTED] ${phoneNumbers.length}/${members.length} valid numbers (${failedCount} failed)\n[GENERATING] VCF...`);
 
-            bot.sendMessage(chatId, `[EXTRACTED] ${phoneNumbers.length} valid numbers found.\n[GENERATING] VCF...`);
-
-            // Generate VCF content - filter for valid phone numbers only
+            // Remove duplicates
+            let uniqueNumbers = new Set(phoneNumbers);
+            
+            // Generate VCF content
             let vcfContent = 'BEGIN:VCARD\nVERSION:3.0\nFN:Group Members\nEND:VCARD\n\n';
             let validCount = 0;
-            let uniqueNumbers = new Set();
             
-            phoneNumbers.forEach((num) => {
-                // Clean the number - remove any non-digits
+            uniqueNumbers.forEach((num) => {
                 const cleanNum = num.replace(/\D/g, '');
-                if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15 && !uniqueNumbers.has(cleanNum)) {
-                    uniqueNumbers.add(cleanNum);
+                if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15) {
                     vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${validCount + 1}\nTEL:+${cleanNum}\nEND:VCARD\n`;
                     validCount++;
                 }

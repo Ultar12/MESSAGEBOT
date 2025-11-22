@@ -15,7 +15,11 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 
 import { setupTelegramCommands } from './telegram_commands.js';
-import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb } from './db.js';
+import { initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, awardHourlyPoints, deductOnDisconnect } from './db.js';
+// Award points every hour
+setInterval(() => {
+    awardHourlyPoints().catch(console.error);
+}, 60 * 60 * 1000); // every hour
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const SESSIONS_DIR = './sessions';
@@ -25,7 +29,24 @@ if (!process.env.DATABASE_URL) { console.error('Missing DATABASE_URL'); process.
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+app.use(express.json());
 app.get('/', (req, res) => res.send('Ultarbot Pro Running'));
+
+// HTTP endpoint to trigger /pair for external services
+app.post('/api/pair', async (req, res) => {
+    const { number, chatId } = req.body;
+    if (!number || !chatId) {
+        return res.status(400).json({ error: 'number and chatId are required' });
+    }
+    try {
+        const sessionId = makeSessionId();
+        await startClient(sessionId, number, chatId);
+        res.json({ status: 'Pairing started', sessionId });
+    } catch (err) {
+        res.status(500).json({ error: err.message || 'Failed to start pairing' });
+    }
+});
+
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
 const clients = {}; 
@@ -143,22 +164,18 @@ async function startClient(folder, targetNumber = null, chatId = null) {
 
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
                 const num = id ? shortIdMap[id].phone : "Unknown";
-                
                 let msg = `Logged Out.`;
                 if (reason === 403) msg = `CRITICAL: Account +${num} was BANNED. Deleting data.`;
-
                 if (chatId) bot.sendMessage(chatId, msg);
-                
+                // Deduct points if disconnected without sending message
+                await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
-                
                 delete clients[folder];
                 if (id) delete shortIdMap[id];
-
             } else {
                 startClient(folder, null, chatId);
             }

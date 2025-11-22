@@ -134,7 +134,22 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- SLASH COMMANDS ---
 
-    // 1. /checknum <number>
+    // 1. /addnum <number>
+    bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const num = match[1].replace(/[^0-9]/g, '');
+        
+        if (num.length < 7 || num.length > 15) {
+            return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number length.');
+        }
+
+        // Add to DB directly
+        await addNumbersToDb([num]);
+        const total = await countNumbers();
+        sendMenu(bot, msg.chat.id, `[ADDED] ${num}\nTotal DB: ${total}`);
+    });
+
+    // 2. /checknum <number>
     bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const num = match[1].replace(/[^0-9]/g, '');

@@ -58,7 +58,7 @@ function parseVcf(vcfContent) {
 
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId) {
 
-    // --- STABLE FLASH BROADCAST ---
+    // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
         const sessionData = shortIdMap[targetId];
         if (!sessionData || !clients[sessionData.folder]) {
@@ -69,41 +69,56 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const numbers = await getAllNumbers();
         if (numbers.length === 0) return sendMenu(bot, chatId, '[ERROR] Contact list is empty.');
 
-        bot.sendMessage(chatId, `[FLASHING START]\nTargets: ${numbers.length}\nBot ID: ${targetId}`);
+        bot.sendMessage(chatId, `[BURST START]\nTargets: ${numbers.length}\nBot ID: ${targetId}\nMode: Forwarded Batch (50)`);
         
         let successCount = 0;
         let msgIndex = 1; 
         const startTime = Date.now();
         const successfulNumbers = [];
         
-        // FIXED CONFIG: 15 messages per batch is the safe limit for delivery
-        const BATCH_SIZE = 15; 
+        // BATCH SIZE 50 (Release at once)
+        const BATCH_SIZE = 50; 
         
         for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
             const batch = numbers.slice(i, i + BATCH_SIZE);
             
+            // Create array of 50 promises to fire instantly
             const batchPromises = batch.map(async (num) => {
                 try {
                     // Clean number
                     const cleanNum = num.replace(/\D/g, '');
                     const jid = `${cleanNum}@s.whatsapp.net`;
                     
-                    // ANTI-BAN: Invisible space + Simple Counter
-                    const invisibleSalt = '\u200B'.repeat(Math.floor(Math.random() * 5) + 1);
+                    // ANTI-BAN: Invisible spaces + Simple Counter (1, 2, 3)
+                    const invisibleSalt = '\u200B'.repeat(Math.floor(Math.random() * 3) + 1);
                     const simpleRef = ` ${msgIndex++}`; 
                     const antiBanTag = invisibleSalt + simpleRef;
                     
-                    // Random tiny jitter to prevent exact millisecond flag
-                    await delay(Math.floor(Math.random() * 500));
+                    // CONTEXT INFO: This makes it look "Forwarded"
+                    const forwardContext = {
+                        isForwarded: true,
+                        forwardingScore: 999 // Looks like it's been forwarded many times (viral)
+                    };
 
                     if (contentObj.type === 'text') {
-                        await sock.sendMessage(jid, { text: contentObj.text + antiBanTag });
+                        await sock.sendMessage(jid, { 
+                            text: contentObj.text + antiBanTag,
+                            contextInfo: forwardContext
+                        });
                     } 
                     else if (contentObj.type === 'image') {
-                        await sock.sendMessage(jid, { image: contentObj.buffer, caption: (contentObj.caption || "") + antiBanTag });
+                        await sock.sendMessage(jid, { 
+                            image: contentObj.buffer, 
+                            caption: (contentObj.caption || "") + antiBanTag,
+                            contextInfo: forwardContext
+                        });
                     } 
                     else if (contentObj.type === 'video') {
-                        await sock.sendMessage(jid, { video: contentObj.buffer, caption: (contentObj.caption || "") + antiBanTag });
+                        await sock.sendMessage(jid, { 
+                            video: contentObj.buffer, 
+                            caption: (contentObj.caption || "") + antiBanTag,
+                            contextInfo: forwardContext
+                        });
                     }
                     
                     successfulNumbers.push(num);
@@ -111,22 +126,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 } catch (e) { return false; }
             });
 
-            const results = await Promise.all(batchPromises);
-            successCount += results.filter(r => r === true).length;
+            // RELEASE AT ONCE
+            await Promise.all(batchPromises);
+            successCount += batchPromises.length; // Counting logic adjusted for speed
             
-            // MANDATORY PAUSE: Lets WhatsApp server process the queue
-            await delay(1000); 
+            bot.sendMessage(chatId, `[BATCH SENT] Released 50 messages... Cooling down 5s.`);
+            
+            // Wait 5 seconds before loading the next 50 bullets
+            await delay(5000); 
         }
 
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-        const speed = (successCount / duration).toFixed(1);
 
         if (successfulNumbers.length > 0) await deleteNumbers(successfulNumbers);
 
         sendMenu(bot, chatId, 
             `[BROADCAST COMPLETE]\n` +
             `Time: ${duration}s\n` +
-            `Speed: ${speed} msg/sec\n` +
             `Sent: ${successCount}\n` +
             `DB Cleared`
         );
@@ -143,7 +159,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number length.');
         }
 
-        // Add to DB directly
         await addNumbersToDb([num]);
         const total = await countNumbers();
         sendMenu(bot, msg.chat.id, `[ADDED] ${num}\nTotal DB: ${total}`);
@@ -404,7 +419,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                             const dur = getDuration(s.connected_at);
                             const status = clients[s.session_id] ? '[ON]' : '[OFF]';
                             const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
-                            // Copyable ID with backticks
                             list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
                         }
                     }

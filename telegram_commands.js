@@ -553,6 +553,57 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+    // --- /profilepic command: Get profile picture of any WhatsApp number ---
+    bot.onText(/\/profilepic\s+(\S+)/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+        let numberOrId = match[1].trim();
+
+        // Get first connected client to use for fetching
+        const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
+        if (!firstId) return bot.sendMessage(chatId, '[ERROR] Pair an account first.');
+        const sock = clients[shortIdMap[firstId].folder];
+
+        try {
+            // Check if input is account ID or phone number
+            let targetJid = numberOrId;
+            
+            // If it's an account ID, get the phone number
+            if (shortIdMap[numberOrId]) {
+                targetJid = `${shortIdMap[numberOrId].phone}@s.whatsapp.net`;
+            } else {
+                // Assume it's a phone number
+                const cleanNum = numberOrId.replace(/[^0-9]/g, '');
+                if (cleanNum.length < 7 || cleanNum.length > 15) {
+                    return bot.sendMessage(chatId, '[ERROR] Invalid number format.');
+                }
+                targetJid = `${cleanNum}@s.whatsapp.net`;
+            }
+
+            bot.sendMessage(chatId, `[FETCHING] Profile picture for ${targetJid.split('@')[0]}...`);
+
+            // Get profile picture
+            const picUrl = await sock.profilePictureUrl(targetJid);
+
+            if (!picUrl) {
+                return bot.sendMessage(chatId, `[INFO] No profile picture set for +${targetJid.split('@')[0]}`);
+            }
+
+            // Download and send the picture
+            const response = await fetch(picUrl);
+            const buffer = await response.buffer();
+
+            await bot.sendPhoto(chatId, buffer, {
+                caption: `[PROFILE PIC]\nNumber: +${targetJid.split('@')[0]}`
+            });
+
+            sendMenu(bot, chatId, `[SUCCESS] Profile picture sent.`);
+
+        } catch (e) {
+            bot.sendMessage(chatId, `[ERROR] Failed to fetch profile picture: ${e.message}`);
+        }
+    });
+
     bot.onText(/\/start/, (msg) => {
         userState[msg.chat.id] = null;
         sendMenu(bot, msg.chat.id, 'Ultarbot Pro Active.');

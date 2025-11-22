@@ -43,7 +43,7 @@ function getDuration(startDate) {
     return `${days}d ${hours}h ${minutes}m`;
 }
 
-// --- OLD SAVE LOGIC (STRICT) ---
+// --- OLD SAVE LOGIC (STRICT 1-by-1) ---
 function parseVcf(vcfContent) {
     const numbers = new Set();
     const lines = vcfContent.split(/\r?\n/);
@@ -75,29 +75,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         let msgIndex = 1; 
         const startTime = Date.now();
         const successfulNumbers = [];
-        
-        // BATCH SIZE 50 (Release at once)
         const BATCH_SIZE = 50; 
         
         for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
             const batch = numbers.slice(i, i + BATCH_SIZE);
-            
-            // Create array of 50 promises to fire instantly
             const batchPromises = batch.map(async (num) => {
                 try {
-                    // Clean number
                     const cleanNum = num.replace(/\D/g, '');
                     const jid = `${cleanNum}@s.whatsapp.net`;
                     
-                    // ANTI-BAN: Invisible spaces + Simple Counter (1, 2, 3)
+                    // ANTI-BAN: Invisible spaces + Simple Counter
                     const invisibleSalt = '\u200B'.repeat(Math.floor(Math.random() * 3) + 1);
                     const simpleRef = ` ${msgIndex++}`; 
                     const antiBanTag = invisibleSalt + simpleRef;
                     
-                    // CONTEXT INFO: This makes it look "Forwarded"
                     const forwardContext = {
                         isForwarded: true,
-                        forwardingScore: 999 // Looks like it's been forwarded many times (viral)
+                        forwardingScore: 999 
                     };
 
                     if (contentObj.type === 'text') {
@@ -126,18 +120,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 } catch (e) { return false; }
             });
 
-            // RELEASE AT ONCE
             await Promise.all(batchPromises);
-            successCount += batchPromises.length; // Counting logic adjusted for speed
-            
+            successCount += batchPromises.length; 
             bot.sendMessage(chatId, `[BATCH SENT] Released 50 messages... Cooling down 5s.`);
-            
-            // Wait 5 seconds before loading the next 50 bullets
             await delay(5000); 
         }
 
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-
         if (successfulNumbers.length > 0) await deleteNumbers(successfulNumbers);
 
         sendMenu(bot, chatId, 
@@ -150,41 +139,32 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- SLASH COMMANDS ---
 
-    // 1. /addnum <number>
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const num = match[1].replace(/[^0-9]/g, '');
-        
-        if (num.length < 7 || num.length > 15) {
-            return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number length.');
-        }
-
+        if (num.length < 7 || num.length > 15) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
         await addNumbersToDb([num]);
         const total = await countNumbers();
         sendMenu(bot, msg.chat.id, `[ADDED] ${num}\nTotal DB: ${total}`);
     });
 
-    // 2. /checknum <number>
     bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const num = match[1].replace(/[^0-9]/g, '');
         if (num.length < 7) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
-
         bot.sendMessage(msg.chat.id, `[CHECKING] ${num}...`);
         const exists = await checkNumberInDb(num);
-        
         if (exists) sendMenu(bot, msg.chat.id, `[FOUND] ${num} is in the database.`);
         else sendMenu(bot, msg.chat.id, `[NOT FOUND] ${num} is NOT in the database.`);
     });
 
-    // Broadcast
     bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         let inputId = match[1] ? match[1].trim() : null;
 
         const activeIds = Object.keys(shortIdMap).filter(id => clients[shortIdMap[id].folder]);
-        if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots found.");
+        if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots.");
         
         let targetId = activeIds[0];
         let contentObj = null;
@@ -218,7 +198,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (contentObj) executeBroadcast(chatId, targetId, contentObj);
     });
 
-    // Group Adder
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
@@ -226,9 +205,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         let groupLinkOrId = match[2];
         
         let sock = null;
-        if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) {
-            sock = clients[shortIdMap[acc].folder];
-        } else {
+        if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) sock = clients[shortIdMap[acc].folder];
+        else {
             const found = Object.values(shortIdMap).find(s => s.phone === acc);
             if (found && clients[found.folder]) sock = clients[found.folder];
         }
@@ -267,7 +245,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         sendMenu(bot, chatId, `[DONE] Added ${addedCount}.`);
     });
 
-    // Save - OLD LOGIC RESTORED
+    // Save - EXACT OLD LOGIC (1-by-1 check)
     bot.onText(/\/save/, async (msg) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         
@@ -372,7 +350,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         sendMenu(bot, msg.chat.id, 'Ultarbot Pro Active.');
     });
 
-    // --- MESSAGE HANDLER (BUTTONS) ---
     bot.on('message', async (msg) => {
         if (!msg.text || msg.text.startsWith('/')) return;
         const chatId = msg.chat.id;
@@ -404,26 +381,32 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "List All":
-                if (!isUserAdmin) return;
-                const allSessions = await getAllSessions(null);
-                const totalNums = await countNumbers();
-                let list = `[STATS]\nDB Contacts: ${totalNums}\n\n[BOTS]\n\n`;
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
                 
-                if (allSessions.length === 0) list += "No bots connected.";
-                else {
-                    for (const s of allSessions) {
-                        let id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
-                        if (!id) id = await getShortId(s.session_id); 
-                        
-                        if (id) {
-                            const dur = getDuration(s.connected_at);
-                            const status = clients[s.session_id] ? '[ON]' : '[OFF]';
-                            const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
-                            list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
+                try {
+                    const allSessions = await getAllSessions(null);
+                    const totalNums = await countNumbers();
+                    let list = `[STATS]\nDB Contacts: ${totalNums}\n\n[BOTS]\n\n`;
+                    
+                    if (allSessions.length === 0) list += "No bots connected.";
+                    else {
+                        for (const s of allSessions) {
+                            let id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
+                            // Fallback to DB if not in RAM
+                            if (!id) id = await getShortId(s.session_id);
+                            
+                            if (id) {
+                                const dur = getDuration(s.connected_at);
+                                const status = clients[s.session_id] ? '[ON]' : '[OFF]';
+                                const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
+                                list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
+                            }
                         }
                     }
+                    sendMenu(bot, chatId, list);
+                } catch(e) {
+                    bot.sendMessage(chatId, "List Error: " + e.message);
                 }
-                sendMenu(bot, chatId, list);
                 break;
 
             case "Broadcast":

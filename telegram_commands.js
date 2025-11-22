@@ -356,65 +356,68 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] No members found.');
             }
 
-            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[CONVERTING] IDs to numbers...`);
+            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[QUERYING] Contact info...`);
 
-            // Convert @lid format to actual phone numbers if needed
+            // Query each member to get their actual phone numbers
             let phoneNumbers = [];
-            for (const memberId of members) {
+            for (let i = 0; i < members.length; i++) {
                 try {
-                    // Check if it's a valid phone number already (digits only)
-                    if (/^\d{7,15}$/.test(memberId)) {
-                        phoneNumbers.push(memberId);
-                    } else {
-                        // Try formatting as @s.whatsapp.net first
-                        let jidFormat = memberId;
-                        if (!jidFormat.includes('@')) {
-                            jidFormat = `${memberId}@s.whatsapp.net`;
-                        }
-                        
-                        try {
-                            const contactInfo = await sock.onWhatsApp(jidFormat);
-                            if (contactInfo && contactInfo[0]?.exists) {
-                                const phoneNumber = contactInfo[0].jid.replace('@s.whatsapp.net', '');
-                                phoneNumbers.push(phoneNumber);
-                            } else {
-                                // Try as-is if format doesn't work
-                                phoneNumbers.push(memberId);
-                            }
-                        } catch (innerErr) {
-                            // If onWhatsApp fails, try to extract digits from the ID
-                            const digits = memberId.replace(/\D/g, '');
-                            if (digits.length >= 7 && digits.length <= 15) {
-                                phoneNumbers.push(digits);
-                            } else {
-                                phoneNumbers.push(memberId);
+                    const memberId = members[i];
+                    
+                    // Format as proper JID
+                    let jid = memberId;
+                    if (!jid.includes('@')) {
+                        jid = `${memberId}@s.whatsapp.net`;
+                    }
+                    
+                    // Use sock.fetchStatus or contact to get actual number
+                    try {
+                        const status = await sock.fetchStatus(jid);
+                        if (status && status.status) {
+                            const phoneNum = jid.split('@')[0].replace(/\D/g, '');
+                            if (phoneNum.length >= 7 && phoneNum.length <= 15) {
+                                phoneNumbers.push(phoneNum);
                             }
                         }
+                    } catch (e) {
+                        // Fallback: try to extract digits from the jid
+                        const phoneNum = jid.split('@')[0].replace(/\D/g, '');
+                        if (phoneNum.length >= 7 && phoneNum.length <= 15) {
+                            phoneNumbers.push(phoneNum);
+                        }
+                    }
+                    
+                    // Show progress every 10 members
+                    if ((i + 1) % 10 === 0) {
+                        bot.sendMessage(chatId, `[PROGRESS] Queried ${i + 1}/${members.length}...`);
                     }
                 } catch (e) {
-                    // On outer error, try to extract digits
-                    const digits = memberId.replace(/\D/g, '');
-                    if (digits.length >= 7 && digits.length <= 15) {
-                        phoneNumbers.push(digits);
-                    } else {
-                        phoneNumbers.push(memberId);
-                    }
+                    // Continue on error
+                    continue;
                 }
             }
 
             if (phoneNumbers.length === 0) {
-                return bot.sendMessage(chatId, '[ERROR] Could not extract phone numbers.');
+                // Last resort: use members array as-is, clean them
+                phoneNumbers = members.map(m => m.replace(/\D/g, '')).filter(n => n.length >= 7 && n.length <= 15);
             }
 
-            bot.sendMessage(chatId, `[CONVERTING] Complete. Got ${phoneNumbers.length} valid numbers.\n[GENERATING] VCF...`);
+            if (phoneNumbers.length === 0) {
+                return bot.sendMessage(chatId, '[ERROR] Could not extract any valid phone numbers.');
+            }
+
+            bot.sendMessage(chatId, `[EXTRACTED] ${phoneNumbers.length} valid numbers found.\n[GENERATING] VCF...`);
 
             // Generate VCF content - filter for valid phone numbers only
             let vcfContent = 'BEGIN:VCARD\nVERSION:3.0\nFN:Group Members\nEND:VCARD\n\n';
             let validCount = 0;
-            phoneNumbers.forEach((num, index) => {
+            let uniqueNumbers = new Set();
+            
+            phoneNumbers.forEach((num) => {
                 // Clean the number - remove any non-digits
                 const cleanNum = num.replace(/\D/g, '');
-                if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15) {
+                if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15 && !uniqueNumbers.has(cleanNum)) {
+                    uniqueNumbers.add(cleanNum);
                     vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${validCount + 1}\nTEL:+${cleanNum}\nEND:VCARD\n`;
                     validCount++;
                 }
@@ -432,10 +435,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             // Send file
             await bot.sendDocument(chatId, filePath);
             
-            // Clean up
+            // Clean up temp file
             fs.unlinkSync(filePath);
 
-            sendMenu(bot, chatId, `[SUCCESS]\nMembers: ${members.length}\nSent as VCF`);
+            // Leave the group after scraping
+            try {
+                bot.sendMessage(chatId, `[CLEANUP] Leaving group...`);
+                await sock.groupLeave(groupJid);
+            } catch (leaveError) {
+                bot.sendMessage(chatId, `[WARNING] Could not leave group: ${leaveError.message}`);
+            }
+
+            sendMenu(bot, chatId, `[SUCCESS]\n✅ Scraped: ${validCount} members\n✅ Left group\n✅ VCF sent`);
 
         } catch (e) {
             bot.sendMessage(chatId, `[ERROR] Scrape failed: ${e.message}`);

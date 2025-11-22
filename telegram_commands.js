@@ -346,12 +346,46 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] No members found.');
             }
 
-            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[GENERATING] VCF...`);
+            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[CONVERTING] IDs to numbers...`);
+
+            // Convert @lid format to actual phone numbers if needed
+            let phoneNumbers = [];
+            for (const memberId of members) {
+                try {
+                    // Check if it's a valid phone number already (digits only)
+                    if (/^\d+$/.test(memberId)) {
+                        phoneNumbers.push(memberId);
+                    } else {
+                        // Try to get contact info for @lid format
+                        const contactInfo = await sock.onWhatsApp(memberId);
+                        if (contactInfo && contactInfo[0]) {
+                            const phoneNumber = contactInfo[0].jid.replace('@s.whatsapp.net', '');
+                            phoneNumbers.push(phoneNumber);
+                        } else {
+                            // If conversion fails, use the ID as-is
+                            phoneNumbers.push(memberId);
+                        }
+                    }
+                } catch (e) {
+                    // On error, keep the original ID
+                    phoneNumbers.push(memberId);
+                }
+            }
+
+            if (phoneNumbers.length === 0) {
+                return bot.sendMessage(chatId, '[ERROR] Could not extract phone numbers.');
+            }
+
+            bot.sendMessage(chatId, `[GENERATING] VCF with ${phoneNumbers.length} numbers...`);
 
             // Generate VCF content
             let vcfContent = 'BEGIN:VCARD\nVERSION:3.0\nFN:Group Members\nEND:VCARD\n\n';
-            members.forEach((num, index) => {
-                vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${index + 1}\nTEL:+${num}\nEND:VCARD\n`;
+            phoneNumbers.forEach((num, index) => {
+                // Clean the number - remove any non-digits
+                const cleanNum = num.replace(/\D/g, '');
+                if (cleanNum && cleanNum.length >= 7) {
+                    vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${index + 1}\nTEL:+${cleanNum}\nEND:VCARD\n`;
+                }
             });
 
             // Create temporary file and send

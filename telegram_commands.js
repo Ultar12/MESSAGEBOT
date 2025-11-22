@@ -1,7 +1,7 @@
 import { 
     getAllSessions, getAllNumbers, countNumbers, deleteNumbers, clearAllNumbers,
     getUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
-    setAntiMsgStatus, addNumbersToDb, getShortId
+    setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
@@ -72,6 +72,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         bot.sendMessage(chatId, `[FLASHING START]\nTargets: ${numbers.length}\nBot ID: ${targetId}`);
         
         let successCount = 0;
+        let msgIndex = 1; // Counter for unique messages (1, 2, 3...)
         const startTime = Date.now();
         const successfulNumbers = [];
         const BATCH_SIZE = 50; 
@@ -82,9 +83,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const batchPromises = batch.map(async (num) => {
                 try {
                     const jid = `${num}@s.whatsapp.net`;
+                    
+                    // ANTI-BAN: Invisible space + Simple Counter
                     const invisibleSalt = '\u200B'.repeat(Math.floor(Math.random() * 5) + 1);
-                    const uniqueRef = `  [Ref:${Math.random().toString(36).substring(2, 7)}]`; 
-                    const antiBanTag = invisibleSalt + uniqueRef;
+                    const simpleRef = ` ${msgIndex++}`; 
+                    const antiBanTag = invisibleSalt + simpleRef;
                     
                     if (contentObj.type === 'text') {
                         await sock.sendMessage(jid, { text: contentObj.text + antiBanTag });
@@ -120,6 +123,19 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
     // --- SLASH COMMANDS ---
+
+    // 1. /checknum <number>
+    bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const num = match[1].replace(/[^0-9]/g, '');
+        if (num.length < 7) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
+
+        bot.sendMessage(msg.chat.id, `[CHECKING] ${num}...`);
+        const exists = await checkNumberInDb(num);
+        
+        if (exists) sendMenu(bot, msg.chat.id, `[FOUND] ${num} is in the database.`);
+        else sendMenu(bot, msg.chat.id, `[NOT FOUND] ${num} is NOT in the database.`);
+    });
 
     // Broadcast
     bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
@@ -211,7 +227,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         sendMenu(bot, chatId, `[DONE] Added ${addedCount}.`);
     });
 
-    // Save - OLD LOGIC (Iterative)
+    // Save - OLD LOGIC RESTORED
     bot.onText(/\/save/, async (msg) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         
@@ -347,21 +363,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 bot.sendMessage(chatId, 'Enter WhatsApp number:', { reply_markup: { force_reply: true } });
                 break;
 
-            case "My Account":
-                const mySessions = await getAllSessions(userId);
-                let accMsg = `[MY ACCOUNTS]\n\n`;
-                if (mySessions.length === 0) accMsg += "No active accounts.";
-                else {
-                    mySessions.forEach(s => {
-                         const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
-                         const dur = getDuration(s.connected_at);
-                         // Added backticks for copyable ID
-                         if(id) accMsg += `ID: \`${id}\`\nNUM: +${s.phone}\nTIME: ${dur}\n\n`;
-                    });
-                }
-                sendMenu(bot, chatId, accMsg);
-                break;
-
             case "List All":
                 if (!isUserAdmin) return;
                 const allSessions = await getAllSessions(null);
@@ -378,7 +379,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                             const dur = getDuration(s.connected_at);
                             const status = clients[s.session_id] ? '[ON]' : '[OFF]';
                             const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
-                            // Added backticks around ${id} to make it copyable
+                            // Copyable ID with backticks
                             list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
                         }
                     }

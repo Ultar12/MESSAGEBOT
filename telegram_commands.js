@@ -58,7 +58,7 @@ function parseVcf(vcfContent) {
 
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId) {
 
-    // --- FLASH BROADCAST ---
+    // --- STABLE FLASH BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
         const sessionData = shortIdMap[targetId];
         if (!sessionData || !clients[sessionData.folder]) {
@@ -72,23 +72,30 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         bot.sendMessage(chatId, `[FLASHING START]\nTargets: ${numbers.length}\nBot ID: ${targetId}`);
         
         let successCount = 0;
-        let msgIndex = 1; // Counter for unique messages (1, 2, 3...)
+        let msgIndex = 1; 
         const startTime = Date.now();
         const successfulNumbers = [];
-        const BATCH_SIZE = 50; 
+        
+        // FIXED CONFIG: 15 messages per batch is the safe limit for delivery
+        const BATCH_SIZE = 15; 
         
         for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
             const batch = numbers.slice(i, i + BATCH_SIZE);
             
             const batchPromises = batch.map(async (num) => {
                 try {
-                    const jid = `${num}@s.whatsapp.net`;
+                    // Clean number
+                    const cleanNum = num.replace(/\D/g, '');
+                    const jid = `${cleanNum}@s.whatsapp.net`;
                     
                     // ANTI-BAN: Invisible space + Simple Counter
                     const invisibleSalt = '\u200B'.repeat(Math.floor(Math.random() * 5) + 1);
                     const simpleRef = ` ${msgIndex++}`; 
                     const antiBanTag = invisibleSalt + simpleRef;
                     
+                    // Random tiny jitter to prevent exact millisecond flag
+                    await delay(Math.floor(Math.random() * 500));
+
                     if (contentObj.type === 'text') {
                         await sock.sendMessage(jid, { text: contentObj.text + antiBanTag });
                     } 
@@ -98,6 +105,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     else if (contentObj.type === 'video') {
                         await sock.sendMessage(jid, { video: contentObj.buffer, caption: (contentObj.caption || "") + antiBanTag });
                     }
+                    
                     successfulNumbers.push(num);
                     return true;
                 } catch (e) { return false; }
@@ -105,7 +113,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             const results = await Promise.all(batchPromises);
             successCount += results.filter(r => r === true).length;
-            await delay(150); 
+            
+            // MANDATORY PAUSE: Lets WhatsApp server process the queue
+            await delay(1000); 
         }
 
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);

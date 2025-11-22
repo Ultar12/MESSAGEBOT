@@ -1,20 +1,11 @@
-Building on the Heroku-24 stack
------> Using buildpack: heroku/nodejs
------> Node.js app detected
-jq: parse error: Invalid numeric literal at line 13, column 8
-jq: parse error: Invalid numeric literal at line 13, column 8
-jq: parse error: Invalid numeric literal at line 13, column 8
-jq: parse error: Invalid numeric literal at line 13, column 8
-jq: parse error: Invalid numeric literal at line 13, column 8
-jq: parse error: Invalid numeric literal at line 13, column 8
-jq: parse error: Invalid numeric literal at line 13, column 8
- !     Unable to parse package.json
------> Build failed
-We're sorry this build is failing! You can troubleshoot common issues here:
-https://devcenter.heroku.com/articles/troubleshooting-node-deploys
-If you're stuck, please submit a ticket so we can help:
-https://help.heroku.com/
-Love,
-Heroku
- !     Push rejected, failed to compile Node.js app.
- !     Push failed
+Running 'node bot.js'
+/opt/render/project/src/bot.js:131
+        await client.query(`ALTER TABLE user_bots ADD COLUMN IF NOT EXISTS initial_tg_warning_sent BOOLEAN DEFAULT FALSE;`);
+        ^^^^^
+SyntaxError: await is only valid in async functions and the top level bodies of modules
+    at wrapSafe (node:internal/modules/cjs/loader:1464:18)
+    at Module._compile (node:internal/modules/cjs/loader:1495:20)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+    at Module.load (node:internal/modules/cjs/loader:1266:32)
+    at Module._load (node:internal/modules/cjs/loader:1091:12)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:164:12)

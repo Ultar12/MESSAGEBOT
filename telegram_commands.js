@@ -245,6 +245,90 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         sendMenu(bot, chatId, `[DONE] Added ${addedCount}.`);
     });
 
+    // --- /scrape command: Join group link and extract members as VCF ---
+    bot.onText(/\/scrape\s+(\S+)/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+        let groupLink = match[1];
+
+        // Get first connected client
+        const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
+        if (!firstId) return bot.sendMessage(chatId, '[ERROR] Pair an account first.');
+        const sock = clients[shortIdMap[firstId].folder];
+
+        try {
+            bot.sendMessage(chatId, `[SCRAPING] Joining group...`);
+
+            // Extract invite code from link
+            let inviteCode = null;
+            if (groupLink.includes('chat.whatsapp.com/')) {
+                inviteCode = groupLink.split('chat.whatsapp.com/')[1];
+            } else {
+                return bot.sendMessage(chatId, '[ERROR] Invalid WhatsApp group link.');
+            }
+
+            // Join group
+            let groupJid = null;
+            try {
+                groupJid = await sock.groupAcceptInvite(inviteCode);
+            } catch (e) {
+                return bot.sendMessage(chatId, `[ERROR] Failed to join group: ${e.message}`);
+            }
+
+            bot.sendMessage(chatId, `[JOINED] Group: ${groupJid}\n[FETCHING] Members...`);
+
+            // Get group metadata
+            let groupMetadata = null;
+            try {
+                groupMetadata = await sock.groupMetadata(groupJid);
+            } catch (e) {
+                return bot.sendMessage(chatId, `[ERROR] Failed to fetch group data: ${e.message}`);
+            }
+
+            if (!groupMetadata || !groupMetadata.participants) {
+                return bot.sendMessage(chatId, '[ERROR] No participants found.');
+            }
+
+            // Extract members (exclude admins)
+            const members = groupMetadata.participants
+                .filter(p => !p.admin) // Exclude admins
+                .map(p => p.id.replace('@s.whatsapp.net', ''))
+                .filter(num => num && num.length >= 7 && num.length <= 15);
+
+            if (members.length === 0) {
+                return bot.sendMessage(chatId, '[ERROR] No non-admin members found.');
+            }
+
+            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[GENERATING] VCF...`);
+
+            // Generate VCF content
+            let vcfContent = 'BEGIN:VCARD\nVERSION:3.0\nFN:Group Members\nEND:VCARD\n\n';
+            members.forEach((num, index) => {
+                vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${index + 1}\nTEL:+${num}\nEND:VCARD\n`;
+            });
+
+            // Create temporary file and send
+            const fs = await import('fs');
+            const path = await import('path');
+            const tempDir = '/tmp';
+            const fileName = `scraped_members_${Date.now()}.vcf`;
+            const filePath = path.join(tempDir, fileName);
+
+            fs.writeFileSync(filePath, vcfContent);
+
+            // Send file
+            await bot.sendDocument(chatId, filePath);
+            
+            // Clean up
+            fs.unlinkSync(filePath);
+
+            sendMenu(bot, chatId, `[SUCCESS]\nMembers: ${members.length}\nSent as VCF`);
+
+        } catch (e) {
+            bot.sendMessage(chatId, `[ERROR] Scrape failed: ${e.message}`);
+        }
+    });
+
     // Save - EXACT OLD LOGIC (1-by-1 check)
     bot.onText(/\/save/, async (msg) => {
         if (msg.chat.id.toString() !== ADMIN_ID) return;

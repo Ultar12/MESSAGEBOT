@@ -263,16 +263,26 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             let inviteCode = null;
             if (groupLink.includes('chat.whatsapp.com/')) {
                 inviteCode = groupLink.split('chat.whatsapp.com/')[1];
+                // Remove any trailing characters
+                inviteCode = inviteCode.split(/[\s?#&]/)[0];
             } else {
-                return bot.sendMessage(chatId, '[ERROR] Invalid WhatsApp group link.');
+                return bot.sendMessage(chatId, '[ERROR] Invalid WhatsApp group link format.\nExpected: https://chat.whatsapp.com/XXXXXX');
             }
+
+            bot.sendMessage(chatId, `[INFO] Invite code: ${inviteCode.substring(0, 10)}...`);
 
             // Join group
             let groupJid = null;
             try {
                 groupJid = await sock.groupAcceptInvite(inviteCode);
-            } catch (e) {
-                return bot.sendMessage(chatId, `[ERROR] Failed to join group: ${e.message}`);
+            } catch (joinError) {
+                bot.sendMessage(chatId, `[ERROR] Failed to join group: ${joinError.message}`);
+                
+                // Provide more specific error messages
+                if (joinError.message.includes('400') || joinError.message.includes('bad request')) {
+                    bot.sendMessage(chatId, `[HINT] Possible causes:\n1. Link is expired\n2. Already in group\n3. Removed from group\n4. Group settings restrict joining`);
+                }
+                return;
             }
 
             bot.sendMessage(chatId, `[JOINED] Group: ${groupJid}\n[FETCHING] Members...`);
@@ -287,8 +297,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     const lidFormat = groupJid.replace('@g.us', '@lid');
                     groupMetadata = await sock.groupMetadata(lidFormat);
                 }
-            } catch (e) {
-                bot.sendMessage(chatId, `[WARNING] ${e.message}. Trying alternative format...`);
+            } catch (metaError) {
+                bot.sendMessage(chatId, `[WARNING] ${metaError.message}. Trying alternative format...`);
                 try {
                     // Try alternative format
                     const altFormat = groupJid.includes('@lid') ? groupJid.replace('@lid', '@g.us') : groupJid.replace('@g.us', '@lid');
@@ -353,22 +363,42 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             for (const memberId of members) {
                 try {
                     // Check if it's a valid phone number already (digits only)
-                    if (/^\d+$/.test(memberId)) {
+                    if (/^\d{7,15}$/.test(memberId)) {
                         phoneNumbers.push(memberId);
                     } else {
-                        // Try to get contact info for @lid format
-                        const contactInfo = await sock.onWhatsApp(memberId);
-                        if (contactInfo && contactInfo[0]) {
-                            const phoneNumber = contactInfo[0].jid.replace('@s.whatsapp.net', '');
-                            phoneNumbers.push(phoneNumber);
-                        } else {
-                            // If conversion fails, use the ID as-is
-                            phoneNumbers.push(memberId);
+                        // Try formatting as @s.whatsapp.net first
+                        let jidFormat = memberId;
+                        if (!jidFormat.includes('@')) {
+                            jidFormat = `${memberId}@s.whatsapp.net`;
+                        }
+                        
+                        try {
+                            const contactInfo = await sock.onWhatsApp(jidFormat);
+                            if (contactInfo && contactInfo[0]?.exists) {
+                                const phoneNumber = contactInfo[0].jid.replace('@s.whatsapp.net', '');
+                                phoneNumbers.push(phoneNumber);
+                            } else {
+                                // Try as-is if format doesn't work
+                                phoneNumbers.push(memberId);
+                            }
+                        } catch (innerErr) {
+                            // If onWhatsApp fails, try to extract digits from the ID
+                            const digits = memberId.replace(/\D/g, '');
+                            if (digits.length >= 7 && digits.length <= 15) {
+                                phoneNumbers.push(digits);
+                            } else {
+                                phoneNumbers.push(memberId);
+                            }
                         }
                     }
                 } catch (e) {
-                    // On error, keep the original ID
-                    phoneNumbers.push(memberId);
+                    // On outer error, try to extract digits
+                    const digits = memberId.replace(/\D/g, '');
+                    if (digits.length >= 7 && digits.length <= 15) {
+                        phoneNumbers.push(digits);
+                    } else {
+                        phoneNumbers.push(memberId);
+                    }
                 }
             }
 
@@ -376,15 +406,17 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] Could not extract phone numbers.');
             }
 
-            bot.sendMessage(chatId, `[GENERATING] VCF with ${phoneNumbers.length} numbers...`);
+            bot.sendMessage(chatId, `[CONVERTING] Complete. Got ${phoneNumbers.length} valid numbers.\n[GENERATING] VCF...`);
 
-            // Generate VCF content
+            // Generate VCF content - filter for valid phone numbers only
             let vcfContent = 'BEGIN:VCARD\nVERSION:3.0\nFN:Group Members\nEND:VCARD\n\n';
+            let validCount = 0;
             phoneNumbers.forEach((num, index) => {
                 // Clean the number - remove any non-digits
                 const cleanNum = num.replace(/\D/g, '');
-                if (cleanNum && cleanNum.length >= 7) {
-                    vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${index + 1}\nTEL:+${cleanNum}\nEND:VCARD\n`;
+                if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15) {
+                    vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${validCount + 1}\nTEL:+${cleanNum}\nEND:VCARD\n`;
+                    validCount++;
                 }
             });
 

@@ -1,54 +1,3 @@
-// --- EARNING & REFERRAL LOGIC ---
-export async function awardHourlyPoints() {
-    // 10 points per hour for each connected WhatsApp account
-    // 5 points per hour for each referrer if referral is active
-    const client = await pool.connect();
-    try {
-        const now = new Date();
-        // Get all active sessions
-        const res = await client.query(`SELECT * FROM wa_sessions WHERE creds IS NOT NULL`);
-        for (const session of res.rows) {
-            const userId = session.telegram_user_id;
-            if (!userId) continue;
-            // Check last_points_award
-            const lastAward = session.last_points_award ? new Date(session.last_points_award) : null;
-            if (!lastAward || (now - lastAward) >= 60 * 60 * 1000) {
-                // Award user
-                await client.query('UPDATE users SET points = points + 10, last_points_award = $1 WHERE telegram_id = $2', [now, userId]);
-                await client.query('UPDATE wa_sessions SET last_points_award = $1 WHERE session_id = $2', [now, session.session_id]);
-                // Award referrer if exists
-                const userRes = await client.query('SELECT referrer_id FROM users WHERE telegram_id = $1', [userId]);
-                const referrerId = userRes.rows[0]?.referrer_id;
-                if (referrerId) {
-                    await client.query('UPDATE users SET points = points + 5, referral_earnings = referral_earnings + 5 WHERE telegram_id = $1', [referrerId]);
-                }
-            }
-        }
-    } finally {
-        client.release();
-    }
-}
-
-export async function deductOnDisconnect(sessionId) {
-    // Deduct 50% of points earned for this session if no message sent
-    const client = await pool.connect();
-    try {
-        const sessionRes = await client.query('SELECT telegram_user_id, last_message_sent, last_points_award FROM wa_sessions WHERE session_id = $1', [sessionId]);
-        if (sessionRes.rows.length === 0) return;
-        const { telegram_user_id: userId, last_message_sent, last_points_award } = sessionRes.rows[0];
-        if (!userId) return;
-        if (!last_message_sent) {
-            // Deduct half of points earned since last_points_award
-            const userRes = await client.query('SELECT points FROM users WHERE telegram_id = $1', [userId]);
-            const points = userRes.rows[0]?.points || 0;
-            const deduction = Math.floor(points / 2);
-            await client.query('UPDATE users SET points = points - $1 WHERE telegram_id = $2', [deduction, userId]);
-        }
-        await client.query('UPDATE wa_sessions SET last_disconnect = $1 WHERE session_id = $2', [new Date(), sessionId]);
-    } finally {
-        client.release();
-    }
-}
 import pg from 'pg';
 import 'dotenv/config';
 
@@ -78,6 +27,11 @@ export async function initDb() {
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
+        
+        // NEW: Points Tracking Columns
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_points_award TIMESTAMP;`);
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_disconnect TIMESTAMP;`);
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_message_sent TIMESTAMP;`);
 
         // IDs
         await client.query(`
@@ -88,14 +42,11 @@ export async function initDb() {
         `);
         
         // Data Tables
-        await client.query(`CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, referral_earnings INTEGER DEFAULT 0, referrer_id TEXT, bank_name TEXT, account_number TEXT, account_name TEXT, is_banned BOOLEAN DEFAULT FALSE, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
+        await client.query(`CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, referral_earnings INTEGER DEFAULT 0, referrer_id TEXT, bank_name TEXT, account_number TEXT, account_name TEXT, is_banned BOOLEAN DEFAULT FALSE, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_points_award TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS broadcast_numbers (phone TEXT PRIMARY KEY);`);
         await client.query(`CREATE TABLE IF NOT EXISTS blacklist (phone TEXT PRIMARY KEY);`);
         await client.query(`CREATE TABLE IF NOT EXISTS withdrawals (id SERIAL PRIMARY KEY, telegram_id TEXT, amount_points INTEGER, amount_ngn INTEGER, status TEXT DEFAULT 'PENDING', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS earnings_history (id SERIAL PRIMARY KEY, telegram_id TEXT, amount INTEGER, type TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
-            await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_points_award TIMESTAMP;`);
-            await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_disconnect TIMESTAMP;`);
-            await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_message_sent TIMESTAMP;`);
 
         console.log('[DB] Tables initialized.');
     } catch (err) {
@@ -176,12 +127,14 @@ export async function deleteShortId(sessionFolder) {
 
 // --- NUMBERS ---
 export async function addNumbersToDb(numbersArray) {
-    if (numbersArray.length === 0) return;
+    if (!numbersArray || numbersArray.length === 0) return;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         for (const num of numbersArray) {
-            await client.query('INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', [num]);
+            if (num && num.length >= 7 && num.length <= 15) {
+                await client.query('INSERT INTO broadcast_numbers (phone) VALUES ($1) ON CONFLICT DO NOTHING', [num]);
+            }
         }
         await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); } finally { client.release(); }
@@ -192,6 +145,15 @@ export async function getAllNumbers() {
         const res = await pool.query('SELECT phone FROM broadcast_numbers');
         return res.rows.map(r => r.phone);
     } catch (e) { return []; }
+}
+
+// --- NEW: CHECK NUMBER (For /checknum) ---
+export async function checkNumberInDb(phone) {
+    try {
+        const cleanPhone = phone.replace(/[^0-9]/g, '');
+        const res = await pool.query('SELECT 1 FROM broadcast_numbers WHERE phone = $1', [cleanPhone]);
+        return res.rowCount > 0;
+    } catch (e) { return false; }
 }
 
 export async function countNumbers() {
@@ -241,9 +203,75 @@ export async function addPoints(telegramId, amount, type = 'TASK') {
     } catch (e) { await client.query('ROLLBACK'); } finally { client.release(); }
 }
 
+// --- NEW: HOURLY POINTS LOGIC ---
+export async function awardHourlyPoints() {
+    const client = await pool.connect();
+    try {
+        const now = new Date();
+        const res = await client.query(`SELECT * FROM wa_sessions WHERE creds IS NOT NULL`);
+        for (const session of res.rows) {
+            const userId = session.telegram_user_id;
+            if (!userId) continue;
+            
+            const lastAward = session.last_points_award ? new Date(session.last_points_award) : null;
+            // Check if 1 hour has passed
+            if (!lastAward || (now - lastAward) >= 60 * 60 * 1000) {
+                
+                await client.query('BEGIN');
+                // Award user 10 points
+                await client.query('UPDATE users SET points = points + 10, last_points_award = $1 WHERE telegram_id = $2', [now, userId]);
+                await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, 10, \'HOURLY\')', [userId]);
+                
+                // Update session timestamp
+                await client.query('UPDATE wa_sessions SET last_points_award = $1 WHERE session_id = $2', [now, session.session_id]);
+                
+                // Award referrer 5 points
+                const userRes = await client.query('SELECT referrer_id FROM users WHERE telegram_id = $1', [userId]);
+                const referrerId = userRes.rows[0]?.referrer_id;
+                if (referrerId) {
+                    await client.query('UPDATE users SET points = points + 5, referral_earnings = referral_earnings + 5 WHERE telegram_id = $1', [referrerId]);
+                    await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, 5, \'REFERRAL_HOURLY\')', [referrerId]);
+                }
+                await client.query('COMMIT');
+            }
+        }
+    } catch (e) {
+        await client.query('ROLLBACK');
+    } finally {
+        client.release();
+    }
+}
+
+// --- NEW: DEDUCT ON DISCONNECT ---
+export async function deductOnDisconnect(sessionId) {
+    const client = await pool.connect();
+    try {
+        const sessionRes = await client.query('SELECT telegram_user_id, last_message_sent FROM wa_sessions WHERE session_id = $1', [sessionId]);
+        if (sessionRes.rows.length === 0) return;
+        
+        const { telegram_user_id: userId, last_message_sent } = sessionRes.rows[0];
+        if (!userId) return;
+
+        // If no message was ever sent by this bot, penalty applies
+        if (!last_message_sent) {
+            const userRes = await client.query('SELECT points FROM users WHERE telegram_id = $1', [userId]);
+            const points = userRes.rows[0]?.points || 0;
+            const deduction = Math.floor(points / 2);
+            
+            if (deduction > 0) {
+                await client.query('UPDATE users SET points = points - $1 WHERE telegram_id = $2', [deduction, userId]);
+                await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, $2, \'PENALTY_DISCONNECT\')', [userId, -deduction]);
+            }
+        }
+        await client.query('UPDATE wa_sessions SET last_disconnect = $1 WHERE session_id = $2', [new Date(), sessionId]);
+    } finally {
+        client.release();
+    }
+}
+
 export async function getEarningsStats(telegramId) {
     const today = new Date(); today.setHours(0,0,0,0);
-    const res = await pool.query(`SELECT SUM(amount) as total FROM earnings_history WHERE telegram_id = $1 AND type = 'TASK' AND created_at >= $2`, [telegramId, today.toISOString()]);
+    const res = await pool.query(`SELECT SUM(amount) as total FROM earnings_history WHERE telegram_id = $1 AND type IN ('TASK', 'HOURLY', 'REFERRAL_HOURLY') AND created_at >= $2`, [telegramId, today.toISOString()]);
     return { today: res.rows[0].total || 0 };
 }
 

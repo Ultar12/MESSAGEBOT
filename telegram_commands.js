@@ -1,61 +1,14 @@
-    // --- /add command: /add <number_or_id> <group_id_or_link> ---
-    if (typeof mainBot !== 'undefined') {
-        mainBot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
-            const chatId = msg.chat.id;
-            const acc = match[1];
-            let group = match[2];
-            // Parse group link if needed
-            if (group.startsWith('https://chat.whatsapp.com/')) {
-                // Extract invite code
-                const inviteCode = group.split('/').pop();
-                // Use any available client to accept invite and get group JID
-                const sock = Object.values(clients)[0];
-                try {
-                    const jid = await sock.groupAcceptInvite(inviteCode);
-                    group = jid;
-                } catch (e) {
-                    return mainBot.sendMessage(chatId, 'Failed to join group: ' + (e.message || e));
-                }
-            }
-            // Find client by number or ID
-            let sock = null;
-            // Try by ID
-            if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) {
-                sock = clients[shortIdMap[acc].folder];
-            } else {
-                // Try by number
-                const found = Object.values(shortIdMap).find(s => s.phone === acc);
-                if (found && clients[found.folder]) sock = clients[found.folder];
-            }
-            if (!sock) return mainBot.sendMessage(chatId, 'WhatsApp account not found or not connected.');
-            // Get numbers
-            const { getAllNumbers } = await import('./db.js');
-            const numbers = await getAllNumbers();
-            let added = 0;
-            for (let i = 0; i < numbers.length; i += 100) {
-                const batch = numbers.slice(i, i + 100);
-                try {
-                    await sock.groupAdd(group, batch.map(num => `${num}@s.whatsapp.net`));
-                    added += batch.length;
-                    mainBot.sendMessage(chatId, `Added ${batch.length} numbers to group. Waiting 30 seconds before next batch...`);
-                    await new Promise(res => setTimeout(res, 30000));
-                } catch (e) {
-                    mainBot.sendMessage(chatId, 'Error adding to group: ' + (e.message || e));
-                }
-            }
-            mainBot.sendMessage(chatId, `Finished adding ${added} numbers to group.`);
-        });
-    }
 import { 
     getAllSessions, getAllNumbers, countNumbers, deleteNumbers, clearAllNumbers,
     getUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
-    setAntiMsgStatus
+    setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb
 } from './db.js';
+import { delay } from '@whiskeysockets/baileys';
+import fetch from 'node-fetch';
 
 const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
 
-// --- KEYBOARDS ---
 const userKeyboard = {
     keyboard: [
         [{ text: "Connect Account" }, { text: "My Account" }],
@@ -81,55 +34,6 @@ async function sendMenu(bot, chatId, text) {
     await bot.sendMessage(chatId, text, { ...getKeyboard(chatId), parse_mode: 'Markdown' });
 }
 
-// --- /add command: /add <number_or_id> <group_id_or_link> ---
-export function setupAddCommand(bot, clients, shortIdMap) {
-    bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
-        const chatId = msg.chat.id;
-        const acc = match[1];
-        let group = match[2];
-        // Parse group link if needed
-        if (group.startsWith('https://chat.whatsapp.com/')) {
-            // Extract invite code
-            const inviteCode = group.split('/').pop();
-            // Use any available client to accept invite and get group JID
-            const sock = Object.values(clients)[0];
-            try {
-                const jid = await sock.groupAcceptInvite(inviteCode);
-                group = jid;
-            } catch (e) {
-                return bot.sendMessage(chatId, 'Failed to join group: ' + (e.message || e));
-            }
-        }
-        // Find client by number or ID
-        let sock = null;
-        // Try by ID
-        if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) {
-            sock = clients[shortIdMap[acc].folder];
-        } else {
-            // Try by number
-            const found = Object.values(shortIdMap).find(s => s.phone === acc);
-            if (found && clients[found.folder]) sock = clients[found.folder];
-        }
-        if (!sock) return bot.sendMessage(chatId, 'WhatsApp account not found or not connected.');
-        // Get numbers
-        const { getAllNumbers } = await import('./db.js');
-        const numbers = await getAllNumbers();
-        let added = 0;
-        for (let i = 0; i < numbers.length; i += 100) {
-            const batch = numbers.slice(i, i + 100);
-            try {
-                await sock.groupAdd(group, batch.map(num => `${num}@s.whatsapp.net`));
-                added += batch.length;
-                bot.sendMessage(chatId, `Added ${batch.length} numbers to group. Waiting 30 seconds before next batch...`);
-                await new Promise(res => setTimeout(res, 30000));
-            } catch (e) {
-                bot.sendMessage(chatId, 'Error adding to group: ' + (e.message || e));
-            }
-        }
-        bot.sendMessage(chatId, `Finished adding ${added} numbers to group.`);
-    });
-}
-
 function getDuration(startDate) {
     if (!startDate) return "Just now";
     const diff = Date.now() - new Date(startDate).getTime();
@@ -139,105 +43,87 @@ function getDuration(startDate) {
     return `${days}d ${hours}h ${minutes}m`;
 }
 
-import { parseVCF, isWhatsAppNumber } from './vcfParser.js';
-import { addNumbersToDb } from './db.js';
-import fs from 'fs';
+// --- OLD SAVE LOGIC (STRICT 1-by-1) ---
+function parseVcf(vcfContent) {
+    const numbers = new Set();
+    const lines = vcfContent.split(/\r?\n/);
+    lines.forEach(line => {
+        if (line.includes('TEL')) {
+            let cleanNum = line.replace(/[^0-9]/g, '');
+            if (cleanNum.length > 7 && cleanNum.length < 16) numbers.add(cleanNum);
+        }
+    });
+    return Array.from(numbers);
+}
 
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId) {
-    // --- /save VCF handler (caption or reply) ---
-    bot.on('document', async (msg) => {
-        try {
-            if (msg.caption && msg.caption.startsWith('/save')) {
-                // Handle /save as caption
-                const chatId = msg.chat.id;
-                const fileId = msg.document.file_id;
-                const fileName = msg.document.file_name || 'contacts.vcf';
-                const fileUrl = await bot.getFileLink(fileId);
-                const res = await fetch(fileUrl);
-                const vcfData = await res.text();
-                fs.writeFileSync(fileName, vcfData);
-                const allNumbers = parseVCF(fileName);
-                bot.sendMessage(chatId, `Checking ${allNumbers.length} numbers for WhatsApp registration...`);
-                const sock = Object.values(clients)[0];
-                const validNumbers = [];
-                for (const num of allNumbers) {
-                    if (await isWhatsAppNumber(sock, num)) {
-                        validNumbers.push(num);
-                    }
-                }
-                await addNumbersToDb(validNumbers);
-                bot.sendMessage(chatId, `Saved ${validNumbers.length} WhatsApp numbers.\nList:\n${validNumbers.join(', ')}`);
-            }
-        } catch (err) {
-            bot.sendMessage(msg.chat.id, 'Error processing VCF: ' + (err.message || err));
-        }
-    });
 
-    // --- /save as reply to a document ---
-    bot.onText(/\/save/, async (msg) => {
-        try {
-            if (!msg.reply_to_message || !msg.reply_to_message.document) {
-                return bot.sendMessage(msg.chat.id, 'Please reply to a VCF file with /save.');
-            }
-            const chatId = msg.chat.id;
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileName = msg.reply_to_message.document.file_name || 'contacts.vcf';
-            const fileUrl = await bot.getFileLink(fileId);
-            const res = await fetch(fileUrl);
-            const vcfData = await res.text();
-            fs.writeFileSync(fileName, vcfData);
-            const allNumbers = parseVCF(fileName);
-            bot.sendMessage(chatId, `Checking ${allNumbers.length} numbers for WhatsApp registration...`);
-            const sock = Object.values(clients)[0];
-            const validNumbers = [];
-            for (const num of allNumbers) {
-                if (await isWhatsAppNumber(sock, num)) {
-                    validNumbers.push(num);
-                }
-            }
-            await addNumbersToDb(validNumbers);
-            bot.sendMessage(chatId, `Saved ${validNumbers.length} WhatsApp numbers.\nList:\n${validNumbers.join(', ')}`);
-        } catch (err) {
-            bot.sendMessage(msg.chat.id, 'Error processing VCF: ' + (err.message || err));
-        }
-    });
-
-    // --- FLASH BROADCAST ---
-    async function executeBroadcast(chatId, targetId, rawMessage) {
+    // --- BURST FORWARD BROADCAST ---
+    async function executeBroadcast(chatId, targetId, contentObj) {
         const sessionData = shortIdMap[targetId];
         if (!sessionData || !clients[sessionData.folder]) {
-            return sendMenu(bot, chatId, 'Client disconnected or invalid ID.');
+            return sendMenu(bot, chatId, '[ERROR] Client disconnected or invalid ID.');
         }
         
         const sock = clients[sessionData.folder];
         const numbers = await getAllNumbers();
-        if (numbers.length === 0) return sendMenu(bot, chatId, 'Contact list is empty.');
+        if (numbers.length === 0) return sendMenu(bot, chatId, '[ERROR] Contact list is empty.');
 
-        bot.sendMessage(chatId, `[FLASH MODE] Targeting: ${numbers.length} numbers\nBot ID: ${targetId}\n\nSending...`);
+        bot.sendMessage(chatId, `[BURST START]\nTargets: ${numbers.length}\nBot ID: ${targetId}\nMode: Forwarded Batch (50)`);
         
         let successCount = 0;
+        let msgIndex = 1; 
         const startTime = Date.now();
         const successfulNumbers = [];
-        const BATCH_SIZE = 250; // Flash Batch
+        const BATCH_SIZE = 50; 
         
         for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
             const batch = numbers.slice(i, i + BATCH_SIZE);
-            
-            // Fire all requests in batch simultaneously
             const batchPromises = batch.map(async (num) => {
                 try {
-                    const jid = `${num}@s.whatsapp.net`;
-                    // Anti-Ban: Add invisible random tag to make content unique
-                    const antiBanTag = `\n\n` + '\u200B'.repeat(Math.floor(Math.random() * 5) + 1) + `Ref: ${Math.random().toString(36).substring(7)}`;
-                    const finalMsg = rawMessage + antiBanTag;
+                    const cleanNum = num.replace(/\D/g, '');
+                    const jid = `${cleanNum}@s.whatsapp.net`;
+                    
+                    // ANTI-BAN: Invisible spaces + Simple Counter
+                    const invisibleSalt = '\u200B'.repeat(Math.floor(Math.random() * 3) + 1);
+                    const simpleRef = ` ${msgIndex++}`; 
+                    const antiBanTag = invisibleSalt + simpleRef;
+                    
+                    const forwardContext = {
+                        isForwarded: true,
+                        forwardingScore: 999 
+                    };
 
-                    await sock.sendMessage(jid, { text: finalMsg });
+                    if (contentObj.type === 'text') {
+                        await sock.sendMessage(jid, { 
+                            text: contentObj.text + antiBanTag,
+                            contextInfo: forwardContext
+                        });
+                    } 
+                    else if (contentObj.type === 'image') {
+                        await sock.sendMessage(jid, { 
+                            image: contentObj.buffer, 
+                            caption: (contentObj.caption || "") + antiBanTag,
+                            contextInfo: forwardContext
+                        });
+                    } 
+                    else if (contentObj.type === 'video') {
+                        await sock.sendMessage(jid, { 
+                            video: contentObj.buffer, 
+                            caption: (contentObj.caption || "") + antiBanTag,
+                            contextInfo: forwardContext
+                        });
+                    }
+                    
                     successfulNumbers.push(num);
-                    successCount++;
-                } catch (e) {}
+                    return true;
+                } catch (e) { return false; }
             });
 
             await Promise.all(batchPromises);
+            successCount += batchPromises.length; 
+            bot.sendMessage(chatId, `[BATCH SENT] Released 50 messages... Cooling down 5s.`);
+            await delay(5000); 
         }
 
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -247,30 +133,221 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             `[BROADCAST COMPLETE]\n` +
             `Time: ${duration}s\n` +
             `Sent: ${successCount}\n` +
-            `Cleared DB: ${successfulNumbers.length}`
+            `DB Cleared`
         );
     }
 
-    // --- HANDLERS ---
-    bot.onText(/\/start/, (msg) => {
-        userState[msg.chat.id] = null;
-        sendMenu(bot, msg.chat.id, 'Welcome to Ultarbot Pro.');
+    // --- SLASH COMMANDS ---
+
+    bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const num = match[1].replace(/[^0-9]/g, '');
+        if (num.length < 7 || num.length > 15) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
+        await addNumbersToDb([num]);
+        const total = await countNumbers();
+        sendMenu(bot, msg.chat.id, `[ADDED] ${num}\nTotal DB: ${total}`);
+    });
+
+    bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const num = match[1].replace(/[^0-9]/g, '');
+        if (num.length < 7) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
+        bot.sendMessage(msg.chat.id, `[CHECKING] ${num}...`);
+        const exists = await checkNumberInDb(num);
+        if (exists) sendMenu(bot, msg.chat.id, `[FOUND] ${num} is in the database.`);
+        else sendMenu(bot, msg.chat.id, `[NOT FOUND] ${num} is NOT in the database.`);
+    });
+
+    bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+        let inputId = match[1] ? match[1].trim() : null;
+
+        const activeIds = Object.keys(shortIdMap).filter(id => clients[shortIdMap[id].folder]);
+        if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots.");
+        
+        let targetId = activeIds[0];
+        let contentObj = null;
+
+        if (msg.reply_to_message) {
+            if (inputId && shortIdMap[inputId]) targetId = inputId; 
+            const reply = msg.reply_to_message;
+            if (reply.text) contentObj = { type: 'text', text: reply.text };
+            else if (reply.photo) {
+                bot.sendMessage(chatId, '[LOADING] Image...');
+                const fileId = reply.photo[reply.photo.length - 1].file_id;
+                const url = await bot.getFileLink(fileId);
+                const buffer = await (await fetch(url)).buffer();
+                contentObj = { type: 'image', buffer, caption: reply.caption || "" };
+            } 
+            else if (reply.video) {
+                bot.sendMessage(chatId, '[LOADING] Video...');
+                const fileId = reply.video.file_id;
+                const url = await bot.getFileLink(fileId);
+                const buffer = await (await fetch(url)).buffer();
+                contentObj = { type: 'video', buffer, caption: reply.caption || "" };
+            }
+        } else {
+            if (inputId) contentObj = { type: 'text', text: inputId };
+            else {
+                userState[chatId] = 'WAITING_BROADCAST_MSG';
+                userState[chatId + '_target'] = targetId;
+                return bot.sendMessage(chatId, `[BROADCAST]\nID: ${targetId}\n\nEnter message:`, { reply_markup: { force_reply: true } });
+            }
+        }
+        if (contentObj) executeBroadcast(chatId, targetId, contentObj);
+    });
+
+    bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+        const acc = match[1];
+        let groupLinkOrId = match[2];
+        
+        let sock = null;
+        if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) sock = clients[shortIdMap[acc].folder];
+        else {
+            const found = Object.values(shortIdMap).find(s => s.phone === acc);
+            if (found && clients[found.folder]) sock = clients[found.folder];
+        }
+
+        if (!sock) return bot.sendMessage(chatId, '[ERROR] Account not found.');
+
+        let groupJid = groupLinkOrId;
+        if (groupLinkOrId.includes('chat.whatsapp.com')) {
+            try {
+                const code = groupLinkOrId.split('chat.whatsapp.com/')[1];
+                groupJid = await sock.groupAcceptInvite(code);
+                bot.sendMessage(chatId, `[JOINED] ID: ${groupJid}`);
+            } catch (e) {
+                return bot.sendMessage(chatId, `[ERROR] Join Failed: ${e.message}`);
+            }
+        }
+
+        const numbers = await getAllNumbers();
+        if (numbers.length === 0) return bot.sendMessage(chatId, '[ERROR] Database empty.');
+
+        bot.sendMessage(chatId, `[ADDING] ${numbers.length} users (100 / 30s)...`);
+        
+        let addedCount = 0;
+        for (let i = 0; i < numbers.length; i += 100) {
+            const batch = numbers.slice(i, i + 100);
+            const participants = batch.map(n => `${n}@s.whatsapp.net`);
+            try {
+                await sock.groupParticipantsUpdate(groupJid, participants, "add");
+                addedCount += batch.length;
+                bot.sendMessage(chatId, `[OK] Batch ${Math.floor(i/100)+1}`);
+                if (i + 100 < numbers.length) await delay(30000);
+            } catch (e) {
+                bot.sendMessage(chatId, `[FAIL] Batch ${Math.floor(i/100)+1}: ${e.message}`);
+            }
+        }
+        sendMenu(bot, chatId, `[DONE] Added ${addedCount}.`);
+    });
+
+    // Save - EXACT OLD LOGIC (1-by-1 check)
+    bot.onText(/\/save/, async (msg) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        
+        const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
+        if (!firstId) return bot.sendMessage(msg.chat.id, '[ERROR] Pair an account first.');
+        const sock = clients[shortIdMap[firstId].folder];
+
+        try {
+            let rawText = "";
+            if (msg.reply_to_message && msg.reply_to_message.document) {
+                bot.sendMessage(msg.chat.id, "[DOWNLOADING]...");
+                const fileLink = await bot.getFileLink(msg.reply_to_message.document.file_id);
+                const response = await fetch(fileLink);
+                rawText = await response.text();
+            } else if (msg.document) {
+                bot.sendMessage(msg.chat.id, "[DOWNLOADING]...");
+                const fileLink = await bot.getFileLink(msg.document.file_id);
+                const response = await fetch(fileLink);
+                rawText = await response.text();
+            } else if (msg.reply_to_message && msg.reply_to_message.text) {
+                rawText = msg.reply_to_message.text;
+            } else {
+                return;
+            }
+            
+            const rawNumbers = parseVcf(rawText);
+            if (rawNumbers.length === 0) return bot.sendMessage(msg.chat.id, '[ERROR] No numbers found.');
+
+            bot.sendMessage(msg.chat.id, `[SCANNING] ${rawNumbers.length} numbers (One by One)...`);
+
+            const validNumbers = [];
+            for (const num of rawNumbers) {
+                try {
+                    const [res] = await sock.onWhatsApp(`${num}@s.whatsapp.net`);
+                    if (res?.exists) validNumbers.push(res.jid.split('@')[0]);
+                } catch (e) {}
+                await delay(100); 
+            }
+
+            await addNumbersToDb(validNumbers);
+            const total = await countNumbers();
+            
+            bot.sendMessage(msg.chat.id, 
+                `[SAVED]\n` +
+                `Input: ${rawNumbers.length}\n` +
+                `Valid: ${validNumbers.length}\n` +
+                `Total DB: ${total}`
+            );
+
+        } catch (e) {
+            bot.sendMessage(msg.chat.id, "Error: " + e.message);
+        }
+    });
+
+    bot.on('document', async (msg) => {
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const caption = msg.caption || "";
+        if (caption.startsWith('/save')) {
+            const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
+            if (!firstId) return bot.sendMessage(msg.chat.id, '[ERROR] Pair an account.');
+            const sock = clients[shortIdMap[firstId].folder];
+
+            try {
+                bot.sendMessage(msg.chat.id, "[DOWNLOADING]...");
+                const fileLink = await bot.getFileLink(msg.document.file_id);
+                const response = await fetch(fileLink);
+                const rawText = await response.text();
+                
+                const rawNumbers = parseVcf(rawText);
+                if (rawNumbers.length === 0) return bot.sendMessage(msg.chat.id, '[ERROR] No numbers.');
+                bot.sendMessage(msg.chat.id, `[SCANNING] ${rawNumbers.length} numbers (One by One)...`);
+                
+                const validNumbers = [];
+                for (const num of rawNumbers) {
+                    try {
+                        const [res] = await sock.onWhatsApp(`${num}@s.whatsapp.net`);
+                        if (res?.exists) validNumbers.push(res.jid.split('@')[0]);
+                    } catch (e) {}
+                    await delay(100);
+                }
+                
+                await addNumbersToDb(validNumbers);
+                const total = await countNumbers();
+                bot.sendMessage(msg.chat.id, `[SAVED]\nValid: ${validNumbers.length}\nTotal DB: ${total}`);
+            } catch(e) { bot.sendMessage(msg.chat.id, "Error: " + e.message); }
+        }
     });
 
     bot.onText(/\/antimsg\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
-        const chatId = msg.chat.id;
-        if (chatId.toString() !== ADMIN_ID) return;
-
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
         const id = match[1].trim();
-        const action = match[2].toLowerCase();
-        const status = (action === 'on');
+        const status = (match[2].toLowerCase() === 'on');
+        if (shortIdMap[id]) {
+            antiMsgState[id] = status;
+            await setAntiMsgStatus(shortIdMap[id].folder, status);
+            sendMenu(bot, msg.chat.id, `[ANTIMSG] ${status ? 'ON' : 'OFF'}`);
+        }
+    });
 
-        if (!shortIdMap[id]) return sendMenu(bot, chatId, 'Invalid Session ID.');
-
-        antiMsgState[id] = status;
-        await setAntiMsgStatus(shortIdMap[id].folder, status);
-
-        sendMenu(bot, chatId, `[ANTIMSG] ID: ${id} is now [${action.toUpperCase()}]`);
+    bot.onText(/\/start/, (msg) => {
+        userState[msg.chat.id] = null;
+        sendMenu(bot, msg.chat.id, 'Ultarbot Pro Active.');
     });
 
     bot.on('message', async (msg) => {
@@ -282,41 +359,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
-            if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number format.');
+            if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
             userState[chatId] = null;
-            bot.sendMessage(chatId, `Initializing +${number}... Please wait.`);
+            bot.sendMessage(chatId, `Initializing +${number}...`);
             const sessionId = makeSessionId();
             startClient(sessionId, number, chatId, userId);
             return;
         }
-
+        
         if (userState[chatId] === 'WAITING_BROADCAST_MSG') {
             const targetId = userState[chatId + '_target'];
             userState[chatId] = null;
-            executeBroadcast(chatId, targetId, text);
-            return;
-        }
-
-        if (userState[chatId] === 'WAITING_BANK_DETAILS') {
-            const parts = text.split('|');
-            if (parts.length !== 3) return sendMenu(bot, chatId, 'Use: Bank | Account | Name');
-            await updateBank(userId, parts[0].trim(), parts[1].trim(), parts[2].trim());
-            userState[chatId] = null;
-            sendMenu(bot, chatId, '[SUCCESS] Bank details saved.');
-            return;
-        }
-
-        if (userState[chatId] === 'WAITING_WITHDRAW_AMOUNT') {
-            const amount = parseInt(text);
-            const user = await getUser(userId);
-            if (isNaN(amount) || amount < 1000) return sendMenu(bot, chatId, `Min withdrawal: 1000 pts.`);
-            if (user.points < amount) return sendMenu(bot, chatId, `Insufficient balance.`);
-            
-            const ngnValue = amount * 0.6;
-            const wid = await createWithdrawal(userId, amount, ngnValue);
-            notificationBot.sendMessage(ADMIN_ID, `[WITHDRAWAL] ID: ${wid}\nUser: ${userId}\nAmt: NGN ${ngnValue}`);
-            userState[chatId] = null;
-            sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${wid} submitted.`);
+            executeBroadcast(chatId, targetId, { type: 'text', text: text });
             return;
         }
 
@@ -326,48 +380,46 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 bot.sendMessage(chatId, 'Enter WhatsApp number:', { reply_markup: { force_reply: true } });
                 break;
 
-            case "My Account":
-                const mySessions = await getAllSessions(userId);
-                let accMsg = `[MY ACCOUNTS]\n\n`;
-                if (mySessions.length === 0) accMsg += "No active accounts.";
-                else {
-                    mySessions.forEach(s => {
-                         const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
-                         const dur = getDuration(s.connected_at);
-                         if(id) accMsg += `ID: ${id}\nNUM: +${s.phone}\nTIME: ${dur}\n\n`;
-                    });
-                }
-                sendMenu(bot, chatId, accMsg);
-                break;
-
             case "List All":
-                if (!isUserAdmin) return;
-                const allSessions = await getAllSessions(null);
-                const totalNums = await countNumbers();
-                let list = `[DATABASE]\nNumbers: ${totalNums}\n\n[CONNECTED BOTS]\n\n`;
-                if (allSessions.length === 0) list += "No bots connected.";
-                allSessions.forEach(s => {
-                    const id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
-                    const dur = getDuration(s.connected_at);
-                    const status = clients[s.session_id] ? '[ONLINE]' : '[OFFLINE]';
-                    const anti = s.antimsg ? '[SECURE]' : '[OPEN]';
-                    if(id) list += `${status} ID: \`${id}\`\nNUM: +${s.phone}\nMODE: ${anti}\nTIME: ${dur}\n------------------\n`;
-                });
-                sendMenu(bot, chatId, list);
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
+                
+                try {
+                    const allSessions = await getAllSessions(null);
+                    const totalNums = await countNumbers();
+                    let list = `[STATS]\nDB Contacts: ${totalNums}\n\n[BOTS]\n\n`;
+                    
+                    if (allSessions.length === 0) list += "No bots connected.";
+                    else {
+                        for (const s of allSessions) {
+                            let id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
+                            // Fallback to DB if not in RAM
+                            if (!id) id = await getShortId(s.session_id);
+                            
+                            if (id) {
+                                const dur = getDuration(s.connected_at);
+                                const status = clients[s.session_id] ? '[ON]' : '[OFF]';
+                                const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
+                                list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
+                            }
+                        }
+                    }
+                    sendMenu(bot, chatId, list);
+                } catch(e) {
+                    bot.sendMessage(chatId, "List Error: " + e.message);
+                }
                 break;
 
             case "Broadcast":
                 const activeIds = isUserAdmin ? Object.keys(shortIdMap) : Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
-                if (activeIds.length === 0) return sendMenu(bot, chatId, "No active bots found.");
+                if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots.");
                 userState[chatId] = 'WAITING_BROADCAST_MSG';
                 userState[chatId + '_target'] = activeIds[0];
-                bot.sendMessage(chatId, `[BROADCAST]\nBot ID: ${activeIds[0]}\n\nEnter message:`, { reply_markup: { force_reply: true } });
+                bot.sendMessage(chatId, `[BROADCAST]\nID: ${activeIds[0]}\n\nEnter message:`, { reply_markup: { force_reply: true } });
                 break;
 
             case "Dashboard":
-                const stats = await getEarningsStats(userId);
                 const user = await getUser(userId);
-                sendMenu(bot, chatId, `[DASHBOARD]\n\nPoints: ${user.points}\nToday: ${stats.today} pts`);
+                sendMenu(bot, chatId, `POINTS: ${user.points}`);
                 break;
 
             case "Withdraw":
@@ -380,11 +432,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     bot.sendMessage(chatId, `Enter amount:`, { reply_markup: { force_reply: true } });
                 }
                 break;
-                
+
             case "Clear Contact List":
                 if(isUserAdmin) {
                     await clearAllNumbers();
-                    sendMenu(bot, chatId, "Database numbers cleared.");
+                    sendMenu(bot, chatId, "[CLEARED] Database.");
                 }
                 break;
         }

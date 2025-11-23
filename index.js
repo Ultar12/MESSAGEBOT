@@ -77,10 +77,6 @@ app.get('/verify', (req, res) => {
                     <input type="text" id="name" placeholder="Enter your full name" required>
                 </div>
                 <div class="form-group">
-                    <label>Address</label>
-                    <input type="text" id="address" placeholder="Enter your address" required>
-                </div>
-                <div class="form-group">
                     <label>Email</label>
                     <input type="email" id="email" placeholder="Enter your email" required>
                 </div>
@@ -100,7 +96,6 @@ app.get('/verify', (req, res) => {
                 e.preventDefault();
                 
                 const name = document.getElementById('name').value;
-                const address = document.getElementById('address').value;
                 const email = document.getElementById('email').value;
                 const userId = tg.initData.user.id;
                 
@@ -119,7 +114,6 @@ app.get('/verify', (req, res) => {
                         body: JSON.stringify({
                             userId,
                             name,
-                            address,
                             email,
                             ip,
                             initData: tg.initData
@@ -147,9 +141,9 @@ app.get('/verify', (req, res) => {
 
 // API endpoint to handle verification
 app.post('/api/verify', async (req, res) => {
-    const { userId, name, address, email, ip, initData } = req.body;
+    const { userId, name, email, ip, initData } = req.body;
     
-    if (!userId || !name || !address || !email) {
+    if (!userId || !name || !email) {
         return res.json({ success: false, message: 'Missing required fields' });
     }
     
@@ -162,12 +156,11 @@ app.post('/api/verify', async (req, res) => {
         }
         
         // Save verification data to database
-        await saveVerificationData(userId, name, address, email, ip, deviceInfo);
+        await saveVerificationData(userId, name, '', email, ip, deviceInfo);
         
         console.log('[VERIFICATION] Verified:', {
             userId,
             name,
-            address,
             email,
             ip,
             timestamp: new Date().toISOString()
@@ -175,8 +168,8 @@ app.post('/api/verify', async (req, res) => {
         
         // Send notification to user via Telegram
         try {
-            await mainBot.sendMessage(userId, 
-                `✅ [VERIFICATION COMPLETE]\n\nYour account has been verified successfully!\n\nIP: ${ip}\nAddress: ${address}\n\nYou can now use all features of Ultarbot Pro.`,
+            const sentMsg = await mainBot.sendMessage(userId, 
+                `✅ [VERIFICATION COMPLETE]\n\nYour account has been verified successfully!\n\nIP: ${ip}\n\nYou can now use all features of Ultarbot Pro.`,
                 { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
             );
         } catch (e) {

@@ -12,6 +12,7 @@ const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
 const userRateLimit = {};  // Track user requests for rate limiting
 const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
+const userMessageCache = {};  // Track sent messages for cleanup
 const RATE_LIMIT_WINDOW = 60000;  // 1 minute
 const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
 const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -702,7 +703,14 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // NEW USER: Show mini app verification button
         const verifyUrl = serverUrl ? `${serverUrl}/verify` : 'https://t.me/ultarbot/verify';
         
-        await bot.sendMessage(chatId,
+        // Delete old message if exists
+        if (userMessageCache[chatId]) {
+            try {
+                await bot.deleteMessage(chatId, userMessageCache[chatId]);
+            } catch (e) {}
+        }
+        
+        const sentMsg = await bot.sendMessage(chatId,
             '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
             {
                 reply_markup: {
@@ -715,6 +723,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
             }
         );
+        
+        // Store message ID for future cleanup
+        userMessageCache[chatId] = sentMsg.message_id;
     });
 
     bot.onText(/\/add\s+(\d+)\s+([\d\-]+)/, async (msg, match) => {

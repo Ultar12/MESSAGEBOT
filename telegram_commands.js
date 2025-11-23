@@ -72,13 +72,50 @@ function checkRateLimit(userId) {
     return true;
 }
 
-// Generate random CAPTCHA
+// Generate random CAPTCHA code
 function generateCaptcha() {
     let captcha = '';
-    for (let i = 0; i < 4; i++) {
-        captcha += CAPTCHA_CHARS.charAt(Math.floor(Math.random() * CAPTCHA_CHARS.length));
+    for (let i = 0; i < 6; i++) {
+        captcha += Math.floor(Math.random() * 10);
     }
     return captcha;
+}
+
+// Generate CAPTCHA image
+async function generateCaptchaImage(captchaText) {
+    const canvas = require('canvas');
+    const c = canvas.createCanvas(300, 100);
+    const ctx = c.getContext('2d');
+    
+    // Background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 300, 100);
+    
+    // Add some noise lines
+    ctx.strokeStyle = '#cccccc';
+    for (let i = 0; i < 5; i++) {
+        ctx.beginPath();
+        ctx.moveTo(Math.random() * 300, Math.random() * 100);
+        ctx.lineTo(Math.random() * 300, Math.random() * 100);
+        ctx.stroke();
+    }
+    
+    // Draw CAPTCHA text
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 50px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    
+    // Add rotation to each character
+    for (let i = 0; i < captchaText.length; i++) {
+        ctx.save();
+        ctx.translate(50 + i * 40, 50);
+        ctx.rotate((Math.random() - 0.5) * 0.4);
+        ctx.fillText(captchaText[i], 0, 0);
+        ctx.restore();
+    }
+    
+    return c.toBuffer('image/png');
 }
 
 // --- OLD SAVE LOGIC (STRICT 1-by-1) ---
@@ -684,17 +721,29 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // Check if already verified in database
         const verified = await isUserVerified(userId);
         if (verified) {
+            verifiedUsers.add(userId);
             return sendMenu(bot, chatId, 'Ultarbot Pro Active.');
         }
         
-        // NEW USER: Require CAPTCHA
+        // NEW USER: Require CAPTCHA with image
         const captcha = generateCaptcha();
         userState[chatId] = { step: 'CAPTCHA_PENDING', captchaAnswer: captcha };
         
-        bot.sendMessage(chatId, 
-            `[SECURITY VERIFICATION]\n\nTo prevent bot abuse, please answer this CAPTCHA:\n\nWhat is: ${captcha}?\n\nReply with the 4 characters above.`,
-            { reply_markup: { force_reply: true } }
-        );
+        try {
+            const captchaImage = await generateCaptchaImage(captcha);
+            await bot.sendPhoto(chatId, captchaImage, {
+                caption: `[SECURITY VERIFICATION]\n\nPlease enter the 6 digits shown in the image:`,
+                reply_markup: { 
+                    inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                }
+            });
+        } catch (e) {
+            // Fallback to text CAPTCHA if image generation fails
+            bot.sendMessage(chatId, 
+                `[SECURITY VERIFICATION]\n\nTo prevent bot abuse, please answer this CAPTCHA:\n\nWhat is: ${captcha}?\n\nReply with the 6 digits above.`,
+                { reply_markup: { force_reply: true } }
+            );
+        }
     });
 
     bot.on('message', async (msg) => {
@@ -711,7 +760,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         // CAPTCHA VERIFICATION
         if (userState[chatId]?.step === 'CAPTCHA_PENDING') {
-            if (text.toUpperCase() === userState[chatId].captchaAnswer) {
+            if (text === userState[chatId].captchaAnswer) {
                 await markUserVerified(userId);
                 verifiedUsers.add(userId);
                 userState[chatId] = null;
@@ -722,7 +771,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     userState[chatId] = null;
                     return bot.sendMessage(chatId, '[BLOCKED] Too many failed attempts. Type /start to try again.');
                 }
-                return bot.sendMessage(chatId, `[ERROR] Wrong answer. Try again. (${3 - userState[chatId].attempts} attempts left)`);
+                return bot.sendMessage(chatId, `[ERROR] Wrong digits. Try again. (${3 - userState[chatId].attempts} attempts left)`);
             }
         }
 
@@ -791,7 +840,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         switch (text) {
             case "Connect Account":
                 userState[chatId] = 'WAITING_PAIR';
-                bot.sendMessage(chatId, 'Enter WhatsApp number:', { reply_markup: { force_reply: true } });
+                bot.sendMessage(chatId, 'Enter WhatsApp number:', { 
+                    reply_markup: { 
+                        inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                    } 
+                });
                 break;
 
             case "List All":
@@ -868,9 +921,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 // Get only this user's connected accounts from shortIdMap
                 const userAccountIds = Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
                 let accMsg = `[MY ACCOUNT]\n\n`;
-                accMsg += `USER ID: ${userId}\n`;
-                accMsg += `POINTS: ${accUser?.points || 0}\n\n`;
-                accMsg += `[CONNECTED ACCOUNTS]\n`;
                 
                 if (userAccountIds.length === 0) {
                     accMsg += `No accounts connected.\n`;
@@ -880,13 +930,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                         const sessionId = sessionData.folder;
                         const status = clients[sessionId] ? 'ON' : 'OFF';
                         const dur = getDuration(sessionData.connectedAt || new Date());
-                        accMsg += `[${status}] ID: ${id} | +${sessionData.phone}\nActive: ${dur}\n--\n`;
+                        const points = sessionData.pointsEarned || 0;
+                        accMsg += `${id} | +${sessionData.phone} | [${status}] | ${dur} | ${points}pts\n`;
                     }
                 }
-                accMsg += `\n[BANK DETAILS]\n`;
-                accMsg += `Bank: ${accUser?.bank_name || 'Not Set'}\n`;
-                accMsg += `Account: ${accUser?.account_number || 'Not Set'}\n`;
-                accMsg += `Name: ${accUser?.account_name || 'Not Set'}\n`;
                 sendMenu(bot, chatId, accMsg);
                 break;
 
@@ -913,12 +960,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
                 if (!wUser.bank_name) {
                     await bot.sendMessage(chatId, `[BANK DETAILS]\n\nSend in format:\nBank Name\nAccount Number\nAccount Name\n\nExample:\nGTBank\n1234567890\nJohn Doe`, {
-                        reply_markup: { force_reply: true }
+                        reply_markup: { 
+                            inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                        }
                     });
                     userState[chatId] = 'WAITING_BANK_DETAILS';
                 } else {
                     userState[chatId] = 'WAITING_WITHDRAW_AMOUNT';
-                    bot.sendMessage(chatId, `Enter amount:`, { reply_markup: { force_reply: true } });
+                    bot.sendMessage(chatId, `Enter amount:`, { 
+                        reply_markup: { 
+                            inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                        }
+                    });
                 }
                 break;
 
@@ -928,6 +981,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     sendMenu(bot, chatId, "[CLEARED] Database.");
                 }
                 break;
+
+            case "Support":
+                bot.sendMessage(chatId, '[SUPPORT]\n\nContact: @admin or email support@bot.com\n\nFor issues or questions, reach out to our support team.');
+                break;
         }
     });
 
@@ -935,6 +992,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const chatId = query.message.chat.id;
         const userId = chatId.toString();
         const data = query.data;
+
+        if (data === 'cancel_action') {
+            userState[chatId] = null;
+            await bot.deleteMessage(chatId, query.message.message_id);
+            await bot.answerCallbackQuery(query.id);
+            return sendMenu(bot, chatId, 'Cancelled.');
+        }
 
         if (data === 'earnings_details') {
             const earnings = await getEarningsHistory(userId, 10);

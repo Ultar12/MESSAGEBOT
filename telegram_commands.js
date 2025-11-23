@@ -156,71 +156,121 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const numbers = await getAllNumbers();
         if (numbers.length === 0) return sendMenu(bot, chatId, '[ERROR] Contact list is empty.');
 
-        bot.sendMessage(chatId, `[BURST START]\nTargets: ${numbers.length}\nBot ID: ${targetId}\nMode: Forwarded Batch (50)`);
+        bot.sendMessage(chatId, `[BURST START]\nTargets: ${numbers.length}\nBot ID: ${targetId}\nMode: Anti-Ban Delivery`);
         
         let successCount = 0;
-        let msgIndex = 1; 
+        let deliveredCount = 0;
+        let failedCount = 0;
         const startTime = Date.now();
         const successfulNumbers = [];
-        const BATCH_SIZE = 50; 
+        const CONCURRENT_LIMIT = 5; // Process 5 messages concurrently
         
-        for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
-            const batch = numbers.slice(i, i + BATCH_SIZE);
-            const batchPromises = batch.map(async (num) => {
-                try {
-                    const cleanNum = num.replace(/\D/g, '');
-                    const jid = `${cleanNum}@s.whatsapp.net`;
-                    
-                    // ANTI-BAN: Invisible spaces + Simple Counter
-                    const invisibleSalt = '\u200B'.repeat(Math.floor(Math.random() * 3) + 1);
-                    const simpleRef = ` ${msgIndex++}`; 
-                    const antiBanTag = invisibleSalt + simpleRef;
-                    
-                    const forwardContext = {
-                        isForwarded: true,
-                        forwardingScore: 999 
-                    };
-
-                    if (contentObj.type === 'text') {
-                        await sock.sendMessage(jid, { 
-                            text: contentObj.text + antiBanTag,
-                            contextInfo: forwardContext
-                        });
-                    } 
-                    else if (contentObj.type === 'image') {
-                        await sock.sendMessage(jid, { 
-                            image: contentObj.buffer, 
-                            caption: (contentObj.caption || "") + antiBanTag,
-                            contextInfo: forwardContext
-                        });
-                    } 
-                    else if (contentObj.type === 'video') {
-                        await sock.sendMessage(jid, { 
-                            video: contentObj.buffer, 
-                            caption: (contentObj.caption || "") + antiBanTag,
-                            contextInfo: forwardContext
-                        });
+        // Queue management for controlled sending
+        const queue = numbers.map((num, idx) => ({ num, idx }));
+        let queueIdx = 0;
+        let activePromises = [];
+        
+        const sendMessage = async (num, msgIndex) => {
+            try {
+                const cleanNum = num.replace(/\D/g, '');
+                const jid = `${cleanNum}@s.whatsapp.net`;
+                
+                // ANTI-BAN: Multiple techniques
+                // 1. Random invisible characters for variation
+                const invisibleChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+                const randomInvisible = invisibleChars[Math.floor(Math.random() * invisibleChars.length)];
+                const invisibleSalt = randomInvisible.repeat(Math.floor(Math.random() * 2) + 1);
+                
+                // 2. Subtle message variation with zero-width joiners
+                const zeroWidthJoiner = '\u200D';
+                const antiBanTag = invisibleSalt + zeroWidthJoiner + ` ${msgIndex}`;
+                
+                // 3. Context info to appear forwarded (less likely to trigger filters)
+                const forwardContext = {
+                    isForwarded: true,
+                    forwardingScore: 999,
+                    forwardedNewsletterMessageInfo: {
+                        newsletterId: '0',
+                        serverMessageId: 0,
+                        noMedia: true,
+                        isRatedPenatlyDocument: false
                     }
-                    
+                };
+
+                let response;
+                if (contentObj.type === 'text') {
+                    response = await sock.sendMessage(jid, { 
+                        text: contentObj.text + antiBanTag,
+                        contextInfo: forwardContext
+                    });
+                } 
+                else if (contentObj.type === 'image') {
+                    response = await sock.sendMessage(jid, { 
+                        image: contentObj.buffer, 
+                        caption: (contentObj.caption || "") + antiBanTag,
+                        contextInfo: forwardContext
+                    });
+                } 
+                else if (contentObj.type === 'video') {
+                    response = await sock.sendMessage(jid, { 
+                        video: contentObj.buffer, 
+                        caption: (contentObj.caption || "") + antiBanTag,
+                        contextInfo: forwardContext
+                    });
+                }
+                
+                // Verify delivery - check if message was actually sent
+                if (response && response.key) {
                     successfulNumbers.push(num);
-                    return true;
-                } catch (e) { return false; }
-            });
-
-            await Promise.all(batchPromises);
-            successCount += batchPromises.length; 
-            bot.sendMessage(chatId, `[BATCH SENT] Released 50 messages... Cooling down 5s.`);
-            await delay(5000); 
+                    deliveredCount++;
+                    return { success: true, num };
+                } else {
+                    failedCount++;
+                    return { success: false, num };
+                }
+            } catch (e) { 
+                failedCount++;
+                return { success: false, num, error: e.message };
+            }
+        };
+        
+        // Controlled concurrent sending with anti-ban delays
+        while (queueIdx < queue.length || activePromises.length > 0) {
+            // Fill up to CONCURRENT_LIMIT
+            while (activePromises.length < CONCURRENT_LIMIT && queueIdx < queue.length) {
+                const { num, idx } = queue[queueIdx];
+                const promise = sendMessage(num, idx + 1)
+                    .then(result => {
+                        activePromises = activePromises.filter(p => p !== promise);
+                        return result;
+                    });
+                activePromises.push(promise);
+                queueIdx++;
+                
+                // ANTI-BAN: Small random delay between message initiations (50-200ms)
+                await delay(Math.random() * 150 + 50);
+            }
+            
+            if (activePromises.length > 0) {
+                await Promise.race(activePromises);
+            }
         }
-
+        
+        // Update progress every batch
+        const batchCompleted = Math.min(queueIdx, 50);
+        if (batchCompleted % 10 === 0) {
+            bot.sendMessage(chatId, `[PROGRESS] Sent: ${successCount + deliveredCount}/${numbers.length}`).catch(() => {});
+        }
+        
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
         if (successfulNumbers.length > 0) await deleteNumbers(successfulNumbers);
 
         sendMenu(bot, chatId, 
             `[BROADCAST COMPLETE]\n` +
-            `Time: ${duration}s\n` +
-            `Sent: ${successCount}\n` +
-            `DB Cleared`
+            `⏱️ Time: ${duration}s\n` +
+            `✅ Delivered: ${deliveredCount}\n` +
+            `❌ Failed: ${failedCount}\n` +
+            `🗑️ DB Cleared`
         );
     }
 
@@ -748,36 +798,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // NEW USER: Show mini app verification button
         const verifyUrl = `${serverUrl.replace(/\/$/, '')}/verify`;
         
-        // Delete old message if exists
-        if (userMessageCache[chatId]) {
-            try {
-                await bot.deleteMessage(chatId, userMessageCache[chatId]);
-            } catch (e) {}
-        }
-        
-        try {
-            const sentMsg = await bot.sendMessage(chatId,
-                '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
-                {
-                    reply_markup: {
-                        inline_keyboard: [[
-                            { 
-                                text: 'Verify Now',
-                                web_app: { url: verifyUrl }
-                            }
-                        ]]
-                    }
+        // Delete old messages and send verification
+        return deleteOldMessagesAndSend(bot, chatId,
+            '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
+            {
+                reply_markup: {
+                    inline_keyboard: [[
+                        { 
+                            text: 'Verify Now',
+                            web_app: { url: verifyUrl }
+                        }
+                    ]]
                 }
-            );
-            
-            // Store message ID for future cleanup
-            if (sentMsg && sentMsg.message_id) {
-                userMessageCache[chatId] = sentMsg.message_id;
             }
-        } catch (error) {
-            console.error('[START] Error sending verification message:', error.message);
-            bot.sendMessage(chatId, '[ERROR] Failed to start verification. Please try again.').catch(() => {});
-        }
+        );
     });
 
     // /add command - flexible pattern to handle various formats

@@ -267,10 +267,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         sendMenu(bot, chatId, 
             `[BROADCAST COMPLETE]\n` +
-            `⏱️ Time: ${duration}s\n` +
-            `✅ Delivered: ${deliveredCount}\n` +
-            `❌ Failed: ${failedCount}\n` +
-            `🗑️ DB Cleared`
+            `Time: ${duration}s\n` +
+            `Delivered: ${deliveredCount}\n` +
+            `Failed: ${failedCount}\n` +
+            `DB Cleared`
         );
     }
 
@@ -577,7 +577,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 bot.sendMessage(chatId, `[WARNING] Could not leave group: ${leaveError.message}`);
             }
 
-            sendMenu(bot, chatId, `[SUCCESS]\n✅ Scraped: ${validCount} members\n✅ Left group\n✅ VCF sent`);
+            sendMenu(bot, chatId, `[SUCCESS]\nScraped: ${validCount} members\nLeft group\nVCF sent`);
 
         } catch (e) {
             bot.sendMessage(chatId, `[ERROR] Scrape failed: ${e.message}`);
@@ -733,7 +733,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     try {
                         const [result] = await sock.onWhatsApp(targetJid);
                         if (result && result.exists) {
-                            return sendMenu(bot, chatId, `[INFO]\n✅ Number exists on WhatsApp\n❌ Profile picture is private\nNumber: +${displayNumber}`);
+                            return sendMenu(bot, chatId, `[INFO]\nNumber exists on WhatsApp\nProfile picture is private\nNumber: +${displayNumber}`);
                         }
                     } catch (e) {}
                     
@@ -757,7 +757,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 const buffer = await response.buffer();
 
                 await bot.sendPhoto(chatId, buffer, {
-                    caption: `[PROFILE PIC]\n✅ Number: +${displayNumber}`
+                    caption: `[PROFILE PIC]\nNumber: +${displayNumber}`
                 });
 
                 sendMenu(bot, chatId, `[SUCCESS] Profile picture sent.`);

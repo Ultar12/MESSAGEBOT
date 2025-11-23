@@ -131,10 +131,10 @@ app.get('/verify', (req, res) => {
                             const result = await response.json();
                             
                             if (result.success) {
-                                document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724; padding: 15px; border-radius: 5px; display: block;"><strong>✅ Verification successful!</strong><br><br>You will receive a confirmation in Telegram.<br><br>Closing in 2 seconds...</span>';
+                                document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724; padding: 15px; border-radius: 5px; display: block;"><strong>Verification successful!</strong><br><br>You will receive a confirmation in Telegram.<br><br>Closing in 2 seconds...</span>';
                                 setTimeout(() => tg.close(), 2000);
                             } else {
-                                document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; display: block;"><strong>❌ Verification failed</strong><br><br>' + result.message + '</span>';
+                                document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; display: block;"><strong>Verification failed</strong><br><br>' + result.message + '</span>';
                             }
                         } catch (error) {
                             document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">Error: ' + error.message + '</span>';
@@ -191,7 +191,7 @@ app.post('/api/verify', async (req, res) => {
         // Send notification to user via Telegram
         try {
             const msg = await mainBot.sendMessage(chatId, 
-                `✅ [VERIFICATION COMPLETE]\n\n🎉 Your account has been verified successfully!\n\n📍 IP Address: ${ip}\n\n💰 Welcome Bonus: +200 points\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Send messages to bulk contacts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
+                `[VERIFICATION COMPLETE]\n\nYour account has been verified successfully!\n\nIP Address: ${ip}\n\nWelcome Bonus: +200 points\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
                 { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
             );
             console.log('[VERIFICATION] Confirmation message sent to user:', chatId);
@@ -400,13 +400,13 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             // Update connection time on every reconnect
             await updateConnectionTime(folder);
             
-            // Update or create shortIdMap entry with fresh connection time
+            // Update or create shortIdMap entry - preserve original connectedAt time
             const now = new Date();
             if (shortIdMap[myShortId]) {
-                // Reconnection - update the timestamp
-                shortIdMap[myShortId].connectedAt = now;
+                // Reconnection - PRESERVE the original connectedAt, don't reset it
+                // Just mark that we're connected again
             } else {
-                // New connection
+                // New connection - set connectedAt
                 shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
             }
             clients[folder] = sock;

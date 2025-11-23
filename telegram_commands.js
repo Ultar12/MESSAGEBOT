@@ -731,10 +731,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
             
             // CHECK 1: Verify CAPTCHA if not admin
-            if (userId !== ADMIN_ID && !verifiedUsers.has(userId)) {
-                bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
-                userState[chatId] = null;
-                return;
+            if (userId !== ADMIN_ID) {
+                const dbVerified = await isUserVerified(userId);
+                if (!dbVerified) {
+                    bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
+                    userState[chatId] = null;
+                    return;
+                }
             }
             
             // CHECK 2: Check if number already exists
@@ -861,12 +864,24 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     await createUser(userId);
                     accUser = await getUser(userId);
                 }
+                const userSessions = await getAllSessions(userId);
                 let accMsg = `[MY ACCOUNT]\n\n`;
                 accMsg += `USER ID: ${userId}\n`;
-                accMsg += `POINTS: ${accUser?.points || 0}\n`;
-                accMsg += `BANK NAME: ${accUser?.bank_name || 'Not Set'}\n`;
-                accMsg += `ACCOUNT NUMBER: ${accUser?.account_number || 'Not Set'}\n`;
-                accMsg += `ACCOUNT NAME: ${accUser?.account_name || 'Not Set'}\n`;
+                accMsg += `POINTS: ${accUser?.points || 0}\n\n`;
+                accMsg += `[CONNECTED ACCOUNTS]\n`;
+                if (userSessions.length === 0) {
+                    accMsg += `No accounts connected.\n`;
+                } else {
+                    for (const s of userSessions) {
+                        const dur = getDuration(s.connected_at);
+                        const status = clients[s.session_id] ? 'ON' : 'OFF';
+                        accMsg += `[${status}] +${s.phone}\nActive: ${dur}\n--\n`;
+                    }
+                }
+                accMsg += `\n[BANK DETAILS]\n`;
+                accMsg += `Bank: ${accUser?.bank_name || 'Not Set'}\n`;
+                accMsg += `Account: ${accUser?.account_number || 'Not Set'}\n`;
+                accMsg += `Name: ${accUser?.account_name || 'Not Set'}\n`;
                 sendMenu(bot, chatId, accMsg);
                 break;
 
@@ -878,8 +893,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
                 const refData = await getReferrals(userId);
                 let refMsg = `[REFERRALS]\n\n`;
+                refMsg += `YOUR LINK:\nhttps://t.me/YourBotUsername?start=${userId}\n\n`;
                 refMsg += `TOTAL REFERRALS: ${refData.total}\n`;
-                refMsg += `POINTS PER REFERRAL: 10 points/day (if active)\n`;
+                refMsg += `REFERRAL EARNINGS: ${refUser?.referral_earnings || 0} points\n`;
+                refMsg += `RATE: 5 points per hour (if referral is active)\n`;
                 sendMenu(bot, chatId, refMsg);
                 break;
 

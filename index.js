@@ -30,8 +30,124 @@ if (!TELEGRAM_TOKEN || !NOTIFICATION_TOKEN || !ADMIN_ID) { console.error('Missin
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+// Parse JSON
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 app.get('/', (req, res) => res.send('Ultarbot Pro Running'));
-app.listen(PORT, () => console.log(`Server on ${PORT}`));
+
+// Mini app for user verification
+app.get('/verify', (req, res) => {
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>User Verification</title>
+        <style>
+            body { font-family: Arial, sans-serif; background: #f0f0f0; margin: 0; padding: 20px; }
+            .container { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+            h1 { color: #333; text-align: center; }
+            .form-group { margin: 20px 0; }
+            label { display: block; margin-bottom: 5px; color: #555; font-weight: bold; }
+            input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; }
+            button { width: 100%; padding: 12px; background: #25D366; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
+            button:hover { background: #20BA5A; }
+            .status { text-align: center; margin-top: 10px; padding: 10px; border-radius: 5px; }
+            .loading { display: none; }
+        </style>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    </head>
+    <body>
+        <div class="container">
+            <h1>User Verification</h1>
+            <form id="verifyForm">
+                <div class="form-group">
+                    <label>Full Name</label>
+                    <input type="text" id="name" placeholder="Enter your full name" required>
+                </div>
+                <div class="form-group">
+                    <label>Address</label>
+                    <input type="text" id="address" placeholder="Enter your address" required>
+                </div>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="email" placeholder="Enter your email" required>
+                </div>
+                <button type="submit">Verify & Close</button>
+            </form>
+            <div class="status" id="status"></div>
+        </div>
+
+        <script>
+            const tg = window.Telegram.WebApp;
+            const verifyForm = document.getElementById('verifyForm');
+            
+            tg.ready();
+            tg.expand();
+            
+            verifyForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                
+                const name = document.getElementById('name').value;
+                const address = document.getElementById('address').value;
+                const email = document.getElementById('email').value;
+                const userId = tg.initData.user.id;
+                
+                // Get IP address
+                let ip = 'N/A';
+                try {
+                    const ipRes = await fetch('https://api.ipify.org?format=json');
+                    const ipData = await ipRes.json();
+                    ip = ipData.ip;
+                } catch (e) {}
+                
+                try {
+                    const response = await fetch('/api/verify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            userId,
+                            name,
+                            address,
+                            email,
+                            ip,
+                            initData: tg.initData
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724;">Verification successful!</span>';
+                        setTimeout(() => tg.close(), 1500);
+                    } else {
+                        document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">' + result.message + '</span>';
+                    }
+                } catch (error) {
+                    document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">Error: ' + error.message + '</span>';
+                }
+            });
+        </script>
+    </body>
+    </html>
+    `;
+    res.send(html);
+});
+
+// API endpoint to handle verification
+app.post('/api/verify', express.json(), async (req, res) => {
+    const { userId, name, address, email, ip, initData } = req.body;
+    
+    // Save to database would go here
+    console.log('[VERIFICATION] User:', userId, 'Name:', name, 'IP:', ip);
+    
+    res.json({ success: true, message: 'Verified successfully' });
+});
+
+app.listen(PORT, () => console.log(\`Server on \${PORT}\`));
 
 const mainBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
@@ -41,6 +157,7 @@ const shortIdMap = {};
 const antiMsgState = {}; 
 const autoSaveState = {}; 
 const notificationCache = {};
+const qrMessageCache = {}; // Track QR code messages for deletion
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
@@ -87,21 +204,58 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     // Handle QR code for authentication
     sock.ev.on('connection.update', async (update) => {
-        const { qr } = update;
+        const { qr, connection } = update;
+        
+        // If connection successful, delete old QR message
+        if (connection === 'open' && qrMessageCache[folder]) {
+            const { messageId, chatId: qrChatId } = qrMessageCache[folder];
+            try {
+                await mainBot.deleteMessage(qrChatId, messageId);
+            } catch (e) {
+                console.error('Failed to delete QR message:', e.message);
+            }
+            delete qrMessageCache[folder];
+        }
         
         if (qr && chatId) {
             try {
+                // Delete old QR message if exists
+                if (qrMessageCache[folder]) {
+                    try {
+                        await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId);
+                    } catch (e) {}
+                }
+                
                 // Import qrcode module for QR generation
                 const QRCode = (await import('qrcode')).default;
                 const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
                 
-                mainBot.sendPhoto(chatId, qrImage, {
-                    caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.',
+                const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
+                    caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.\n\nQR expires in 60 seconds.',
                     parse_mode: 'Markdown'
-                }).catch(err => console.error('Failed to send QR:', err.message));
+                });
+                
+                // Store message ID for later deletion
+                qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
+                
+                // Set timeout to warn user if QR expires (60 seconds)
+                setTimeout(async () => {
+                    if (qrMessageCache[folder]) {
+                        try {
+                            await mainBot.sendMessage(chatId, '[ERROR] QR code expired. Please tap "Scan QR" again to regenerate.', {
+                                reply_markup: {
+                                    inline_keyboard: [[{ text: 'Scan QR', callback_data: 'connect_qr' }]]
+                                }
+                            });
+                            await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId);
+                            delete qrMessageCache[folder];
+                        } catch (e) {}
+                    }
+                }, 60000);
+                
             } catch (e) {
                 console.error('QR generation error:', e.message);
-                mainBot.sendMessage(chatId, '[QR CODE]\n\nPlease scan the QR code on your WhatsApp app.\n\nWaiting for connection...').catch(() => {});
+                mainBot.sendMessage(chatId, '[ERROR] Failed to generate QR code. Please try again.').catch(() => {});
             }
         }
     });

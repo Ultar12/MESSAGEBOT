@@ -85,6 +85,27 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     sock.ev.on('creds.update', saveCreds);
 
+    // Handle QR code for authentication
+    sock.ev.on('connection.update', async (update) => {
+        const { qr } = update;
+        
+        if (qr && chatId) {
+            try {
+                // Import qrcode module for QR generation
+                const QRCode = (await import('qrcode')).default;
+                const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
+                
+                mainBot.sendPhoto(chatId, qrImage, {
+                    caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.',
+                    parse_mode: 'Markdown'
+                }).catch(err => console.error('Failed to send QR:', err.message));
+            } catch (e) {
+                console.error('QR generation error:', e.message);
+                mainBot.sendMessage(chatId, '[QR CODE]\n\nPlease scan the QR code on your WhatsApp app.\n\nWaiting for connection...').catch(() => {});
+            }
+        }
+    });
+
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg || !msg.message) return;

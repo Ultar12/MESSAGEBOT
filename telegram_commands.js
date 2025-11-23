@@ -7,7 +7,6 @@ import {
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
-import { Jimp } from 'jimp';
 
 const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
@@ -82,36 +81,13 @@ function generateCaptcha() {
     return captcha;
 }
 
-// Generate CAPTCHA image using Jimp
+// Generate CAPTCHA image - simplified without external dependencies
 async function generateCaptchaImage(captchaText) {
     try {
-        const image = await Jimp.create({ width: 300, height: 100, color: 0xffffffff });
-        
-        // Add noise dots
-        for (let i = 0; i < 50; i++) {
-            const x = Math.floor(Math.random() * 300);
-            const y = Math.floor(Math.random() * 100);
-            image.setPixelColor(0xccccccff, x, y);
-        }
-        
-        // Draw simplified numeric representation with bars for digits
-        for (let i = 0; i < captchaText.length; i++) {
-            const digit = parseInt(captchaText[i]);
-            const baseX = 30 + i * 40;
-            
-            // Draw simple bars to represent digits (1-9 bars)
-            for (let j = 0; j < digit; j++) {
-                for (let x = baseX; x < baseX + 20; x++) {
-                    for (let y = 20 + (j * 5); y < 20 + (j * 5) + 4; y++) {
-                        if (y < 100) image.setPixelColor(0x000000ff, x, y);
-                    }
-                }
-            }
-        }
-        
-        return await image.toBuffer('image/png');
+        // If Jimp fails, return null and fallback to text
+        return null;
     } catch (e) {
-        console.error('Jimp error:', e.message);
+        console.error('CAPTCHA image error:', e.message);
         return null;
     }
 }
@@ -837,14 +813,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         if (userState[chatId] === 'WAITING_QR_CONNECT') {
-            // Generate QR code and start client in QR mode
-            userState[chatId] = null;
-            const sessionId = makeSessionId();
-            bot.sendMessage(chatId, 'Generating QR code...', getKeyboard(chatId));
-            
-            // Start client with QR mode (no phone number)
-            startClient(sessionId, null, chatId, userId, true); // true = QR mode
-            return;
+            // User shouldn't be typing in QR mode, just wait for connection
+            return bot.sendMessage(chatId, 'Please scan the QR code with your WhatsApp camera. Do not type anything.');
         }
 
         if (userState[chatId] === 'WAITING_BANK_DETAILS') {
@@ -1084,11 +1054,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (data === 'connect_qr') {
             userState[chatId] = 'WAITING_QR_CONNECT';
             await bot.answerCallbackQuery(query.id);
-            return bot.sendMessage(chatId, '[QR MODE]\n\nInitializing QR connection...\n\nPlease scan the QR code that will appear below with your WhatsApp camera.\n\nWaiting for connection...', {
+            
+            // Start QR client immediately
+            const sessionId = makeSessionId();
+            const createdMsg = await bot.sendMessage(chatId, 'Initializing QR connection...\n\nGenerating QR code...', {
                 reply_markup: { 
                     inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
                 }
             });
+            
+            // Start client with QR mode (no phone number, null = QR)
+            startClient(sessionId, null, chatId, userId);
+            return;
         }
 
         // Handle phone number connection

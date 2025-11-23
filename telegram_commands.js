@@ -801,7 +801,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return; // Already sent verification, don't send again
         }
         
-        const verifyUrl = `${serverUrl.replace(/\/$/, '')}/verify`;
+        // Pass userId to mini app via URL parameter (extracted from Telegram command)
+        const verifyUrl = `${serverUrl.replace(/\/$/, '')}/verify?userId=${userId}`;
         
         // Send verification message
         try {

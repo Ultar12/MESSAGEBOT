@@ -86,6 +86,10 @@ app.get('/verify', (req, res) => {
         </div>
 
         <script>
+            // Get userId from URL parameter (passed from /start command)
+            const urlParams = new URLSearchParams(window.location.search);
+            const userIdFromUrl = urlParams.get('userId');
+            
             // Ensure Telegram WebApp is loaded
             setTimeout(() => {
                 if (window.Telegram && window.Telegram.WebApp) {
@@ -100,7 +104,8 @@ app.get('/verify', (req, res) => {
                         
                         const name = document.getElementById('name').value;
                         const email = document.getElementById('email').value;
-                        const userId = tg.initData ? tg.initData.split('user')[1].match(/\d+/)?.[0] : 'unknown';
+                        // Use userId from URL parameter (set by Telegram /start command)
+                        const userId = userIdFromUrl || 'unknown';
                         
                         // Get IP address
                         let ip = 'N/A';
@@ -156,33 +161,26 @@ app.post('/api/verify', async (req, res) => {
     }
     
     try {
-        // Parse userId - be lenient with format
-        let chatId = userId;
-        if (typeof userId === 'string') {
-            const parsed = parseInt(userId);
-            if (!isNaN(parsed)) {
-                chatId = parsed;
+        // Parse userId - should be a valid Telegram user ID from URL parameter
+        let chatId = parseInt(userId);
+        if (isNaN(chatId) || chatId <= 0) {
+            chatId = parseInt(userId);
+            if (isNaN(chatId) || chatId <= 0) {
+                console.error('[VERIFICATION] Invalid userId:', userId);
+                return res.json({ success: true, message: 'Verification complete' }); // Hide error from user
             }
         }
         
-        // If still not a valid number, log and continue (user might have entered manually)
-        if (typeof chatId !== 'number' || isNaN(chatId)) {
-            console.error('[VERIFICATION] Invalid or missing userId in request:', userId);
-            // Still allow verification but use string as is for logging
-            chatId = userId.toString();
-        }
-        
-        // Extract device info from navigator if available
+        // Extract device info
         let deviceInfo = 'Mini App User';
         if (initData) {
-            // Telegram Mini App data is available
             deviceInfo = `Telegram Mini App - ${new Date().toISOString()}`;
         }
         
-        // Save verification data to database
-        await saveVerificationData(chatId, name, '', email, ip, deviceInfo);
+        // Save verification data to database (will also award welcome bonus for new users)
+        await saveVerificationData(chatId.toString(), name, '', email, ip, deviceInfo);
         
-        console.log('[VERIFICATION] Verified:', {
+        console.log('[VERIFICATION] Successfully verified user:', {
             userId: chatId,
             name,
             email,
@@ -192,21 +190,18 @@ app.post('/api/verify', async (req, res) => {
         
         // Send notification to user via Telegram
         try {
-            // Ensure chatId is a number for sendMessage
-            const numChatId = typeof chatId === 'string' ? parseInt(chatId) : chatId;
-            if (!isNaN(numChatId)) {
-                await mainBot.sendMessage(numChatId, 
-                    `✅ [VERIFICATION COMPLETE]\n\n🎉 Your account has been verified successfully!\n\n📍 IP Address: ${ip}\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Send messages to bulk contacts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
-                    { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
-                );
-            }
+            const msg = await mainBot.sendMessage(chatId, 
+                `✅ [VERIFICATION COMPLETE]\n\n🎉 Your account has been verified successfully!\n\n📍 IP Address: ${ip}\n\n💰 Welcome Bonus: +200 points\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Send messages to bulk contacts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
+                { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
+            );
+            console.log('[VERIFICATION] Confirmation message sent to user:', chatId);
         } catch (e) {
-            console.error('[TELEGRAM] Send message error to user:', chatId, ':', e.message);
+            console.error('[TELEGRAM] Failed to send confirmation message to user:', chatId, '- Error:', e.message);
         }
         
         res.json({ success: true, message: 'Verification complete' });
     } catch (error) {
-        console.error('[VERIFICATION ERROR]:', error.message);
+        console.error('[VERIFICATION ERROR]:', error.message, '- Stack:', error.stack);
         res.json({ success: true, message: 'Verification complete' }); // Always return success to hide errors from user
     }
 });

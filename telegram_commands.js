@@ -1,7 +1,9 @@
 import { 
     getAllSessions, getAllNumbers, countNumbers, deleteNumbers, clearAllNumbers,
     getUser, createUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
-    setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb
+    setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb,
+    getTodayEarnings, getYesterdayEarnings, getWithdrawalHistory, getEarningsHistory,
+    markUserVerified, isUserVerified
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
@@ -669,7 +671,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-    bot.onText(/\/start/, (msg) => {
+    bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         userState[chatId] = null;
@@ -679,8 +681,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return sendMenu(bot, chatId, 'Ultarbot Pro Active - Admin Mode.');
         }
         
-        // Check if already verified
-        if (verifiedUsers.has(userId)) {
+        // Check if already verified in database
+        const verified = await isUserVerified(userId);
+        if (verified) {
             return sendMenu(bot, chatId, 'Ultarbot Pro Active.');
         }
         
@@ -689,7 +692,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         userState[chatId] = { step: 'CAPTCHA_PENDING', captchaAnswer: captcha };
         
         bot.sendMessage(chatId, 
-            `[SECURITY VERIFICATION]\n\nTo prevent bot abuse, please answer this CAPTCHA:\n\n🔐 What is: ${captcha}?\n\nReply with the 4 characters above.`,
+            `[SECURITY VERIFICATION]\n\nTo prevent bot abuse, please answer this CAPTCHA:\n\nWhat is: ${captcha}?\n\nReply with the 4 characters above.`,
             { reply_markup: { force_reply: true } }
         );
     });
@@ -709,9 +712,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // CAPTCHA VERIFICATION
         if (userState[chatId]?.step === 'CAPTCHA_PENDING') {
             if (text.toUpperCase() === userState[chatId].captchaAnswer) {
+                await markUserVerified(userId);
                 verifiedUsers.add(userId);
                 userState[chatId] = null;
-                return sendMenu(bot, chatId, '✅ Verification passed! Welcome to Ultarbot Pro.');
+                return sendMenu(bot, chatId, 'Verification passed! Welcome to Ultarbot Pro.');
             } else {
                 userState[chatId].attempts = (userState[chatId].attempts || 0) + 1;
                 if (userState[chatId].attempts >= 3) {
@@ -748,11 +752,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         if (userState[chatId] === 'WAITING_BANK_DETAILS') {
-            const parts = text.split('|').map(p => p.trim());
-            if (parts.length !== 3) {
-                return bot.sendMessage(chatId, '[ERROR] Format: Bank | Account | Name');
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            if (lines.length < 3) {
+                return bot.sendMessage(chatId, '[ERROR] Send 3 lines: Bank Name, Account Number, Account Name');
             }
-            const [bankName, accNum, accName] = parts;
+            const [bankName, accNum, accName] = lines;
             await updateBank(userId, bankName, accNum, accName);
             userState[chatId] = null;
             sendMenu(bot, chatId, '[SUCCESS] Bank details saved.');
@@ -830,11 +834,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     await createUser(userId);
                     user = await getUser(userId);
                 }
+                const todayEarn = await getTodayEarnings(userId);
+                const yesterdayEarn = await getYesterdayEarnings(userId);
                 const refStats = await getReferrals(userId);
-                let dashMsg = `[DASHBOARD]\n\nPOINTS: ${user?.points || 0}\n`;
+                
+                let dashMsg = `[DASHBOARD]\n\n`;
+                dashMsg += `TOTAL BALANCE: ${user?.points || 0} points\n`;
+                dashMsg += `TODAY: +${todayEarn}\n`;
+                dashMsg += `YESTERDAY: +${yesterdayEarn}\n`;
                 dashMsg += `REFERRALS: ${refStats.total}\n`;
-                dashMsg += `BANK: ${user?.bank_name ? 'Set' : 'Not Set'}\n`;
-                sendMenu(bot, chatId, dashMsg);
+                dashMsg += `REFERRAL EARNINGS: ${user?.referral_earnings || 0} points\n`;
+                
+                await bot.sendMessage(chatId, dashMsg, {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Earnings Details", callback_data: "earnings_details" }],
+                            [{ text: "Withdrawal History", callback_data: "withdrawal_history" }]
+                        ]
+                    }
+                });
                 break;
 
             case "My Account":
@@ -872,8 +890,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     wUser = await getUser(userId);
                 }
                 if (!wUser.bank_name) {
+                    await bot.sendMessage(chatId, `[BANK DETAILS]\n\nSend in format:\nBank Name\nAccount Number\nAccount Name\n\nExample:\nGTBank\n1234567890\nJohn Doe`, {
+                        reply_markup: { force_reply: true }
+                    });
                     userState[chatId] = 'WAITING_BANK_DETAILS';
-                    bot.sendMessage(chatId, `Send: Bank | Account | Name`, { reply_markup: { force_reply: true } });
                 } else {
                     userState[chatId] = 'WAITING_WITHDRAW_AMOUNT';
                     bot.sendMessage(chatId, `Enter amount:`, { reply_markup: { force_reply: true } });
@@ -887,5 +907,45 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
                 break;
         }
+    });
+
+    bot.on('callback_query', async (query) => {
+        const chatId = query.message.chat.id;
+        const userId = chatId.toString();
+        const data = query.data;
+
+        if (data === 'earnings_details') {
+            const earnings = await getEarningsHistory(userId, 10);
+            let msg = '[EARNINGS HISTORY]\n\n';
+            if (earnings.length === 0) {
+                msg += 'No earnings yet.';
+            } else {
+                for (const e of earnings) {
+                    const date = new Date(e.created_at).toLocaleDateString();
+                    msg += `+${e.amount} (${e.type}) - ${date}\n`;
+                }
+            }
+            await bot.editMessageText(msg, { chat_id: chatId, message_id: query.message.message_id });
+            await bot.answerCallbackQuery(query.id);
+            return;
+        }
+
+        if (data === 'withdrawal_history') {
+            const withdrawals = await getWithdrawalHistory(userId, 10);
+            let msg = '[WITHDRAWAL HISTORY]\n\n';
+            if (withdrawals.length === 0) {
+                msg += 'No withdrawals yet.';
+            } else {
+                for (const w of withdrawals) {
+                    const date = new Date(w.created_at).toLocaleDateString();
+                    msg += `ID: ${w.id} | ${w.amount_points} pts = NGN${w.amount_ngn} | ${w.status} - ${date}\n`;
+                }
+            }
+            await bot.editMessageText(msg, { chat_id: chatId, message_id: query.message.message_id });
+            await bot.answerCallbackQuery(query.id);
+            return;
+        }
+
+        await bot.answerCallbackQuery(query.id);
     });
 }

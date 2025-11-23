@@ -42,7 +42,7 @@ export async function initDb() {
         `);
         
         // Data Tables
-        await client.query(`CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, referral_earnings INTEGER DEFAULT 0, referrer_id TEXT, bank_name TEXT, account_number TEXT, account_name TEXT, is_banned BOOLEAN DEFAULT FALSE, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_points_award TIMESTAMP);`);
+        await client.query(`CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, referral_earnings INTEGER DEFAULT 0, referrer_id TEXT, bank_name TEXT, account_number TEXT, account_name TEXT, is_banned BOOLEAN DEFAULT FALSE, is_verified BOOLEAN DEFAULT FALSE, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_points_award TIMESTAMP);`);
         await client.query(`CREATE TABLE IF NOT EXISTS broadcast_numbers (phone TEXT PRIMARY KEY);`);
         await client.query(`CREATE TABLE IF NOT EXISTS blacklist (phone TEXT PRIMARY KEY);`);
         await client.query(`CREATE TABLE IF NOT EXISTS withdrawals (id SERIAL PRIMARY KEY, telegram_id TEXT, amount_points INTEGER, amount_ngn INTEGER, status TEXT DEFAULT 'PENDING', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
@@ -288,4 +288,34 @@ export async function createWithdrawal(telegramId, points, ngn) {
     await pool.query('UPDATE users SET points = points - $1 WHERE telegram_id = $2', [points, telegramId]);
     const res = await pool.query(`INSERT INTO withdrawals (telegram_id, amount_points, amount_ngn) VALUES ($1, $2, $3) RETURNING id`, [telegramId, points, ngn]);
     return res.rows[0].id;
+}
+
+export async function getTodayEarnings(telegramId) {
+    const res = await pool.query(`SELECT SUM(amount) as total FROM earnings_history WHERE telegram_id = $1 AND DATE(created_at) = CURRENT_DATE`, [telegramId]);
+    return parseInt(res.rows[0]?.total || 0);
+}
+
+export async function getYesterdayEarnings(telegramId) {
+    const res = await pool.query(`SELECT SUM(amount) as total FROM earnings_history WHERE telegram_id = $1 AND DATE(created_at) = CURRENT_DATE - INTERVAL '1 day'`, [telegramId]);
+    return parseInt(res.rows[0]?.total || 0);
+}
+
+export async function getWithdrawalHistory(telegramId, limit = 5) {
+    const res = await pool.query(`SELECT id, amount_points, amount_ngn, status, created_at FROM withdrawals WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT $2`, [telegramId, limit]);
+    return res.rows;
+}
+
+export async function getEarningsHistory(telegramId, limit = 5) {
+    const res = await pool.query(`SELECT amount, type, created_at FROM earnings_history WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT $2`, [telegramId, limit]);
+    return res.rows;
+}
+
+export async function markUserVerified(telegramId) {
+    await pool.query('UPDATE users SET is_verified = true WHERE telegram_id = $1', [telegramId]);
+}
+
+export async function isUserVerified(telegramId) {
+    const res = await pool.query('SELECT is_verified FROM users WHERE telegram_id = $1', [telegramId]);
+    return res.rows[0]?.is_verified || false;
+}
 }

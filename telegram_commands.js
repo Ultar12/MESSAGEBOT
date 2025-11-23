@@ -85,7 +85,7 @@ function generateCaptcha() {
 // Generate CAPTCHA image using Jimp
 async function generateCaptchaImage(captchaText) {
     try {
-        const image = new Jimp({ width: 300, height: 100, color: 0xffffffff });
+        const image = await Jimp.create({ width: 300, height: 100, color: 0xffffffff });
         
         // Add noise dots
         for (let i = 0; i < 50; i++) {
@@ -94,29 +94,22 @@ async function generateCaptchaImage(captchaText) {
             image.setPixelColor(0xccccccff, x, y);
         }
         
-        // Simple text rendering - just use ASCII art representation
-        // Since jimp text is complex, we'll use a simpler visual encoding
-        const textDisplay = captchaText.split('').join('  ');
-        
-        // Create a simple visual representation
-        const textBitmap = new Jimp({ width: 300, height: 100, color: 0xffffffff });
-        
-        // Draw simplified numeric representation
+        // Draw simplified numeric representation with bars for digits
         for (let i = 0; i < captchaText.length; i++) {
             const digit = parseInt(captchaText[i]);
             const baseX = 30 + i * 40;
             
-            // Draw simple bars to represent digits
+            // Draw simple bars to represent digits (1-9 bars)
             for (let j = 0; j < digit; j++) {
                 for (let x = baseX; x < baseX + 20; x++) {
                     for (let y = 20 + (j * 5); y < 20 + (j * 5) + 4; y++) {
-                        textBitmap.setPixelColor(0x000000ff, x, y);
+                        if (y < 100) image.setPixelColor(0x000000ff, x, y);
                     }
                 }
             }
         }
         
-        return await textBitmap.toBuffer('image/png');
+        return await image.toBuffer('image/png');
     } catch (e) {
         console.error('Jimp error:', e.message);
         return null;
@@ -843,6 +836,17 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return;
         }
 
+        if (userState[chatId] === 'WAITING_QR_CONNECT') {
+            // Generate QR code and start client in QR mode
+            userState[chatId] = null;
+            const sessionId = makeSessionId();
+            bot.sendMessage(chatId, 'Generating QR code...', getKeyboard(chatId));
+            
+            // Start client with QR mode (no phone number)
+            startClient(sessionId, null, chatId, userId, true); // true = QR mode
+            return;
+        }
+
         if (userState[chatId] === 'WAITING_BANK_DETAILS') {
             const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
             if (lines.length < 3) {
@@ -909,10 +913,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         switch (text) {
             case "Connect Account":
-                userState[chatId] = 'WAITING_PAIR';
-                bot.sendMessage(chatId, 'Enter WhatsApp number:', { 
+                bot.sendMessage(chatId, 'How do you want to connect?', { 
                     reply_markup: { 
-                        inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                        inline_keyboard: [
+                            [{ text: 'Scan QR', callback_data: 'connect_qr' }, { text: 'Enter Phone', callback_data: 'connect_code' }]
+                        ]
                     } 
                 });
                 break;
@@ -1073,6 +1078,28 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             await bot.deleteMessage(chatId, query.message.message_id);
             await bot.answerCallbackQuery(query.id);
             return sendMenu(bot, chatId, 'Cancelled.');
+        }
+
+        // Handle QR connection
+        if (data === 'connect_qr') {
+            userState[chatId] = 'WAITING_QR_CONNECT';
+            await bot.answerCallbackQuery(query.id);
+            return bot.sendMessage(chatId, '[QR MODE]\n\nInitializing QR connection...\n\nPlease scan the QR code that will appear below with your WhatsApp camera.\n\nWaiting for connection...', {
+                reply_markup: { 
+                    inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                }
+            });
+        }
+
+        // Handle phone number connection
+        if (data === 'connect_code') {
+            userState[chatId] = 'WAITING_PAIR';
+            await bot.answerCallbackQuery(query.id);
+            return bot.sendMessage(chatId, 'Enter WhatsApp number:', { 
+                reply_markup: { 
+                    inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                }
+            });
         }
 
         // Handle withdrawal approval

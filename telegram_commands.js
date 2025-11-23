@@ -291,7 +291,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             if (found && clients[found.folder]) sock = clients[found.folder];
         }
 
-        if (!sock) return bot.sendMessage(chatId, '[ERROR] Account not found.');
+        if (!sock) return bot.sendMessage(chatId, '[ERROR] Account not found. Please connect an account first using Connect Account button.');
 
         let groupJid = groupLinkOrId;
         if (groupLinkOrId.includes('chat.whatsapp.com')) {
@@ -880,6 +880,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             });
             return;
         }
+
+        if (userState[chatId] === 'WAITING_SUPPORT_ISSUE') {
+            const issue = text;
+            userState[chatId] = null;
+            
+            const user = await getUser(userId);
+            const supportMsg = `[SUPPORT TICKET]\nUser: ${userId}\nName: ${user?.account_name || 'N/A'}\nPhone: ${user?.bank_name || 'N/A'}\n\nISSUE:\n${issue}`;
+            
+            await bot.sendMessage(ADMIN_ID, supportMsg, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'Reply to User', callback_data: `support_reply_${userId}` }]
+                    ]
+                }
+            });
+            
+            sendMenu(bot, chatId, '[SUCCESS] Your issue has been sent to our support team. We will get back to you soon.');
+            return;
+        }
         
         if (userState[chatId] === 'WAITING_BROADCAST_MSG') {
             const targetId = userState[chatId + '_target'];
@@ -915,7 +934,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                             
                             if (id) {
                                 const dur = getDuration(s.connected_at);
-                                const status = clients[s.session_id] ? '[ON]' : '[OFF]';
+                                const status = clients[s.session_id] ? '[ONLINE]' : '[OFFLINE]';
                                 const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
                                 list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
                             }
@@ -979,7 +998,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     for (const id of userAccountIds) {
                         const sessionData = shortIdMap[id];
                         const sessionId = sessionData.folder;
-                        const status = clients[sessionId] ? 'ON' : 'OFF';
+                        const status = clients[sessionId] ? 'ONLINE' : 'OFFLINE';
                         const dur = getDuration(sessionData.connectedAt || new Date());
                         const points = sessionData.pointsEarned || 0;
                         accMsg += `${id} | +${sessionData.phone} | [${status}] | ${dur} | ${points}pts\n`;
@@ -1034,7 +1053,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Support":
-                bot.sendMessage(chatId, '[SUPPORT]\n\nContact: @admin or email support@bot.com\n\nFor issues or questions, reach out to our support team.');
+                userState[chatId] = 'WAITING_SUPPORT_ISSUE';
+                bot.sendMessage(chatId, '[SUPPORT]\n\nPlease describe your issue or question:', {
+                    reply_markup: {
+                        inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+                    }
+                });
                 break;
         }
     });

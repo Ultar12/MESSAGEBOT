@@ -1068,20 +1068,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     if (allSessions.length === 0) list += "No bots connected.";
                     else {
                         for (const s of allSessions) {
+                            // Try to find ID from RAM first (fastest)
                             let id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
-                            // Fallback to DB if not in RAM
-                            if (!id) id = await getShortId(s.session_id);
                             
-                            if (id) {
-                                const dur = getDuration(s.connected_at);
-                                const status = clients[s.session_id] ? '[ONLINE]' : '[OFFLINE]';
-                                const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
-                                list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
+                            // Fallback to DB if not in RAM (shouldn't happen, but safety measure)
+                            if (!id) {
+                                id = await getShortId(s.session_id);
+                                // If still not found, skip this session (corrupted data)
+                                if (!id) continue;
                             }
+                            
+                            const dur = getDuration(s.connected_at);
+                            const status = clients[s.session_id] ? '[ONLINE]' : '[OFFLINE]';
+                            const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
+                            list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
                         }
                     }
                     sendMenu(bot, chatId, list);
                 } catch(e) {
+                    console.error('[LIST ALL] Error:', e.message);
                     bot.sendMessage(chatId, "List Error: " + e.message);
                 }
                 break;

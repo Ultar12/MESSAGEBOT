@@ -529,8 +529,18 @@ async function boot() {
         if (session.autosave) autoSaveState[shortId] = true; 
 
         startClient(session.session_id, null, null, session.telegram_user_id);
+        console.log(`[BOOT] Loaded session: ${shortId} | +${session.phone}`);
     }
+    
+    console.log(`[BOOT] Completed loading ${Object.keys(shortIdMap).length} sessions into memory`);
 }
 
+// Initialize telegram commands first
 setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
-boot();
+
+// Then boot and restore saved sessions
+boot().then(() => {
+    console.log('[BOOT] Server ready - all saved sessions loaded');
+}).catch(err => {
+    console.error('[BOOT] Error during startup:', err.message);
+});

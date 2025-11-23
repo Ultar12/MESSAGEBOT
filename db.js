@@ -374,14 +374,33 @@ export async function getWithdrawalDetails(withdrawalId) {
 }
 
 export async function saveVerificationData(telegramId, name, address, email, ip, deviceInfo) {
+    const client = await pool.connect();
     try {
-        await pool.query(
+        await client.query('BEGIN');
+        
+        // Check if user is new (not verified before)
+        const checkRes = await client.query('SELECT is_verified FROM users WHERE telegram_id = $1', [telegramId]);
+        const isNewUser = checkRes.rows.length === 0 || !checkRes.rows[0].is_verified;
+        
+        // Update user verification data
+        await client.query(
             `UPDATE users SET user_name = $1, user_address = $2, user_email = $3, ip_address = $4, device_info = $5, verification_timestamp = CURRENT_TIMESTAMP, is_verified = true 
              WHERE telegram_id = $6`,
             [name, address, email, ip, deviceInfo, telegramId]
         );
-    } catch (e) {
+        
+        // Add welcome bonus for new users (200 points)
+        if (isNewUser) {
+            await client.query('UPDATE users SET points = points + 200 WHERE telegram_id = $1', [telegramId]);
+            await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, $2, $3)', [telegramId, 200, 'WELCOME_BONUS']);
+        }
+        
+        await client.query('COMMIT');
+    } catch (e) { 
+        await client.query('ROLLBACK'); 
         console.error('[DB] Save Verification Error:', e.message);
+    } finally {
+        client.release();
     }
 }
 

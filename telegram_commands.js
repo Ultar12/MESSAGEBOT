@@ -963,6 +963,21 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             if (!user || user.points < amount) {
                 return bot.sendMessage(chatId, '[ERROR] Insufficient points.');
             }
+            
+            // Check minimum withdrawal based on account age
+            let minWithdrawal = 3000; // Default: 3000 pts
+            if (user.created_at) {
+                const accountAge = Date.now() - new Date(user.created_at).getTime();
+                const daysOld = accountAge / (1000 * 60 * 60 * 24);
+                if (daysOld < 3) {
+                    minWithdrawal = 1000; // First 3 days: 1000 pts minimum
+                }
+            }
+            
+            if (amount < minWithdrawal) {
+                return bot.sendMessage(chatId, `[ERROR] Minimum withdrawal is ${minWithdrawal} points.\n\nYour account age: ${user.created_at ? Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24)) : '?'} days`);
+            }
+            
             const withdrawId = await createWithdrawal(userId, amount, Math.floor(amount * 0.5));
             userState[chatId] = null;
             sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${withdrawId} requested. NGN: ${Math.floor(amount * 0.5)}`);
@@ -1136,8 +1151,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     });
                     userState[chatId] = 'WAITING_BANK_DETAILS';
                 } else {
+                    // Calculate minimum based on account age
+                    let minWithdrawal = 3000;
+                    if (wUser.created_at) {
+                        const accountAge = Date.now() - new Date(wUser.created_at).getTime();
+                        const daysOld = accountAge / (1000 * 60 * 60 * 24);
+                        if (daysOld < 3) {
+                            minWithdrawal = 1000;
+                        }
+                    }
+                    
                     userState[chatId] = 'WAITING_WITHDRAW_AMOUNT';
-                    bot.sendMessage(chatId, `Enter amount:`, { 
+                    bot.sendMessage(chatId, `Enter amount (Minimum: ${minWithdrawal} pts):`, { 
                         reply_markup: { 
                             inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
                         }

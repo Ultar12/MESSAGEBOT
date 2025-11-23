@@ -8,6 +8,11 @@ import fetch from 'node-fetch';
 
 const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
+const userRateLimit = {};  // Track user requests for rate limiting
+const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
+const RATE_LIMIT_WINDOW = 60000;  // 1 minute
+const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
+const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 const userKeyboard = {
     keyboard: [
@@ -41,6 +46,37 @@ function getDuration(startDate) {
     const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
     return `${days}d ${hours}h ${minutes}m`;
+}
+
+// Rate limit checker
+function checkRateLimit(userId) {
+    const now = Date.now();
+    if (!userRateLimit[userId]) {
+        userRateLimit[userId] = { count: 1, startTime: now };
+        return true;
+    }
+    
+    const userLimit = userRateLimit[userId];
+    if (now - userLimit.startTime > RATE_LIMIT_WINDOW) {
+        userLimit.count = 1;
+        userLimit.startTime = now;
+        return true;
+    }
+    
+    if (userLimit.count >= MAX_REQUESTS_PER_MINUTE) {
+        return false;
+    }
+    userLimit.count++;
+    return true;
+}
+
+// Generate random CAPTCHA
+function generateCaptcha() {
+    let captcha = '';
+    for (let i = 0; i < 4; i++) {
+        captcha += CAPTCHA_CHARS.charAt(Math.floor(Math.random() * CAPTCHA_CHARS.length));
+    }
+    return captcha;
 }
 
 // --- OLD SAVE LOGIC (STRICT 1-by-1) ---
@@ -356,55 +392,45 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] No members found.');
             }
 
-            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[CONVERTING] LIDs to real numbers...`);
+            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[GENERATING] VCF directly from group data...`);
 
-            // Convert @lid format to actual phone numbers by checking each one
+            // WORKAROUND: Use members directly from group metadata
+            // Some groups use LID format which can't be converted - save them as-is
             let phoneNumbers = [];
-            let failedCount = 0;
             
             for (let i = 0; i < members.length; i++) {
-                try {
-                    const memberId = members[i];
-                    
-                    // Format as @s.whatsapp.net JID
-                    const jid = `${memberId}@s.whatsapp.net`;
-                    
-                    // Query WhatsApp to validate and get the actual number
+                const memberId = members[i];
+                
+                // Only add if it looks like a valid phone number (all digits, proper length)
+                if (/^\d{7,15}$/.test(memberId)) {
+                    phoneNumbers.push(memberId);
+                } else {
+                    // Try one more thing: check if it's actually a valid WhatsApp number
                     try {
+                        const jid = `${memberId}@s.whatsapp.net`;
                         const [result] = await sock.onWhatsApp(jid);
                         if (result && result.exists) {
-                            // onWhatsApp returns the normalized JID with actual number
-                            const actualNumber = result.jid.split('@')[0];
-                            if (actualNumber.length >= 7 && actualNumber.length <= 15) {
-                                phoneNumbers.push(actualNumber);
-                            }
-                        } else {
-                            failedCount++;
+                            phoneNumbers.push(memberId);
                         }
                     } catch (e) {
-                        // If onWhatsApp fails, try direct number if it looks valid
-                        if (/^\d{7,15}$/.test(memberId)) {
-                            phoneNumbers.push(memberId);
-                        } else {
-                            failedCount++;
-                        }
+                        // Skip invalid numbers
+                        continue;
                     }
-                    
-                    // Show progress
-                    if ((i + 1) % 10 === 0) {
-                        bot.sendMessage(chatId, `[PROGRESS] Verified ${i + 1}/${members.length}...`);
-                    }
-                } catch (e) {
-                    failedCount++;
-                    continue;
+                }
+                
+                // Show progress
+                if ((i + 1) % 20 === 0) {
+                    bot.sendMessage(chatId, `[PROGRESS] Processing ${i + 1}/${members.length}...`);
                 }
             }
 
             if (phoneNumbers.length === 0) {
-                return bot.sendMessage(chatId, `[ERROR] Could not extract valid phone numbers. Tried: ${members.length}, Failed: ${failedCount}`);
+                // LAST RESORT: Just save all members as-is, they might work
+                phoneNumbers = members;
+                bot.sendMessage(chatId, `[WARNING] Saving raw IDs from group (may be LIDs)...`);
             }
 
-            bot.sendMessage(chatId, `[CONVERTED] ${phoneNumbers.length}/${members.length} valid numbers (${failedCount} failed)\n[GENERATING] VCF...`);
+            bot.sendMessage(chatId, `[PROCESSED] ${phoneNumbers.length} numbers extracted.\n[GENERATING] VCF...`);
 
             // Remove duplicates
             let uniqueNumbers = new Set(phoneNumbers);
@@ -414,6 +440,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             let validCount = 0;
             
             uniqueNumbers.forEach((num) => {
+                // Clean the number - remove any non-digits
                 const cleanNum = num.replace(/\D/g, '');
                 if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15) {
                     vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${validCount + 1}\nTEL:+${cleanNum}\nEND:VCARD\n`;
@@ -643,8 +670,28 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     bot.onText(/\/start/, (msg) => {
-        userState[msg.chat.id] = null;
-        sendMenu(bot, msg.chat.id, 'Ultarbot Pro Active.');
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        userState[chatId] = null;
+        
+        // Admin bypasses CAPTCHA
+        if (userId === ADMIN_ID) {
+            return sendMenu(bot, chatId, 'Ultarbot Pro Active - Admin Mode.');
+        }
+        
+        // Check if already verified
+        if (verifiedUsers.has(userId)) {
+            return sendMenu(bot, chatId, 'Ultarbot Pro Active.');
+        }
+        
+        // NEW USER: Require CAPTCHA
+        const captcha = generateCaptcha();
+        userState[chatId] = { step: 'CAPTCHA_PENDING', captchaAnswer: captcha };
+        
+        bot.sendMessage(chatId, 
+            `[SECURITY VERIFICATION]\n\nTo prevent bot abuse, please answer this CAPTCHA:\n\n🔐 What is: ${captcha}?\n\nReply with the 4 characters above.`,
+            { reply_markup: { force_reply: true } }
+        );
     });
 
     bot.on('message', async (msg) => {
@@ -653,12 +700,48 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const text = msg.text;
         const userId = chatId.toString();
         const isUserAdmin = (userId === ADMIN_ID);
+        
+        // RATE LIMIT CHECK
+        if (!isUserAdmin && !checkRateLimit(userId)) {
+            return bot.sendMessage(chatId, '[RATE LIMIT] Too many requests. Please wait 1 minute.');
+        }
+        
+        // CAPTCHA VERIFICATION
+        if (userState[chatId]?.step === 'CAPTCHA_PENDING') {
+            if (text.toUpperCase() === userState[chatId].captchaAnswer) {
+                verifiedUsers.add(userId);
+                userState[chatId] = null;
+                return sendMenu(bot, chatId, '✅ Verification passed! Welcome to Ultarbot Pro.');
+            } else {
+                userState[chatId].attempts = (userState[chatId].attempts || 0) + 1;
+                if (userState[chatId].attempts >= 3) {
+                    userState[chatId] = null;
+                    return bot.sendMessage(chatId, '[BLOCKED] Too many failed attempts. Type /start to try again.');
+                }
+                return bot.sendMessage(chatId, `[ERROR] Wrong answer. Try again. (${3 - userState[chatId].attempts} attempts left)`);
+            }
+        }
 
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
             if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
+            
+            // CHECK 1: Verify CAPTCHA if not admin
+            if (userId !== ADMIN_ID && !verifiedUsers.has(userId)) {
+                bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
+                userState[chatId] = null;
+                return;
+            }
+            
+            // CHECK 2: Check if number already exists
+            const existingSession = Object.values(shortIdMap).find(s => s.phone === number);
+            if (existingSession) {
+                const existingId = Object.keys(shortIdMap).find(k => shortIdMap[k] === existingSession);
+                return sendMenu(bot, chatId, `[ERROR] Number +${number} is already connected as ID: ${existingId}`);
+            }
+            
             userState[chatId] = null;
-            bot.sendMessage(chatId, `Initializing +${number}...`);
+            bot.sendMessage(chatId, `Initializing +${number}...`, getKeyboard(chatId));
             const sessionId = makeSessionId();
             startClient(sessionId, number, chatId, userId);
             return;

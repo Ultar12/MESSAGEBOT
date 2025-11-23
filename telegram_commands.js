@@ -1020,6 +1020,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         switch (text) {
             case "Connect Account":
+                deleteUserCommand(bot, msg);
                 deleteOldMessagesAndSend(bot, chatId, 'How do you want to connect?', { 
                     reply_markup: { 
                         inline_keyboard: [
@@ -1030,6 +1031,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "List All":
+                deleteUserCommand(bot, msg);
                 if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
                 
                 try {
@@ -1059,6 +1061,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Broadcast":
+                deleteUserCommand(bot, msg);
                 const activeIds = isUserAdmin ? Object.keys(shortIdMap) : Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
                 if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots.");
                 userState[chatId] = 'WAITING_BROADCAST_MSG';
@@ -1067,6 +1070,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Dashboard":
+                deleteUserCommand(bot, msg);
                 let user = await getUser(userId);
                 if (!user) {
                     await createUser(userId);
@@ -1094,6 +1098,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "My Account":
+                deleteUserCommand(bot, msg);
                 let accUser = await getUser(userId);
                 if (!accUser) {
                     await createUser(userId);
@@ -1120,6 +1125,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Referrals":
+                deleteUserCommand(bot, msg);
                 let refUser = await getUser(userId);
                 if (!refUser) {
                     await createUser(userId);
@@ -1135,6 +1141,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Withdraw":
+                deleteUserCommand(bot, msg);
                 let wUser = await getUser(userId);
                 if (!wUser) {
                     await createUser(userId);
@@ -1168,6 +1175,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Clear Contact List":
+                deleteUserCommand(bot, msg);
                 if(isUserAdmin) {
                     await clearAllNumbers();
                     sendMenu(bot, chatId, "[CLEARED] Database.");
@@ -1175,6 +1183,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Support":
+                deleteUserCommand(bot, msg);
                 userState[chatId] = 'WAITING_SUPPORT_ISSUE';
                 bot.sendMessage(chatId, '[SUPPORT]\n\nPlease describe your issue or question:', {
                     reply_markup: {

@@ -3,7 +3,7 @@ import {
     getUser, createUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
     setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb,
     getTodayEarnings, getYesterdayEarnings, getWithdrawalHistory, getEarningsHistory,
-    markUserVerified, isUserVerified, getPendingWithdrawals, updateWithdrawalStatus, addPointsToUser
+    markUserVerified, isUserVerified, getPendingWithdrawals, updateWithdrawalStatus, addPointsToUser, getWithdrawalDetails
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
@@ -748,6 +748,41 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 `[SECURITY VERIFICATION]\n\nTo prevent bot abuse, please answer this CAPTCHA:\n\nWhat is: ${captcha}?\n\nReply with the 6 digits above.`,
                 { reply_markup: { force_reply: true } }
             );
+        }
+    });
+
+    bot.onText(/\/add\s+(\d+)\s+([\d\-]+)/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        if (userId !== ADMIN_ID) {
+            return bot.sendMessage(chatId, '[ERROR] Admin only.');
+        }
+        
+        const targetUserId = match[1];
+        const pointsChange = parseInt(match[2]);
+        
+        if (isNaN(pointsChange) || pointsChange === 0) {
+            return bot.sendMessage(chatId, '[ERROR] Invalid amount. Use: /add <user_id> <+/-points>\nExample: /add 12345 +100 or /add 12345 -50');
+        }
+        
+        const user = await getUser(targetUserId);
+        if (!user) {
+            return bot.sendMessage(chatId, `[ERROR] User ${targetUserId} not found.`);
+        }
+        
+        if (pointsChange > 0) {
+            await addPointsToUser(targetUserId, pointsChange);
+            bot.sendMessage(chatId, `[SUCCESS] Added ${pointsChange} points to user ${targetUserId}`);
+            bot.sendMessage(targetUserId, `You received ${pointsChange} bonus points!`, getKeyboard(targetUserId));
+        } else {
+            const newPoints = user.points + pointsChange;
+            if (newPoints < 0) {
+                return bot.sendMessage(chatId, `[ERROR] User only has ${user.points} points.`);
+            }
+            await addPointsToUser(targetUserId, pointsChange);
+            bot.sendMessage(chatId, `[SUCCESS] Deducted ${Math.abs(pointsChange)} points from user ${targetUserId}`);
+            bot.sendMessage(targetUserId, `${Math.abs(pointsChange)} points were deducted from your account.`, getKeyboard(targetUserId));
         }
     });
 

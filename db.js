@@ -339,3 +339,8 @@ export async function addPointsToUser(telegramId, points) {
     await pool.query('UPDATE users SET points = points + $1 WHERE telegram_id = $2', [points, telegramId]);
 }
 
+export async function getWithdrawalDetails(withdrawalId) {
+    const res = await pool.query('SELECT telegram_id, amount_points FROM withdrawals WHERE id = $1', [withdrawalId]);
+    return res.rows[0];
+}
+

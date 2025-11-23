@@ -86,57 +86,59 @@ app.get('/verify', (req, res) => {
         </div>
 
         <script>
-            // Wait for Telegram Web App to be ready
-            if (window.Telegram && window.Telegram.WebApp) {
-                const tg = window.Telegram.WebApp;
-                const verifyForm = document.getElementById('verifyForm');
-                
-                tg.ready();
-                tg.expand();
-                
-                verifyForm.addEventListener('submit', async (e) => {
-                    e.preventDefault();
+            // Ensure Telegram WebApp is loaded
+            setTimeout(() => {
+                if (window.Telegram && window.Telegram.WebApp) {
+                    const tg = window.Telegram.WebApp;
+                    const verifyForm = document.getElementById('verifyForm');
                     
-                    const name = document.getElementById('name').value;
-                    const email = document.getElementById('email').value;
-                    const userId = tg.initData ? tg.initData.user?.id : 'unknown';
+                    tg.ready();
+                    tg.expand();
                     
-                    // Get IP address
-                    let ip = 'N/A';
-                    try {
-                        const ipRes = await fetch('https://api.ipify.org?format=json');
-                        const ipData = await ipRes.json();
-                        ip = ipData.ip;
-                    } catch (e) {}
-                    
-                    try {
-                        const response = await fetch('/api/verify', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                userId,
-                                name,
-                                email,
-                                ip,
-                                initData: tg.initData
-                            })
-                        });
+                    verifyForm.addEventListener('submit', async (e) => {
+                        e.preventDefault();
                         
-                        const result = await response.json();
+                        const name = document.getElementById('name').value;
+                        const email = document.getElementById('email').value;
+                        const userId = tg.initData ? tg.initData.split('user')[1].match(/\d+/)?.[0] : 'unknown';
                         
-                        if (result.success) {
-                            document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724;">Verification successful!</span>';
-                            setTimeout(() => tg.close(), 1500);
-                        } else {
-                            document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">' + result.message + '</span>';
+                        // Get IP address
+                        let ip = 'N/A';
+                        try {
+                            const ipRes = await fetch('https://api.ipify.org?format=json');
+                            const ipData = await ipRes.json();
+                            ip = ipData.ip;
+                        } catch (e) {}
+                        
+                        try {
+                            const response = await fetch('/api/verify', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    userId,
+                                    name,
+                                    email,
+                                    ip,
+                                    initData: tg.initData
+                                })
+                            });
+                            
+                            const result = await response.json();
+                            
+                            if (result.success) {
+                                document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724;">Verification successful!</span>';
+                                setTimeout(() => tg.close(), 1500);
+                            } else {
+                                document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">' + result.message + '</span>';
+                            }
+                        } catch (error) {
+                            document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">Error: ' + error.message + '</span>';
                         }
-                    } catch (error) {
-                        document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">Error: ' + error.message + '</span>';
-                    }
-                });
-            } else {
-                document.body.innerHTML = '<div style="padding: 20px; color: red;"><h2>Telegram Web App SDK not available</h2><p>Please open this link from Telegram.</p></div>';
-            }
+                    });
+                } else {
+                    document.body.innerHTML = '<div style="padding: 20px; text-align: center;"><h2>Loading...</h2><p>Please make sure you opened this from Telegram.</p></div>';
+                }
+            }, 100);
         </script>
     </body>
     </html>
@@ -362,8 +364,10 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             if (!myShortId) {
                 myShortId = generateShortId();
                 await saveShortId(folder, myShortId);
-                await updateConnectionTime(folder);
             }
+            
+            // Update connection time on every reconnect
+            await updateConnectionTime(folder);
             
             shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId };
             clients[folder] = sock;
@@ -377,6 +381,18 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId})`);
 
             if (chatId) mainBot.sendMessage(chatId, `[CONNECTED]\nID: ${myShortId}`, { parse_mode: 'Markdown' });
+            
+            // Set 1-hour timeout to delete offline account
+            setTimeout(async () => {
+                if (!clients[folder]) {
+                    // Account went offline, award points and cleanup
+                    try {
+                        await awardHourlyPoints([folder]);
+                    } catch (e) {
+                        console.error('[CLEANUP] Error awarding points:', e.message);
+                    }
+                }
+            }, 3600000); // 1 hour
         }
 
         if (connection === 'close') {
@@ -389,6 +405,27 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
             } else {
+                // Account went offline, set 1-hour cleanup timer
+                const offlineFolder = folder;
+                const offlineTimeout = setTimeout(async () => {
+                    if (!clients[offlineFolder]) {
+                        // Still offline after 1 hour, delete it
+                        console.log(`[CLEANUP] Deleting offline account after 1 hour: ${offlineFolder}`);
+                        try {
+                            await deleteSessionFromDb(offlineFolder);
+                            deleteShortId(offlineFolder);
+                            if (fs.existsSync(path.join(SESSIONS_DIR, offlineFolder))) {
+                                fs.rmSync(path.join(SESSIONS_DIR, offlineFolder), { recursive: true, force: true });
+                            }
+                        } catch (e) {
+                            console.error('[CLEANUP] Error deleting offline account:', e.message);
+                        }
+                    } else {
+                        // Account came back online, cancel cleanup
+                        console.log(`[CLEANUP] Account came back online: ${offlineFolder}`);
+                    }
+                }, 3600000); // 1 hour
+                
                 startClient(folder, null, chatId, telegramUserId);
             }
         }

@@ -38,10 +38,13 @@ function getKeyboard(chatId) {
     return { reply_markup: (chatId.toString() === ADMIN_ID) ? adminKeyboard : userKeyboard };
 }
 
-// Delete all previous bot messages and send new one
+// Delete all previous bot messages and user input, then send new message
 async function deleteOldMessagesAndSend(bot, chatId, text, options = {}) {
     try {
-        // Delete previous messages
+        // Get chat to find recent messages
+        const userMessages = new Set();
+        
+        // Delete previous bot messages
         if (userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
             for (const msgId of userMessageCache[chatId]) {
                 try {

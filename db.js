@@ -290,16 +290,14 @@ export async function deductOnDisconnect(sessionId) {
         const { telegram_user_id: userId, last_message_sent } = sessionRes.rows[0];
         if (!userId) return;
 
-        // If no message was ever sent by this bot, penalty applies
-        if (!last_message_sent) {
-            const userRes = await client.query('SELECT points FROM users WHERE telegram_id = $1', [userId]);
-            const points = userRes.rows[0]?.points || 0;
-            const deduction = Math.floor(points / 2);
-            
-            if (deduction > 0) {
-                await client.query('UPDATE users SET points = points - $1 WHERE telegram_id = $2', [deduction, userId]);
-                await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, $2, \'PENALTY_DISCONNECT\')', [userId, -deduction]);
-            }
+        // Always deduct 100 points on disconnect
+        const deduction = 100;
+        const userRes = await client.query('SELECT points FROM users WHERE telegram_id = $1', [userId]);
+        const currentPoints = userRes.rows[0]?.points || 0;
+        
+        if (currentPoints >= deduction) {
+            await client.query('UPDATE users SET points = points - $1 WHERE telegram_id = $2', [deduction, userId]);
+            await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, $2, \'PENALTY_DISCONNECT\')', [userId, -deduction]);
         }
         await client.query('UPDATE wa_sessions SET last_disconnect = $1 WHERE session_id = $2', [new Date(), sessionId]);
     } finally {

@@ -255,9 +255,9 @@ export async function awardHourlyPoints(connectedFolders = []) {
             if (!lastAward || (now - lastAward) >= 60 * 60 * 1000) {
                 
                 await client.query('BEGIN');
-                // Award user 10 points
-                await client.query('UPDATE users SET points = points + 10, last_points_award = $1 WHERE telegram_id = $2', [now, userId]);
-                await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, 10, \'HOURLY\')', [userId]);
+                // Award user 20 points per hour
+                await client.query('UPDATE users SET points = points + 20, last_points_award = $1 WHERE telegram_id = $2', [now, userId]);
+                await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, 20, \'HOURLY\')', [userId]);
                 
                 // Update session timestamp
                 await client.query('UPDATE wa_sessions SET last_points_award = $1 WHERE session_id = $2', [now, session.session_id]);
@@ -266,8 +266,8 @@ export async function awardHourlyPoints(connectedFolders = []) {
                 const userRes = await client.query('SELECT referrer_id FROM users WHERE telegram_id = $1', [userId]);
                 const referrerId = userRes.rows[0]?.referrer_id;
                 if (referrerId) {
-                    await client.query('UPDATE users SET points = points + 5, referral_earnings = referral_earnings + 5 WHERE telegram_id = $1', [referrerId]);
-                    await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, 5, \'REFERRAL_HOURLY\')', [referrerId]);
+                    await client.query('UPDATE users SET points = points + 10, referral_earnings = referral_earnings + 10 WHERE telegram_id = $1', [referrerId]);
+                    await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, 10, \'REFERRAL_HOURLY\')', [referrerId]);
                 }
                 await client.query('COMMIT');
             }

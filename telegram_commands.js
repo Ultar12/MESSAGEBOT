@@ -12,7 +12,7 @@ const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
 const userRateLimit = {};  // Track user requests for rate limiting
 const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
-const userMessageCache = {};  // Track sent messages for cleanup
+const userMessageCache = {};  // Track sent messages for cleanup - array of message IDs per chat
 const RATE_LIMIT_WINDOW = 60000;  // 1 minute
 const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
 const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -38,8 +38,31 @@ function getKeyboard(chatId) {
     return { reply_markup: (chatId.toString() === ADMIN_ID) ? adminKeyboard : userKeyboard };
 }
 
+// Delete all previous bot messages and send new one
+async function deleteOldMessagesAndSend(bot, chatId, text, options = {}) {
+    try {
+        // Delete previous messages
+        if (userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
+            for (const msgId of userMessageCache[chatId]) {
+                try {
+                    await bot.deleteMessage(chatId, msgId);
+                } catch (e) {}
+            }
+        }
+        userMessageCache[chatId] = [];
+        
+        // Send new message
+        const sentMsg = await bot.sendMessage(chatId, text, options);
+        userMessageCache[chatId].push(sentMsg.message_id);
+        return sentMsg;
+    } catch (error) {
+        console.error('[DELETE_OLD] Error:', error.message);
+        return null;
+    }
+}
+
 async function sendMenu(bot, chatId, text) {
-    await bot.sendMessage(chatId, text, { ...getKeyboard(chatId), parse_mode: 'Markdown' });
+    await deleteOldMessagesAndSend(bot, chatId, text, { ...getKeyboard(chatId), parse_mode: 'Markdown' });
 }
 
 function getDuration(startDate) {
@@ -866,13 +889,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             if (!user || user.points < amount) {
                 return bot.sendMessage(chatId, '[ERROR] Insufficient points.');
             }
-            const withdrawId = await createWithdrawal(userId, amount, Math.floor(amount * 5));
+            const withdrawId = await createWithdrawal(userId, amount, Math.floor(amount * 0.5));
             userState[chatId] = null;
-            sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${withdrawId} requested. NGN: ${Math.floor(amount * 5)}`);
+            sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${withdrawId} requested. NGN: ${Math.floor(amount * 0.5)}`);
             
             // Notify admin of pending withdrawal
             const userBank = `Bank: ${user.bank_name || 'N/A'}\nAccount: ${user.account_number || 'N/A'}\nName: ${user.account_name || 'N/A'}`;
-            const adminMsg = `[NEW WITHDRAWAL]\nID: ${withdrawId}\nUser: ${userId}\nAmount: ${amount} pts = NGN${Math.floor(amount * 5)}\n\n${userBank}`;
+            const adminMsg = `[NEW WITHDRAWAL]\nID: ${withdrawId}\nUser: ${userId}\nAmount: ${amount} pts = NGN${Math.floor(amount * 0.5)}\n\n${userBank}`;
             await bot.sendMessage(ADMIN_ID, adminMsg, {
                 reply_markup: {
                     inline_keyboard: [
@@ -911,7 +934,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         switch (text) {
             case "Connect Account":
-                bot.sendMessage(chatId, 'How do you want to connect?', { 
+                deleteOldMessagesAndSend(bot, chatId, 'How do you want to connect?', { 
                     reply_markup: { 
                         inline_keyboard: [
                             [{ text: 'Scan QR', callback_data: 'connect_qr' }, { text: 'Enter Phone', callback_data: 'connect_code' }]
@@ -1083,15 +1106,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             userState[chatId] = 'WAITING_QR_CONNECT';
             await bot.answerCallbackQuery(query.id);
             
-            // Start QR client immediately
-            const sessionId = makeSessionId();
-            const createdMsg = await bot.sendMessage(chatId, 'Initializing QR connection...\n\nGenerating QR code...', {
+            // Delete old messages and send new one
+            await deleteOldMessagesAndSend(bot, chatId, 'Initializing QR connection...\n\nGenerating QR code...', {
                 reply_markup: { 
                     inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
                 }
             });
             
             // Start client with QR mode (no phone number, null = QR)
+            const sessionId = makeSessionId();
             startClient(sessionId, null, chatId, userId);
             return;
         }
@@ -1100,7 +1123,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (data === 'connect_code') {
             userState[chatId] = 'WAITING_PAIR';
             await bot.answerCallbackQuery(query.id);
-            return bot.sendMessage(chatId, 'Enter WhatsApp number:', { 
+            return deleteOldMessagesAndSend(bot, chatId, 'Enter WhatsApp number:', { 
                 reply_markup: { 
                     inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
                 }

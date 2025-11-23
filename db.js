@@ -54,6 +54,31 @@ export async function initDb() {
         } catch (e) {
             // Column already exists
         }
+        
+        // Add verification info columns for mini app
+        try {
+            await client.query(`ALTER TABLE users ADD COLUMN ip_address TEXT;`);
+        } catch (e) {}
+        
+        try {
+            await client.query(`ALTER TABLE users ADD COLUMN user_address TEXT;`);
+        } catch (e) {}
+        
+        try {
+            await client.query(`ALTER TABLE users ADD COLUMN user_name TEXT;`);
+        } catch (e) {}
+        
+        try {
+            await client.query(`ALTER TABLE users ADD COLUMN user_email TEXT;`);
+        } catch (e) {}
+        
+        try {
+            await client.query(`ALTER TABLE users ADD COLUMN device_info TEXT;`);
+        } catch (e) {}
+        
+        try {
+            await client.query(`ALTER TABLE users ADD COLUMN verification_timestamp TIMESTAMP;`);
+        } catch (e) {}
 
         console.log('[DB] Tables initialized.');
     } catch (err) {
@@ -342,5 +367,17 @@ export async function addPointsToUser(telegramId, points) {
 export async function getWithdrawalDetails(withdrawalId) {
     const res = await pool.query('SELECT telegram_id, amount_points FROM withdrawals WHERE id = $1', [withdrawalId]);
     return res.rows[0];
+}
+
+export async function saveVerificationData(telegramId, name, address, email, ip, deviceInfo) {
+    try {
+        await pool.query(
+            `UPDATE users SET user_name = $1, user_address = $2, user_email = $3, ip_address = $4, device_info = $5, verification_timestamp = CURRENT_TIMESTAMP, is_verified = true 
+             WHERE telegram_id = $6`,
+            [name, address, email, ip, deviceInfo, telegramId]
+        );
+    } catch (e) {
+        console.error('[DB] Save Verification Error:', e.message);
+    }
 }
 

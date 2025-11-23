@@ -687,7 +687,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const userId = chatId.toString();
         userState[chatId] = null;
         
-        // Admin bypasses CAPTCHA
+        // Admin bypasses verification
         if (userId === ADMIN_ID) {
             return sendMenu(bot, chatId, 'Ultarbot Pro Active - Admin Mode.');
         }
@@ -699,25 +699,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return sendMenu(bot, chatId, 'Ultarbot Pro Active.');
         }
         
-        // NEW USER: Require CAPTCHA with image
-        const captcha = generateCaptcha();
-        userState[chatId] = { step: 'CAPTCHA_PENDING', captchaAnswer: captcha };
-        
-        try {
-            const captchaImage = await generateCaptchaImage(captcha);
-            await bot.sendPhoto(chatId, captchaImage, {
-                caption: `[SECURITY VERIFICATION]\n\nPlease enter the 6 digits shown in the image:`,
-                reply_markup: { 
-                    inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
+        // NEW USER: Show mini app verification button
+        await bot.sendMessage(chatId,
+            '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
+            {
+                reply_markup: {
+                    inline_keyboard: [[
+                        { 
+                            text: 'Verify Now',
+                            web_app: { url: 'https://t.me/ultarbot/verify' }
+                        }
+                    ]]
                 }
-            });
-        } catch (e) {
-            // Fallback to text CAPTCHA if image generation fails
-            bot.sendMessage(chatId, 
-                `[SECURITY VERIFICATION]\n\nTo prevent bot abuse, please answer this CAPTCHA:\n\nWhat is: ${captcha}?\n\nReply with the 6 digits above.`,
-                { reply_markup: { force_reply: true } }
-            );
-        }
+            }
+        );
     });
 
     bot.onText(/\/add\s+(\d+)\s+([\d\-]+)/, async (msg, match) => {

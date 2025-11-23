@@ -147,7 +147,7 @@ app.post('/api/verify', express.json(), async (req, res) => {
     res.json({ success: true, message: 'Verified successfully' });
 });
 
-app.listen(PORT, () => console.log(\`Server on \${PORT}\`));
+app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
 const mainBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });

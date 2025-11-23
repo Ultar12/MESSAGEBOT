@@ -105,7 +105,7 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId) {
+export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '') {
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
@@ -700,6 +700,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
         
         // NEW USER: Show mini app verification button
+        const verifyUrl = serverUrl ? `${serverUrl}/verify` : 'https://t.me/ultarbot/verify';
+        
         await bot.sendMessage(chatId,
             '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
             {
@@ -707,7 +709,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     inline_keyboard: [[
                         { 
                             text: 'Verify Now',
-                            web_app: { url: 'https://t.me/ultarbot/verify' }
+                            web_app: { url: verifyUrl }
                         }
                     ]]
                 }

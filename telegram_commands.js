@@ -938,8 +938,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         if (userState[chatId] === 'WAITING_QR_CONNECT') {
-            // User shouldn't be typing in QR mode, just wait for connection
-            return bot.sendMessage(chatId, 'Please scan the QR code with your WhatsApp camera. Do not type anything.');
+            // User is waiting for QR connection - silently ignore any typed text
+            return;
         }
 
         if (userState[chatId] === 'WAITING_BANK_DETAILS') {

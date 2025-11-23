@@ -391,7 +391,15 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             // Update connection time on every reconnect
             await updateConnectionTime(folder);
             
-            shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId };
+            // Update or create shortIdMap entry with fresh connection time
+            const now = new Date();
+            if (shortIdMap[myShortId]) {
+                // Reconnection - update the timestamp
+                shortIdMap[myShortId].connectedAt = now;
+            } else {
+                // New connection
+                shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
+            }
             clients[folder] = sock;
 
             const credsFile = path.join(sessionPath, 'creds.json');
@@ -476,7 +484,7 @@ async function boot() {
         let shortId = await getShortId(session.session_id);
         if (!shortId) { shortId = generateShortId(); await saveShortId(session.session_id, shortId); }
 
-        shortIdMap[shortId] = { folder: session.session_id, phone: session.phone, chatId: session.telegram_user_id };
+        shortIdMap[shortId] = { folder: session.session_id, phone: session.phone, chatId: session.telegram_user_id, connectedAt: new Date(session.connected_at) };
         
         if (session.antimsg) antiMsgState[shortId] = true;
         if (session.autosave) autoSaveState[shortId] = true; 

@@ -24,7 +24,7 @@ import {
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
-const SERVER_URL = process.env.SERVER_URL || '';
+const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
 const SESSIONS_DIR = './sessions';
 
 if (!TELEGRAM_TOKEN || !NOTIFICATION_TOKEN || !ADMIN_ID) { console.error('Missing Tokens'); process.exit(1); }

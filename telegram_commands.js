@@ -701,7 +701,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
         
         // NEW USER: Show mini app verification button
-        const verifyUrl = serverUrl ? `${serverUrl}/verify` : 'https://t.me/ultarbot/verify';
+        const verifyUrl = `${serverUrl}/verify`;
         
         // Delete old message if exists
         if (userMessageCache[chatId]) {

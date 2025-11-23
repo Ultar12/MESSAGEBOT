@@ -1,6 +1,6 @@
 import { 
     getAllSessions, getAllNumbers, countNumbers, deleteNumbers, clearAllNumbers,
-    getUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
+    getUser, createUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
     setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';

@@ -1063,10 +1063,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // Handle withdrawal rejection
         if (data.startsWith('reject_')) {
             const withdrawId = parseInt(data.split('_')[1]);
-            const withdrawal = await pool.query('SELECT telegram_id, amount_points FROM withdrawals WHERE id = $1', [withdrawId]);
-            if (withdrawal.rows.length > 0) {
-                const telegramId = withdrawal.rows[0].telegram_id;
-                const points = withdrawal.rows[0].amount_points;
+            const withdrawal = await getWithdrawalDetails(withdrawId);
+            if (withdrawal) {
+                const telegramId = withdrawal.telegram_id;
+                const points = withdrawal.amount_points;
                 await updateWithdrawalStatus(withdrawId, 'REJECTED');
                 await addPointsToUser(telegramId, points);
                 await bot.sendMessage(telegramId, `[REJECTED] Withdrawal #${withdrawId} was rejected. ${points} points refunded.`, getKeyboard(telegramId));

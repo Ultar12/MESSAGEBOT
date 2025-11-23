@@ -64,6 +64,17 @@ async function deleteOldMessagesAndSend(bot, chatId, text, options = {}) {
     }
 }
 
+// Delete user command message
+async function deleteUserCommand(bot, msg) {
+    try {
+        if (msg && msg.message_id) {
+            await bot.deleteMessage(msg.chat.id, msg.message_id);
+        }
+    } catch (e) {
+        // Silently ignore if message can't be deleted
+    }
+}
+
 async function sendMenu(bot, chatId, text) {
     await deleteOldMessagesAndSend(bot, chatId, text, { ...getKeyboard(chatId), parse_mode: 'Markdown' });
 }
@@ -216,6 +227,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     // --- SLASH COMMANDS ---
 
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const num = match[1].replace(/[^0-9]/g, '');
         if (num.length < 7 || num.length > 15) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
@@ -225,6 +237,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const num = match[1].replace(/[^0-9]/g, '');
         if (num.length < 7) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
@@ -235,6 +248,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         let inputId = match[1] ? match[1].trim() : null;

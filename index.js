@@ -155,6 +155,13 @@ app.post('/api/verify', async (req, res) => {
     }
     
     try {
+        // Validate userId is a number
+        const chatId = parseInt(userId);
+        if (isNaN(chatId)) {
+            console.error('[VERIFICATION] Invalid userId format:', userId);
+            return res.json({ success: false, message: 'Invalid user ID format' });
+        }
+        
         // Extract device info from navigator if available
         let deviceInfo = 'Mini App User';
         if (initData) {
@@ -175,12 +182,12 @@ app.post('/api/verify', async (req, res) => {
         
         // Send notification to user via Telegram
         try {
-            const sentMsg = await mainBot.sendMessage(userId, 
+            await mainBot.sendMessage(chatId, 
                 `✅ [VERIFICATION COMPLETE]\n\n🎉 Your account has been verified successfully!\n\n📍 IP Address: ${ip}\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Send messages to bulk contacts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
                 { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
             );
         } catch (e) {
-            console.error('[TELEGRAM] Send message error:', e.message);
+            console.error('[TELEGRAM] Send message error to user:', chatId, ':', e.message);
         }
         
         res.json({ success: true, message: 'Verification complete' });

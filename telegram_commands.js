@@ -798,20 +798,37 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // NEW USER: Show mini app verification button
         const verifyUrl = `${serverUrl.replace(/\/$/, '')}/verify`;
         
-        // Delete old messages and send verification
-        return deleteOldMessagesAndSend(bot, chatId,
-            '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
-            {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { 
-                            text: 'Verify Now',
-                            web_app: { url: verifyUrl }
-                        }
-                    ]]
-                }
+        // Delete old messages first
+        if (userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
+            for (const msgId of userMessageCache[chatId]) {
+                try {
+                    await bot.deleteMessage(chatId, msgId);
+                } catch (e) {}
             }
-        );
+        }
+        userMessageCache[chatId] = [];
+        
+        // Send ONLY ONE verification message
+        try {
+            const sentMsg = await bot.sendMessage(chatId,
+                '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
+                {
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { 
+                                text: 'Verify Now',
+                                web_app: { url: verifyUrl }
+                            }
+                        ]]
+                    }
+                }
+            );
+            if (sentMsg && sentMsg.message_id) {
+                userMessageCache[chatId].push(sentMsg.message_id);
+            }
+        } catch (error) {
+            console.error('[START] Error sending verification message:', error.message);
+        }
     });
 
     // /add command - flexible pattern to handle various formats

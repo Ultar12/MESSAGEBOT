@@ -884,6 +884,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const userId = chatId.toString();
         const isUserAdmin = (userId === ADMIN_ID);
         
+        // Prevent duplicate processing of the same message
+        if (userState[chatId + '_lastMsgId'] === msg.message_id) return;
+        userState[chatId + '_lastMsgId'] = msg.message_id;
+        
         // RATE LIMIT CHECK
         if (!isUserAdmin && !checkRateLimit(userId)) {
             return bot.sendMessage(chatId, '[RATE LIMIT] Too many requests. Please wait 1 minute.');

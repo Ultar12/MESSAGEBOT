@@ -1087,7 +1087,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 dashMsg += `REFERRALS: ${refStats.total}\n`;
                 dashMsg += `REFERRAL EARNINGS: ${user?.referral_earnings || 0} points\n`;
                 
-                await bot.sendMessage(chatId, dashMsg, {
+                await deleteOldMessagesAndSend(bot, chatId, dashMsg, {
                     reply_markup: {
                         inline_keyboard: [
                             [{ text: "Earnings Details", callback_data: "earnings_details" }],

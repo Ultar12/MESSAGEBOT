@@ -437,8 +437,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                         keyboard: [
                             [{ text: "Connect Account" }, { text: "My Account" }],
                             [{ text: "Dashboard" }, { text: "Referrals" }],
-                            [{ text: "Withdraw" }, { text: "Support" }],
-                            [{ text: "Broadcast" }, { text: "Scrape Members" }]
+                            [{ text: "Withdraw" }, { text: "Support" }]
                         ], 
                         resize_keyboard: true 
                     } 

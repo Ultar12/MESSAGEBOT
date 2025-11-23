@@ -200,6 +200,7 @@ const antiMsgState = {};
 const autoSaveState = {}; 
 const notificationCache = {};
 const qrMessageCache = {}; // Track QR code messages for deletion
+const qrActiveState = {}; // Track if QR is currently being displayed per folder
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
@@ -257,9 +258,13 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 console.error('Failed to delete QR message:', e.message);
             }
             delete qrMessageCache[folder];
+            delete qrActiveState[folder];
         }
         
-        if (qr && chatId) {
+        // Only display QR once per connection attempt (no spam)
+        if (qr && chatId && !qrActiveState[folder]) {
+            qrActiveState[folder] = true; // Mark QR as active for this session
+            
             try {
                 // Delete old QR message if exists
                 if (qrMessageCache[folder]) {
@@ -274,15 +279,18 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 
                 const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
                     caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.\n\nQR expires in 60 seconds.',
-                    parse_mode: 'Markdown'
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_qr' }]]
+                    }
                 });
                 
                 // Store message ID for later deletion
                 qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
                 
                 // Set timeout to warn user if QR expires (60 seconds)
-                setTimeout(async () => {
-                    if (qrMessageCache[folder]) {
+                const qrTimeout = setTimeout(async () => {
+                    if (qrMessageCache[folder] && qrActiveState[folder]) {
                         try {
                             await mainBot.sendMessage(chatId, '[ERROR] QR code expired. Please tap "Scan QR" again to regenerate.', {
                                 reply_markup: {
@@ -291,13 +299,19 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                             });
                             await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId);
                             delete qrMessageCache[folder];
+                            delete qrActiveState[folder];
                         } catch (e) {}
                     }
                 }, 60000);
                 
+                // Store timeout ID for cleanup
+                if (!qrMessageCache[folder]) qrMessageCache[folder] = {};
+                qrMessageCache[folder].timeoutId = qrTimeout;
+                
             } catch (e) {
                 console.error('QR generation error:', e.message);
                 mainBot.sendMessage(chatId, '[ERROR] Failed to generate QR code. Please try again.').catch(() => {});
+                delete qrActiveState[folder];
             }
         }
     });

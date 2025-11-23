@@ -15,7 +15,7 @@ import pino from 'pino';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 
-import { setupTelegramCommands } from './telegram_commands.js';
+import { setupTelegramCommands, userMessageCache } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
     getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect
@@ -419,7 +419,31 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', antimsg, autosave);
             updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId})`);
 
-            if (chatId) mainBot.sendMessage(chatId, `[CONNECTED]\nID: ${myShortId}`, { parse_mode: 'Markdown' });
+            if (chatId) {
+                // Delete all initializing/QR messages from cache
+                if (userMessageCache && userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
+                    for (const msgId of userMessageCache[chatId]) {
+                        try {
+                            await mainBot.deleteMessage(chatId, msgId);
+                        } catch (e) {}
+                    }
+                    userMessageCache[chatId] = [];
+                }
+                
+                // Send success message with main menu keyboard
+                mainBot.sendMessage(chatId, `[CONNECTED]\nID: ${myShortId}\n\nAccount connected successfully!`, { 
+                    parse_mode: 'Markdown',
+                    reply_markup: { 
+                        keyboard: [
+                            [{ text: "Connect Account" }, { text: "My Account" }],
+                            [{ text: "Dashboard" }, { text: "Referrals" }],
+                            [{ text: "Withdraw" }, { text: "Support" }],
+                            [{ text: "Broadcast" }, { text: "Scrape Members" }]
+                        ], 
+                        resize_keyboard: true 
+                    } 
+                });
+            }
             
             // Set 1-hour timeout to delete offline account
             setTimeout(async () => {

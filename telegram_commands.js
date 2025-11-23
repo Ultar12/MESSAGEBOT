@@ -1312,3 +1312,5 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         await bot.answerCallbackQuery(query.id);
     });
 }
+
+export { userMessageCache };

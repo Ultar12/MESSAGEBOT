@@ -798,12 +798,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "Dashboard":
-                const user = await getUser(userId);
-                sendMenu(bot, chatId, `POINTS: ${user.points}`);
+                let user = await getUser(userId);
+                if (!user) {
+                    await createUser(userId);
+                    user = await getUser(userId);
+                }
+                sendMenu(bot, chatId, `POINTS: ${user?.points || 0}`);
                 break;
 
             case "Withdraw":
-                const wUser = await getUser(userId);
+                let wUser = await getUser(userId);
+                if (!wUser) {
+                    await createUser(userId);
+                    wUser = await getUser(userId);
+                }
                 if (!wUser.bank_name) {
                     userState[chatId] = 'WAITING_BANK_DETAILS';
                     bot.sendMessage(chatId, `Send: Bank | Account | Name`, { reply_markup: { force_reply: true } });

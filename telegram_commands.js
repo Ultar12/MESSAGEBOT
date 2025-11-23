@@ -1068,15 +1068,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     if (allSessions.length === 0) list += "No bots connected.";
                     else {
                         for (const s of allSessions) {
-                            // Try to find ID from RAM first (fastest)
-                            let id = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === s.session_id);
+                            // Get ID directly from database (permanent storage)
+                            const id = s.short_id;
                             
-                            // Fallback to DB if not in RAM (shouldn't happen, but safety measure)
-                            if (!id) {
-                                id = await getShortId(s.session_id);
-                                // If still not found, skip this session (corrupted data)
-                                if (!id) continue;
-                            }
+                            // Skip if no ID (corrupted data)
+                            if (!id) continue;
                             
                             const dur = getDuration(s.connected_at);
                             const status = clients[s.session_id] ? '[ONLINE]' : '[OFFLINE]';
@@ -1136,20 +1132,19 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     accUser = await getUser(userId);
                 }
                 
-                // Get only this user's connected accounts from shortIdMap
-                const userAccountIds = Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
+                // Get only this user's connected accounts from database (permanent storage)
+                const userSessions = await getAllSessions(userId);
                 let accMsg = `[MY ACCOUNT]\n\n`;
                 
-                if (userAccountIds.length === 0) {
+                if (userSessions.length === 0) {
                     accMsg += `No accounts connected.\n`;
                 } else {
-                    for (const id of userAccountIds) {
-                        const sessionData = shortIdMap[id];
-                        const sessionId = sessionData.folder;
-                        const status = clients[sessionId] ? 'ONLINE' : 'OFFLINE';
-                        const dur = getDuration(sessionData.connectedAt || new Date());
-                        const points = sessionData.pointsEarned || 0;
-                        accMsg += `${id} | +${sessionData.phone} | [${status}] | ${dur} | ${points}pts\n`;
+                    for (const session of userSessions) {
+                        const id = session.short_id;
+                        if (!id) continue; // Skip if no ID
+                        const status = clients[session.session_id] ? 'ONLINE' : 'OFFLINE';
+                        const dur = getDuration(session.connected_at);
+                        accMsg += `${id} | +${session.phone} | [${status}] | ${dur}\n`;
                     }
                 }
                 sendMenu(bot, chatId, accMsg);

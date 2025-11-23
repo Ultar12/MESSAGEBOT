@@ -32,6 +32,9 @@ export async function initDb() {
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_points_award TIMESTAMP;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_disconnect TIMESTAMP;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_message_sent TIMESTAMP;`);
+        
+        // NEW: Short ID Column (permanent storage)
+        await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS short_id TEXT UNIQUE;`);
 
         // IDs
         await client.query(`
@@ -89,14 +92,14 @@ export async function initDb() {
 }
 
 // --- SESSIONS ---
-export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave) {
+export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave, shortId = null) {
     try {
         await pool.query(
-            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id, connected_at) 
-             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
+            `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id, connected_at, short_id) 
+             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7) 
              ON CONFLICT (session_id) 
-             DO UPDATE SET creds = $3, phone = $2, antimsg = $4, autosave = $5, telegram_user_id = $6`,
-            [sessionId, phone, credsData, antimsg, autosave, telegramUserId]
+             DO UPDATE SET creds = $3, phone = $2, antimsg = $4, autosave = $5, telegram_user_id = $6, short_id = $7`,
+            [sessionId, phone, credsData, antimsg, autosave, telegramUserId, shortId]
         );
     } catch (e) { console.error('[DB] Save Session Error', e.message); }
 }
@@ -128,6 +131,13 @@ export async function getAllSessions(telegramUserId = null) {
         const res = await pool.query(queryText, queryParams);
         return res.rows;
     } catch (e) { return []; }
+}
+
+export async function getSessionByShortId(shortId) {
+    try {
+        const res = await pool.query('SELECT * FROM wa_sessions WHERE short_id = $1', [shortId]);
+        return res.rows[0] || null;
+    } catch (e) { return null; }
 }
 
 export async function deleteSessionFromDb(sessionId) {

@@ -18,7 +18,7 @@ import { Boom } from '@hapi/boom';
 import { setupTelegramCommands, userMessageCache, userState } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect, deleteUserAccount
+    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, getSessionByShortId
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -420,7 +420,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             const antimsg = antiMsgState[myShortId] || false;
             const autosave = autoSaveState[myShortId] || false;
             
-            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', antimsg, autosave);
+            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', antimsg, autosave, myShortId);
             updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId})`);
 
             if (chatId) {

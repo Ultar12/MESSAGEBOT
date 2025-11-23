@@ -710,22 +710,29 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             } catch (e) {}
         }
         
-        const sentMsg = await bot.sendMessage(chatId,
-            '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
-            {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { 
-                            text: 'Verify Now',
-                            web_app: { url: verifyUrl }
-                        }
-                    ]]
+        try {
+            const sentMsg = await bot.sendMessage(chatId,
+                '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
+                {
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { 
+                                text: 'Verify Now',
+                                web_app: { url: verifyUrl }
+                            }
+                        ]]
+                    }
                 }
+            );
+            
+            // Store message ID for future cleanup
+            if (sentMsg && sentMsg.message_id) {
+                userMessageCache[chatId] = sentMsg.message_id;
             }
-        );
-        
-        // Store message ID for future cleanup
-        userMessageCache[chatId] = sentMsg.message_id;
+        } catch (error) {
+            console.error('[START] Error sending verification message:', error.message);
+            bot.sendMessage(chatId, '[ERROR] Failed to start verification. Please try again.').catch(() => {});
+        }
     });
 
     bot.onText(/\/add\s+(\d+)\s+([\d\-]+)/, async (msg, match) => {

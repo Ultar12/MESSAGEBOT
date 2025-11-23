@@ -318,4 +318,4 @@ export async function isUserVerified(telegramId) {
     const res = await pool.query('SELECT is_verified FROM users WHERE telegram_id = $1', [telegramId]);
     return res.rows[0]?.is_verified || false;
 }
-}
+

@@ -13,7 +13,6 @@ const userState = {};
 const userRateLimit = {};  // Track user requests for rate limiting
 const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
 const userMessageCache = {};  // Track sent messages for cleanup - array of message IDs per chat
-const mathCaptcha = {};  // Store math CAPTCHA questions and answers per user
 const RATE_LIMIT_WINDOW = 60000;  // 1 minute
 const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
 const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -144,7 +143,7 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '') {
+export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}) {
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
@@ -747,7 +746,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
         
         // NEW USER: Show mini app verification button
-        const verifyUrl = `${serverUrl}/verify`;
+        const verifyUrl = `${serverUrl.replace(/\/$/, '')}/verify`;
         
         // Delete old message if exists
         if (userMessageCache[chatId]) {
@@ -1141,6 +1140,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (data === 'connect_qr') {
             userState[chatId] = 'WAITING_QR_CONNECT';
             await bot.answerCallbackQuery(query.id);
+            
+            // Reset QR active state so new QR can be generated
+            for (const folder in qrActiveState) {
+                delete qrActiveState[folder];
+            }
             
             // Delete old messages and send new one
             await deleteOldMessagesAndSend(bot, chatId, 'Initializing QR connection...\n\nGenerating QR code...', {

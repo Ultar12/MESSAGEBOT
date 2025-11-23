@@ -299,7 +299,8 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                             });
                             await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId);
                             delete qrMessageCache[folder];
-                            delete qrActiveState[folder];
+                            // IMPORTANT: Keep qrActiveState[folder] = true to prevent auto-generation
+                            // Only reset when user explicitly taps 'Scan QR' button
                         } catch (e) {}
                     }
                 }, 60000);

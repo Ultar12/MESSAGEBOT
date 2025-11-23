@@ -1104,6 +1104,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return sendMenu(bot, chatId, 'Cancelled.');
         }
 
+        // Handle QR cancel
+        if (data === 'cancel_qr') {
+            userState[chatId] = null;
+            await bot.answerCallbackQuery(query.id, 'QR connection cancelled');
+            try {
+                await bot.deleteMessage(chatId, query.message.message_id);
+            } catch (e) {
+                // Message already deleted, ignore
+            }
+            return sendMenu(bot, chatId, 'QR connection cancelled. Please try again.');
+        }
+
         // Handle QR connection
         if (data === 'connect_qr') {
             userState[chatId] = 'WAITING_QR_CONNECT';

@@ -864,18 +864,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     await createUser(userId);
                     accUser = await getUser(userId);
                 }
-                const userSessions = await getAllSessions(userId);
+                
+                // Get only this user's connected accounts from shortIdMap
+                const userAccountIds = Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
                 let accMsg = `[MY ACCOUNT]\n\n`;
                 accMsg += `USER ID: ${userId}\n`;
                 accMsg += `POINTS: ${accUser?.points || 0}\n\n`;
                 accMsg += `[CONNECTED ACCOUNTS]\n`;
-                if (userSessions.length === 0) {
+                
+                if (userAccountIds.length === 0) {
                     accMsg += `No accounts connected.\n`;
                 } else {
-                    for (const s of userSessions) {
-                        const dur = getDuration(s.connected_at);
-                        const status = clients[s.session_id] ? 'ON' : 'OFF';
-                        accMsg += `[${status}] +${s.phone}\nActive: ${dur}\n--\n`;
+                    for (const id of userAccountIds) {
+                        const sessionData = shortIdMap[id];
+                        const sessionId = sessionData.folder;
+                        const status = clients[sessionId] ? 'ON' : 'OFF';
+                        const dur = getDuration(sessionData.connectedAt || new Date());
+                        accMsg += `[${status}] ID: ${id} | +${sessionData.phone}\nActive: ${dur}\n--\n`;
                     }
                 }
                 accMsg += `\n[BANK DETAILS]\n`;

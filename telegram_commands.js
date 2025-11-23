@@ -746,6 +746,33 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             startClient(sessionId, number, chatId, userId);
             return;
         }
+
+        if (userState[chatId] === 'WAITING_BANK_DETAILS') {
+            const parts = text.split('|').map(p => p.trim());
+            if (parts.length !== 3) {
+                return bot.sendMessage(chatId, '[ERROR] Format: Bank | Account | Name');
+            }
+            const [bankName, accNum, accName] = parts;
+            await updateBank(userId, bankName, accNum, accName);
+            userState[chatId] = null;
+            sendMenu(bot, chatId, '[SUCCESS] Bank details saved.');
+            return;
+        }
+
+        if (userState[chatId] === 'WAITING_WITHDRAW_AMOUNT') {
+            const amount = parseInt(text);
+            if (isNaN(amount) || amount <= 0) {
+                return bot.sendMessage(chatId, '[ERROR] Enter valid amount.');
+            }
+            const user = await getUser(userId);
+            if (!user || user.points < amount) {
+                return bot.sendMessage(chatId, '[ERROR] Insufficient points.');
+            }
+            const withdrawId = await createWithdrawal(userId, amount, Math.floor(amount * 5));
+            userState[chatId] = null;
+            sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${withdrawId} requested. NGN: ${Math.floor(amount * 5)}`);
+            return;
+        }
         
         if (userState[chatId] === 'WAITING_BROADCAST_MSG') {
             const targetId = userState[chatId + '_target'];
@@ -803,7 +830,39 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     await createUser(userId);
                     user = await getUser(userId);
                 }
-                sendMenu(bot, chatId, `POINTS: ${user?.points || 0}`);
+                const refStats = await getReferrals(userId);
+                let dashMsg = `[DASHBOARD]\n\nPOINTS: ${user?.points || 0}\n`;
+                dashMsg += `REFERRALS: ${refStats.total}\n`;
+                dashMsg += `BANK: ${user?.bank_name ? 'Set' : 'Not Set'}\n`;
+                sendMenu(bot, chatId, dashMsg);
+                break;
+
+            case "My Account":
+                let accUser = await getUser(userId);
+                if (!accUser) {
+                    await createUser(userId);
+                    accUser = await getUser(userId);
+                }
+                let accMsg = `[MY ACCOUNT]\n\n`;
+                accMsg += `USER ID: ${userId}\n`;
+                accMsg += `POINTS: ${accUser?.points || 0}\n`;
+                accMsg += `BANK NAME: ${accUser?.bank_name || 'Not Set'}\n`;
+                accMsg += `ACCOUNT NUMBER: ${accUser?.account_number || 'Not Set'}\n`;
+                accMsg += `ACCOUNT NAME: ${accUser?.account_name || 'Not Set'}\n`;
+                sendMenu(bot, chatId, accMsg);
+                break;
+
+            case "Referrals":
+                let refUser = await getUser(userId);
+                if (!refUser) {
+                    await createUser(userId);
+                    refUser = await getUser(userId);
+                }
+                const refData = await getReferrals(userId);
+                let refMsg = `[REFERRALS]\n\n`;
+                refMsg += `TOTAL REFERRALS: ${refData.total}\n`;
+                refMsg += `POINTS PER REFERRAL: 10 points/day (if active)\n`;
+                sendMenu(bot, chatId, refMsg);
                 break;
 
             case "Withdraw":

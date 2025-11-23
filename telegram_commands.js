@@ -735,38 +735,51 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-    bot.onText(/\/add\s+(\d+)\s+([\d\-]+)/, async (msg, match) => {
+    // /add command - flexible pattern to handle various formats
+    bot.onText(/\/add/, async (msg) => {
         const chatId = msg.chat.id;
         const userId = chatId.toString();
+        const fullText = msg.text;
         
         if (userId !== ADMIN_ID) {
             return bot.sendMessage(chatId, '[ERROR] Admin only.');
         }
         
-        const targetUserId = match[1];
-        const pointsChange = parseInt(match[2]);
+        // Parse: /add <user_id> <+/-points>
+        const parts = fullText.split(/\s+/);
+        if (parts.length < 3) {
+            return bot.sendMessage(chatId, '[ERROR] Usage: /add <user_id> <+/-points>\nExample: /add 12345 +100 or /add 12345 -50');
+        }
         
-        if (isNaN(pointsChange) || pointsChange === 0) {
-            return bot.sendMessage(chatId, '[ERROR] Invalid amount. Use: /add <user_id> <+/-points>\nExample: /add 12345 +100 or /add 12345 -50');
+        const targetUserId = parts[1];
+        const pointsStr = parts[2];
+        const pointsChange = parseInt(pointsStr);
+        
+        if (!targetUserId || isNaN(pointsChange) || pointsChange === 0) {
+            return bot.sendMessage(chatId, '[ERROR] Invalid format. Use: /add <user_id> <+/-points>\nExample: /add 12345 +100');
         }
         
         const user = await getUser(targetUserId);
         if (!user) {
-            return bot.sendMessage(chatId, `[ERROR] User ${targetUserId} not found.`);
+            return bot.sendMessage(chatId, `[ERROR] User ${targetUserId} not found in database.`);
         }
         
-        if (pointsChange > 0) {
-            await addPointsToUser(targetUserId, pointsChange);
-            bot.sendMessage(chatId, `[SUCCESS] Added ${pointsChange} points to user ${targetUserId}`);
-            bot.sendMessage(targetUserId, `You received ${pointsChange} bonus points!`, getKeyboard(targetUserId));
-        } else {
-            const newPoints = user.points + pointsChange;
-            if (newPoints < 0) {
-                return bot.sendMessage(chatId, `[ERROR] User only has ${user.points} points.`);
+        try {
+            if (pointsChange > 0) {
+                await addPointsToUser(targetUserId, pointsChange);
+                bot.sendMessage(chatId, `[SUCCESS] Added ${pointsChange} points to user ${targetUserId}. New balance: ${user.points + pointsChange}`);
+                bot.sendMessage(targetUserId, `You received ${pointsChange} bonus points!`, getKeyboard(targetUserId)).catch(() => {});
+            } else {
+                const newPoints = user.points + pointsChange;
+                if (newPoints < 0) {
+                    return bot.sendMessage(chatId, `[ERROR] User only has ${user.points} points. Cannot deduct ${Math.abs(pointsChange)}.`);
+                }
+                await addPointsToUser(targetUserId, pointsChange);
+                bot.sendMessage(chatId, `[SUCCESS] Deducted ${Math.abs(pointsChange)} points from user ${targetUserId}. New balance: ${newPoints}`);
+                bot.sendMessage(targetUserId, `${Math.abs(pointsChange)} points were deducted from your account.`, getKeyboard(targetUserId)).catch(() => {});
             }
-            await addPointsToUser(targetUserId, pointsChange);
-            bot.sendMessage(chatId, `[SUCCESS] Deducted ${Math.abs(pointsChange)} points from user ${targetUserId}`);
-            bot.sendMessage(targetUserId, `${Math.abs(pointsChange)} points were deducted from your account.`, getKeyboard(targetUserId));
+        } catch (error) {
+            bot.sendMessage(chatId, `[ERROR] Failed to update points: ${error.message}`);
         }
     });
 

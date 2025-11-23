@@ -18,7 +18,7 @@ import { Boom } from '@hapi/boom';
 import { setupTelegramCommands } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData
+    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -86,52 +86,57 @@ app.get('/verify', (req, res) => {
         </div>
 
         <script>
-            const tg = window.Telegram.WebApp;
-            const verifyForm = document.getElementById('verifyForm');
-            
-            tg.ready();
-            tg.expand();
-            
-            verifyForm.addEventListener('submit', async (e) => {
-                e.preventDefault();
+            // Wait for Telegram Web App to be ready
+            if (window.Telegram && window.Telegram.WebApp) {
+                const tg = window.Telegram.WebApp;
+                const verifyForm = document.getElementById('verifyForm');
                 
-                const name = document.getElementById('name').value;
-                const email = document.getElementById('email').value;
-                const userId = tg.initData.user.id;
+                tg.ready();
+                tg.expand();
                 
-                // Get IP address
-                let ip = 'N/A';
-                try {
-                    const ipRes = await fetch('https://api.ipify.org?format=json');
-                    const ipData = await ipRes.json();
-                    ip = ipData.ip;
-                } catch (e) {}
-                
-                try {
-                    const response = await fetch('/api/verify', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            userId,
-                            name,
-                            email,
-                            ip,
-                            initData: tg.initData
-                        })
-                    });
+                verifyForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
                     
-                    const result = await response.json();
+                    const name = document.getElementById('name').value;
+                    const email = document.getElementById('email').value;
+                    const userId = tg.initData ? tg.initData.user?.id : 'unknown';
                     
-                    if (result.success) {
-                        document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724;">Verification successful!</span>';
-                        setTimeout(() => tg.close(), 1500);
-                    } else {
-                        document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">' + result.message + '</span>';
+                    // Get IP address
+                    let ip = 'N/A';
+                    try {
+                        const ipRes = await fetch('https://api.ipify.org?format=json');
+                        const ipData = await ipRes.json();
+                        ip = ipData.ip;
+                    } catch (e) {}
+                    
+                    try {
+                        const response = await fetch('/api/verify', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                userId,
+                                name,
+                                email,
+                                ip,
+                                initData: tg.initData
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (result.success) {
+                            document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724;">Verification successful!</span>';
+                            setTimeout(() => tg.close(), 1500);
+                        } else {
+                            document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">' + result.message + '</span>';
+                        }
+                    } catch (error) {
+                        document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">Error: ' + error.message + '</span>';
                     }
-                } catch (error) {
-                    document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">Error: ' + error.message + '</span>';
-                }
-            });
+                });
+            } else {
+                document.body.innerHTML = '<div style="padding: 20px; color: red;"><h2>Telegram Web App SDK not available</h2><p>Please open this link from Telegram.</p></div>';
+            }
         </script>
     </body>
     </html>
@@ -204,15 +209,15 @@ async function updateAdminNotification(message) {
     try { await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' }); } catch (e) {}
 }
 
-// POINTS LOOP
+// HOURLY POINTS LOOP - Award 10 pts/hr per connected account, 5 pts/hr per referral
 setInterval(async () => {
-    const sessions = await getAllSessions();
-    for (const session of sessions) {
-        if (clients[session.session_id] && session.telegram_user_id) {
-            await addPoints(session.telegram_user_id, 10, 'TASK');
-        }
+    try {
+        const connectedFolders = Object.keys(clients);
+        await awardHourlyPoints(connectedFolders);
+    } catch (error) {
+        console.error('[POINTS] Hourly award error:', error.message);
     }
-}, 3600000);
+}, 3600000); // Every 1 hour
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     const sessionPath = path.join(SESSIONS_DIR, folder);
@@ -378,6 +383,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 updateAdminNotification(`[BANNED/LOGGED OUT] +${shortIdMap[folder]?.phone || 'Unknown'}`);
+                await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });

@@ -236,7 +236,7 @@ export async function addPoints(telegramId, amount, type = 'TASK') {
 }
 
 // --- NEW: HOURLY POINTS LOGIC ---
-export async function awardHourlyPoints() {
+export async function awardHourlyPoints(connectedFolders = []) {
     const client = await pool.connect();
     try {
         const now = new Date();
@@ -244,6 +244,11 @@ export async function awardHourlyPoints() {
         for (const session of res.rows) {
             const userId = session.telegram_user_id;
             if (!userId) continue;
+            
+            // Only award if this session is currently connected
+            if (connectedFolders.length > 0 && !connectedFolders.includes(session.session_id)) {
+                continue;
+            }
             
             const lastAward = session.last_points_award ? new Date(session.last_points_award) : null;
             // Check if 1 hour has passed
@@ -269,6 +274,7 @@ export async function awardHourlyPoints() {
         }
     } catch (e) {
         await client.query('ROLLBACK');
+        console.error('[DB] Award hourly points error:', e.message);
     } finally {
         client.release();
     }

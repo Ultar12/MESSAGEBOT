@@ -795,20 +795,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return sendMenu(bot, chatId, 'Ultarbot Pro Active.');
         }
         
-        // NEW USER: Show mini app verification button
+        // NEW USER: Show mini app verification button (only once per session)
+        // Check if we already sent verification message this session
+        if (userMessageCache[chatId] && Array.isArray(userMessageCache[chatId]) && userMessageCache[chatId].length > 0) {
+            return; // Already sent verification, don't send again
+        }
+        
         const verifyUrl = `${serverUrl.replace(/\/$/, '')}/verify`;
         
-        // Delete old messages first
-        if (userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
-            for (const msgId of userMessageCache[chatId]) {
-                try {
-                    await bot.deleteMessage(chatId, msgId);
-                } catch (e) {}
-            }
-        }
-        userMessageCache[chatId] = [];
-        
-        // Send ONLY ONE verification message
+        // Send verification message
         try {
             const sentMsg = await bot.sendMessage(chatId,
                 '[SECURITY VERIFICATION]\n\nPlease complete the user verification to proceed.\n\nTap the button below to verify your details:',
@@ -824,6 +819,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
             );
             if (sentMsg && sentMsg.message_id) {
+                if (!userMessageCache[chatId]) userMessageCache[chatId] = [];
                 userMessageCache[chatId].push(sentMsg.message_id);
             }
         } catch (error) {

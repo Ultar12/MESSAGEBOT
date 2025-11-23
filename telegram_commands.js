@@ -3,10 +3,11 @@ import {
     getUser, createUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
     setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb,
     getTodayEarnings, getYesterdayEarnings, getWithdrawalHistory, getEarningsHistory,
-    markUserVerified, isUserVerified
+    markUserVerified, isUserVerified, getPendingWithdrawals, updateWithdrawalStatus, addPointsToUser
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
+import { Jimp } from 'jimp';
 
 const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
@@ -81,41 +82,45 @@ function generateCaptcha() {
     return captcha;
 }
 
-// Generate CAPTCHA image
+// Generate CAPTCHA image using Jimp
 async function generateCaptchaImage(captchaText) {
-    const canvas = require('canvas');
-    const c = canvas.createCanvas(300, 100);
-    const ctx = c.getContext('2d');
-    
-    // Background
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, 300, 100);
-    
-    // Add some noise lines
-    ctx.strokeStyle = '#cccccc';
-    for (let i = 0; i < 5; i++) {
-        ctx.beginPath();
-        ctx.moveTo(Math.random() * 300, Math.random() * 100);
-        ctx.lineTo(Math.random() * 300, Math.random() * 100);
-        ctx.stroke();
+    try {
+        const image = new Jimp({ width: 300, height: 100, color: 0xffffffff });
+        
+        // Add noise dots
+        for (let i = 0; i < 50; i++) {
+            const x = Math.floor(Math.random() * 300);
+            const y = Math.floor(Math.random() * 100);
+            image.setPixelColor(0xccccccff, x, y);
+        }
+        
+        // Simple text rendering - just use ASCII art representation
+        // Since jimp text is complex, we'll use a simpler visual encoding
+        const textDisplay = captchaText.split('').join('  ');
+        
+        // Create a simple visual representation
+        const textBitmap = new Jimp({ width: 300, height: 100, color: 0xffffffff });
+        
+        // Draw simplified numeric representation
+        for (let i = 0; i < captchaText.length; i++) {
+            const digit = parseInt(captchaText[i]);
+            const baseX = 30 + i * 40;
+            
+            // Draw simple bars to represent digits
+            for (let j = 0; j < digit; j++) {
+                for (let x = baseX; x < baseX + 20; x++) {
+                    for (let y = 20 + (j * 5); y < 20 + (j * 5) + 4; y++) {
+                        textBitmap.setPixelColor(0x000000ff, x, y);
+                    }
+                }
+            }
+        }
+        
+        return await textBitmap.toBuffer('image/png');
+    } catch (e) {
+        console.error('Jimp error:', e.message);
+        return null;
     }
-    
-    // Draw CAPTCHA text
-    ctx.fillStyle = '#000000';
-    ctx.font = 'bold 50px Arial';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    
-    // Add rotation to each character
-    for (let i = 0; i < captchaText.length; i++) {
-        ctx.save();
-        ctx.translate(50 + i * 40, 50);
-        ctx.rotate((Math.random() - 0.5) * 0.4);
-        ctx.fillText(captchaText[i], 0, 0);
-        ctx.restore();
-    }
-    
-    return c.toBuffer('image/png');
 }
 
 // --- OLD SAVE LOGIC (STRICT 1-by-1) ---
@@ -827,6 +832,17 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const withdrawId = await createWithdrawal(userId, amount, Math.floor(amount * 5));
             userState[chatId] = null;
             sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${withdrawId} requested. NGN: ${Math.floor(amount * 5)}`);
+            
+            // Notify admin of pending withdrawal
+            const userBank = `Bank: ${user.bank_name || 'N/A'}\nAccount: ${user.account_number || 'N/A'}\nName: ${user.account_name || 'N/A'}`;
+            const adminMsg = `[NEW WITHDRAWAL]\nID: ${withdrawId}\nUser: ${userId}\nAmount: ${amount} pts = NGN${Math.floor(amount * 5)}\n\n${userBank}`;
+            await bot.sendMessage(ADMIN_ID, adminMsg, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'Approve', callback_data: `approve_${withdrawId}` }, { text: 'Reject', callback_data: `reject_${withdrawId}` }]
+                    ]
+                }
+            });
             return;
         }
         
@@ -998,6 +1014,31 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             await bot.deleteMessage(chatId, query.message.message_id);
             await bot.answerCallbackQuery(query.id);
             return sendMenu(bot, chatId, 'Cancelled.');
+        }
+
+        // Handle withdrawal approval
+        if (data.startsWith('approve_')) {
+            const withdrawId = parseInt(data.split('_')[1]);
+            await updateWithdrawalStatus(withdrawId, 'APPROVED');
+            await bot.editMessageText(`[APPROVED] Withdrawal #${withdrawId} approved.`, { chat_id: chatId, message_id: query.message.message_id });
+            await bot.answerCallbackQuery(query.id, { text: 'Withdrawal approved' });
+            return;
+        }
+
+        // Handle withdrawal rejection
+        if (data.startsWith('reject_')) {
+            const withdrawId = parseInt(data.split('_')[1]);
+            const withdrawal = await pool.query('SELECT telegram_id, amount_points FROM withdrawals WHERE id = $1', [withdrawId]);
+            if (withdrawal.rows.length > 0) {
+                const telegramId = withdrawal.rows[0].telegram_id;
+                const points = withdrawal.rows[0].amount_points;
+                await updateWithdrawalStatus(withdrawId, 'REJECTED');
+                await addPointsToUser(telegramId, points);
+                await bot.sendMessage(telegramId, `[REJECTED] Withdrawal #${withdrawId} was rejected. ${points} points refunded.`, getKeyboard(telegramId));
+            }
+            await bot.editMessageText(`[REJECTED] Withdrawal #${withdrawId} rejected.`, { chat_id: chatId, message_id: query.message.message_id });
+            await bot.answerCallbackQuery(query.id, { text: 'Withdrawal rejected' });
+            return;
         }
 
         if (data === 'earnings_details') {

@@ -326,3 +326,16 @@ export async function isUserVerified(telegramId) {
     return res.rows[0]?.is_verified || false;
 }
 
+export async function getPendingWithdrawals() {
+    const res = await pool.query(`SELECT id, telegram_id, amount_points, amount_ngn, created_at FROM withdrawals WHERE status = 'PENDING' ORDER BY created_at ASC`);
+    return res.rows;
+}
+
+export async function updateWithdrawalStatus(withdrawalId, status) {
+    await pool.query('UPDATE withdrawals SET status = $1 WHERE id = $2', [status, withdrawalId]);
+}
+
+export async function addPointsToUser(telegramId, points) {
+    await pool.query('UPDATE users SET points = points + $1 WHERE telegram_id = $2', [points, telegramId]);
+}
+

@@ -13,6 +13,7 @@ const userState = {};
 const userRateLimit = {};  // Track user requests for rate limiting
 const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
 const userMessageCache = {};  // Track sent messages for cleanup - array of message IDs per chat
+const mathCaptcha = {};  // Store math CAPTCHA questions and answers per user
 const RATE_LIMIT_WINDOW = 60000;  // 1 minute
 const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
 const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -289,6 +290,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         const acc = match[1];
@@ -337,6 +339,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- /scrape command: Join group link and extract members as VCF ---
     bot.onText(/\/scrape\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         let groupLink = match[1];
@@ -534,6 +537,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // Save - EXACT OLD LOGIC (1-by-1 check)
     bot.onText(/\/save/, async (msg) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         
         const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
@@ -634,6 +638,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- /profilepic command: Get profile picture of any WhatsApp number ---
     bot.onText(/\/profilepic\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         let numberOrId = match[1].trim();
@@ -724,6 +729,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     bot.onText(/\/start/, async (msg) => {
+        deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         userState[chatId] = null;
@@ -777,6 +783,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // /add command - flexible pattern to handle various formats
     bot.onText(/\/add/, async (msg) => {
+        deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         const fullText = msg.text;

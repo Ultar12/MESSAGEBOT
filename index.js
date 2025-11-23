@@ -18,7 +18,7 @@ import { Boom } from '@hapi/boom';
 import { setupTelegramCommands, userMessageCache } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect
+    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect, deleteUserAccount
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -137,7 +137,7 @@ app.get('/verify', (req, res) => {
                                 document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; display: block;"><strong>Verification failed</strong><br><br>' + result.message + '</span>';
                             }
                         } catch (error) {
-                            document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24;">Error: ' + error.message + '</span>';
+                            console.error('Verification error:', error.message);
                         }
                     });
                 } else {
@@ -191,10 +191,14 @@ app.post('/api/verify', async (req, res) => {
         // Send notification to user via Telegram
         try {
             const msg = await mainBot.sendMessage(chatId, 
-                `[VERIFICATION COMPLETE]\n\nYour account has been verified successfully!\n\nIP Address: ${ip}\n\nWelcome Bonus: +200 points\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
+                `[VERIFICATION COMPLETE]\n\nYour account has been verified successfully!\n\nWelcome Bonus: +200 points\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
                 { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
             );
             console.log('[VERIFICATION] Confirmation message sent to user:', chatId);
+            
+            // Notify admin of new verified user
+            const notBot = new TelegramBot(process.env.NOTIFICATION_TOKEN, { polling: false });
+            await notBot.sendMessage(ADMIN_ID, `[NEW USER VERIFIED]\nUser ID: ${chatId}\nName: ${name}\nEmail: ${email}\nTime: ${new Date().toISOString()}`);
         } catch (e) {
             console.error('[TELEGRAM] Failed to send confirmation message to user:', chatId, '- Error:', e.message);
         }
@@ -525,5 +529,5 @@ async function boot() {
     }
 }
 
-setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState);
+setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
 boot();

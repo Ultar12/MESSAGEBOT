@@ -404,3 +404,24 @@ export async function saveVerificationData(telegramId, name, address, email, ip,
     }
 }
 
+export async function deleteUserAccount(telegramId) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        
+        // Delete all associated data
+        await client.query('DELETE FROM earnings_history WHERE telegram_id = $1', [telegramId]);
+        await client.query('DELETE FROM withdrawals WHERE telegram_id = $1', [telegramId]);
+        await client.query('DELETE FROM users WHERE telegram_id = $1', [telegramId]);
+        
+        await client.query('COMMIT');
+        console.log('[DB] Deleted user account:', telegramId);
+    } catch (e) {
+        await client.query('ROLLBACK');
+        console.error('[DB] Delete User Error:', e.message);
+        throw e;
+    } finally {
+        client.release();
+    }
+}
+

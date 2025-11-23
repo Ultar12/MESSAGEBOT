@@ -143,7 +143,7 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}) {
+export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null) {
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
@@ -774,6 +774,28 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             } else {
                 bot.sendMessage(chatId, `[ERROR] ${e.message}`);
             }
+        }
+    });
+
+    bot.onText(/\/deluser\s+(\d+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        if (userId !== ADMIN_ID) {
+            return bot.sendMessage(chatId, '[ERROR] Admin only.');
+        }
+        
+        const targetUserId = match[1];
+        if (!targetUserId) {
+            return bot.sendMessage(chatId, '[ERROR] Usage: /deluser <user_id>');
+        }
+        
+        try {
+            await deleteUserAccount(targetUserId);
+            sendMenu(bot, chatId, `[SUCCESS] User ${targetUserId} has been deleted from database.`);
+        } catch (error) {
+            bot.sendMessage(chatId, `[ERROR] Failed to delete user: ${error.message}`);
         }
     });
 

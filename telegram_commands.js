@@ -1339,4 +1339,4 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 }
 
-export { userMessageCache };
+export { userMessageCache, userState };

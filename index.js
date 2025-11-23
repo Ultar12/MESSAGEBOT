@@ -15,7 +15,7 @@ import pino from 'pino';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 
-import { setupTelegramCommands, userMessageCache } from './telegram_commands.js';
+import { setupTelegramCommands, userMessageCache, userState } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
     getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect, deleteUserAccount
@@ -424,6 +424,9 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId})`);
 
             if (chatId) {
+                // Clear any waiting states so bot can listen to commands again
+                userState[chatId] = null;
+                
                 // Delete all initializing/QR messages from cache
                 if (userMessageCache && userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
                     for (const msgId of userMessageCache[chatId]) {

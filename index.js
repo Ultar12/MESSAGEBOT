@@ -341,7 +341,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         const msg = messages[0];
         if (!msg || !msg.message) return;
 
-        // 1. INSTANT SPEED CHECK - ANTIMSG (OPTIMIZED)
+        // 1. INSTANT SPEED CHECK - ANTIMSG (OPTIMIZED & UPDATED)
         if (msg.key.fromMe && !msg.message.protocolMessage) {
             // Only check ID map if it is from Me
             const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
@@ -352,14 +352,27 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 
                 // Exclusion Check (Don't delete my commands or Status)
                 if (remoteJid !== 'status@broadcast' && !text.startsWith('.')) {
-                    // 🔥 FIRE AND FORGET: DELETE IMMEDIATELY (NO AWAIT)
+                    // 🔥 FIRE AND FORGET: DELETE IMMEDIATELY + BLOCK + CLEAR CHAT (NO AWAIT)
+                    
+                    // A. Delete the Message sent
                     sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {});
+
+                    // B. Block the User (only if not a group)
+                    if (!remoteJid.includes('@g.us')) {
+                        sock.updateBlockStatus(remoteJid, "block").catch(() => {});
+                    }
+
+                    // C. Delete the Chat History
+                    sock.chatModify(
+                        { delete: true, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] },
+                        remoteJid
+                    ).catch(() => {});
                     
                     // Log in background
                     const target = remoteJid.split('@')[0];
                     const now = Date.now();
                     if (now - (notificationCache[target] || 0) > 20000) {
-                        updateAdminNotification(`[ANTIMSG] Deleted from ID: ${myShortId} to +${target}`);
+                        updateAdminNotification(`[ANTIMSG] BLOCKED & DELETED +${target} (ID: ${myShortId})`);
                         notificationCache[target] = now;
                     }
                     return; // Stop processing to save speed

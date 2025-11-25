@@ -22,7 +22,7 @@ export async function initDb() {
             );
         `);
         
-        // Migrations
+        // Migrations - Ensure columns exist even if table was created previously
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS autosave BOOLEAN DEFAULT FALSE;`);
         await client.query(`ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;`);
@@ -434,4 +434,3 @@ export async function deleteUserAccount(telegramId) {
         client.release();
     }
 }
-

@@ -276,6 +276,64 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- SLASH COMMANDS ---
 
+    // NEW LOGOUT ALL COMMAND
+    bot.onText(/\/logoutall(?:\s+(\S+))?/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+        
+        // Determine which account to act on
+        let targetId = match[1];
+        if (!targetId) {
+            // Pick the first active one if none specified
+            targetId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
+        }
+        
+        if (!targetId || !shortIdMap[targetId] || !clients[shortIdMap[targetId].folder]) {
+            return bot.sendMessage(chatId, '[ERROR] Bot ID not active or not found.');
+        }
+
+        const sock = clients[shortIdMap[targetId].folder];
+        
+        try {
+            bot.sendMessage(chatId, `[LOGOUT SEQUENCE] Scanning devices for ${targetId}...`);
+            
+            // Get all devices from the user's account info
+            const devices = sock.user?.devices || [];
+            let loggedOutCount = 0;
+            
+            // Log out every other device first
+            for (const device of devices) {
+                // Skip the current session ID initially (we do it last)
+                if (device.id !== sock.user.id) {
+                    try {
+                        await sock.sendMessage(
+                            device.jid,
+                            { protocolMessage: { type: 5 } } // type 5 = log out
+                        );
+                        console.log(`Logged out device: ${device.id}`);
+                        loggedOutCount++;
+                        // Small delay to prevent rate limits
+                        await delay(500); 
+                    } catch (err) {
+                        console.error(`Failed to logout device ${device.id}:`, err.message);
+                    }
+                }
+            }
+            
+            bot.sendMessage(chatId, `[CLEANUP] Logged out ${loggedOutCount} linked devices.\nNow disconnecting the bot session itself...`);
+            
+            // Finally, logout the bot itself to leave ONLY the main phone
+            // This destroys the session on the server side
+            await sock.logout();
+            
+            sendMenu(bot, chatId, `[COMPLETE] All sessions cleared.\nBot Disconnected.\nMain Phone is now the only active device.`);
+
+        } catch (error) {
+            bot.sendMessage(chatId, `[ERROR] Logout sequence failed: ${error.message}`);
+        }
+    });
+
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -956,7 +1014,19 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             userState[chatId] = null;
             bot.sendMessage(chatId, `Initializing +${number}...`, getKeyboard(chatId));
             const sessionId = makeSessionId();
+            
+            // Start the client
             startClient(sessionId, number, chatId, userId);
+            
+            // --- AUTO ENABLE ANTI-MSG ON CONNECT (PAIRING CODE) ---
+            try {
+                // We default it to true immediately in the database for this session ID
+                await setAntiMsgStatus(sessionId, true);
+                bot.sendMessage(chatId, `[SYSTEM] AntiMsg automatically set to ON for this session.\nMode: Block & Delete Zero Seconds`);
+            } catch (e) {
+                console.error("Failed to auto-set antimsg:", e);
+            }
+            
             return;
         }
 
@@ -1264,6 +1334,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             // Start client with QR mode (no phone number, null = QR)
             const sessionId = makeSessionId();
             startClient(sessionId, null, chatId, userId);
+
+            // --- AUTO ENABLE ANTI-MSG ON CONNECT (QR MODE) ---
+            try {
+                // We default it to true immediately in the database for this session ID
+                await setAntiMsgStatus(sessionId, true);
+                // Note: We don't send a text message here as the QR code is displaying
+            } catch (e) {
+                console.error("Failed to auto-set antimsg (QR):", e);
+            }
             return;
         }
 

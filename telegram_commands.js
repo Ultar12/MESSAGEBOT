@@ -276,7 +276,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- SLASH COMMANDS ---
 
-    // NEW LOGOUT ALL COMMAND
+    // 1. LOGOUT ALL (Includes devices + bot)
     bot.onText(/\/logoutall(?:\s+(\S+))?/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -331,6 +331,38 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         } catch (error) {
             bot.sendMessage(chatId, `[ERROR] Logout sequence failed: ${error.message}`);
+        }
+    });
+
+    // 2. NEW LOGOUT SINGLE COMMAND (/logout <ID>)
+    bot.onText(/\/logout\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        
+        const targetId = match[1];
+        if (!targetId || !shortIdMap[targetId]) {
+             return sendMenu(bot, msg.chat.id, `[ERROR] Invalid or inactive Bot ID: ${targetId}`);
+        }
+
+        const sessionData = shortIdMap[targetId];
+        // Check if we have an active client for this ID
+        const sock = clients[sessionData.folder];
+
+        if (!sock) {
+             // Even if not active in memory, we might want to try clean from DB, but logout requires socket
+             return sendMenu(bot, msg.chat.id, `[ERROR] Client ${targetId} is not connected right now.`);
+        }
+
+        try {
+            bot.sendMessage(msg.chat.id, `[LOGGING OUT] ${targetId} (+${sessionData.phone})...`);
+            // This sends the logout request to WhatsApp
+            // It triggers 'connection.update' with DisconnectReason.loggedOut in index.js
+            // which handles the cleanup (deleting DB entry, file folder, etc.)
+            await sock.logout();
+            
+            sendMenu(bot, msg.chat.id, `[SUCCESS] Logout request sent for ${targetId}.`);
+        } catch (e) {
+            bot.sendMessage(msg.chat.id, `[ERROR] Logout failed: ${e.message}`);
         }
     });
 

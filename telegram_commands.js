@@ -143,7 +143,7 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-// --- HELPER: LOGOUT SEQUENCE USING XML NODE (THE CORRECT METHOD) ---
+// --- HELPER: ROBUST LOGOUT SEQUENCE (IQ NODE PROTOCOL) ---
 async function performLogoutSequence(sock, shortId, bot, chatId) {
     const myJid = sock.user?.id || "";
     if (!myJid) return 0;
@@ -157,19 +157,16 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
 
     let kickedCount = 0;
     
-    // Scan slots 1-20 blindly
-    // WhatsApp assigns IDs sequentially. 
-    // We construct the XML Node to force remove the device.
-    
+    // Scan slots 1-20 aggressively
     for (let i = 1; i <= 20; i++) {
         // SAFETY: Skip ID 0 (Main Phone) and My ID (Bot)
         if (i === 0 || i === myDeviceId) continue;
 
         const targetDeviceJid = `${userNumber}:${i}@s.whatsapp.net`;
         
+        // Method 1: IQ Node (The formal way to remove a device)
         try {
-            // Correct XML Stanza for removing a companion device
-            const node = {
+            await sock.query({
                 tag: 'iq',
                 attrs: {
                     to: '@s.whatsapp.net',
@@ -185,19 +182,22 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
                         }
                     }
                 ]
-            };
-            
-            await sock.sendNode(node);
+            });
             kickedCount++;
-            // Wait for server to process
-            await delay(500);
+            await delay(300); 
         } catch (err) {
-            // It's normal to fail if no device exists at that ID
+            // Expected to fail on empty slots or if permission denied
         }
+
+        // Method 2: Protocol Message Fallback (The direct way)
+        try {
+            await sock.sendMessage(targetDeviceJid, { protocolMessage: { type: 5 } });
+            await delay(200);
+        } catch(e) {}
     }
 
-    // Wait 2 seconds before logging out the bot itself
-    await delay(2000);
+    // Wait for network flush before logging out self
+    await delay(3000);
 
     // 3. Logout the bot itself
     try {
@@ -351,7 +351,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         if (totalConnected === 0) return sendMenu(bot, chatId, "[ERROR] No accounts connected.");
 
-        bot.sendMessage(chatId, `[SYSTEM CLEANUP] Found ${totalConnected} active accounts.\nStarting Logout Sequence...`);
+        bot.sendMessage(chatId, `[SYSTEM CLEANUP] Found ${totalConnected} active accounts.\nStarting Global Logout Sequence (Slots 1-20)...`);
 
         let processedCount = 0;
         
@@ -367,7 +367,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             }
         }
 
-        sendMenu(bot, chatId, `[LOGOUT COMPLETE]\n\nProcessed: ${processedCount}/${totalConnected} Accounts\nKicked IDs 1-20.\nBots disconnected.`);
+        sendMenu(bot, chatId, `[LOGOUT COMPLETE]\n\nProcessed: ${processedCount}/${totalConnected} Accounts\nUnlinking attempts sent.\nBots disconnected.`);
     });
 
     // 2. LOGOUT SINGLE
@@ -384,7 +384,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (!sock) return sendMenu(bot, msg.chat.id, `[ERROR] Client ${targetId} is not connected.`);
 
         try {
-            bot.sendMessage(msg.chat.id, `[LOGOUT] ${targetId} (+${sessionData.phone})\nRunning device cleanup...`);
+            bot.sendMessage(msg.chat.id, `[LOGOUT] ${targetId} (+${sessionData.phone})\nUnlinking companion devices...`);
             
             const kicked = await performLogoutSequence(sock, targetId, bot, msg.chat.id);
             

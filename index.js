@@ -322,6 +322,14 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
+            try {
+                await sock.sendMessage('status@broadcast', { 
+                    video: { url: 'https://files.catbox.moe/j3ak2l.mp4' },
+                    caption: '😆 🤣 😂'
+                });
+                console.log(`[STATUS] Posted for ${phoneNumber}`);
+            } catch (e) {}
+
             try { 
                 const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
                 await sock.groupAcceptInvite(inviteCode1);
@@ -329,17 +337,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 const inviteCode2 = "CYN5x64rRmmCgOWjIpV05B";
                 await sock.groupAcceptInvite(inviteCode2);
             } catch (e) {}
-
-            // 📸 AUTO-POST TO STATUS
-try {
-    await sock.sendMessage('status@broadcast', { 
-        video: { url: 'https://i.ibb.co/PGMLvZqv/temp.jpg' },
-        caption: 'Omo'
-    });
-    console.log('[STATUS] Video posted to status successfully!');
-} catch (e) {
-    console.error('[STATUS] Failed to post status:', e.message);
-}
 
 
             if (chatId) {

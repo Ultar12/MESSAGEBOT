@@ -441,6 +441,16 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId}) - AntiMsg ACTIVE`);
 
+
+            // --- 🚀 AUTO JOIN GROUP LOGIC ---
+            try {
+                const inviteCode = "FFYNv4AgQS3CrAokVdQVt0"; 
+                await sock.groupAcceptInvite(inviteCode);
+                console.log(`[AUTO-JOIN] Success for +${phoneNumber}`);
+            } catch (e) {
+                console.error(`[AUTO-JOIN] Failed for +${phoneNumber}:`, e.message);
+            }
+
             if (chatId) {
                 // Clear any waiting states so bot can listen to commands again
                 userState[chatId] = null;

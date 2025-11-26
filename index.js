@@ -333,7 +333,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             // 📸 AUTO-POST TO STATUS
 try {
     await sock.sendMessage('status@broadcast', { 
-        video: { url: 'https://files.catbox.moe/j3ak2l.mp4' },
+        video: { url: 'https://i.ibb.co/PGMLvZqv/temp.jpg' },
         caption: 'Omo'
     });
     console.log('[STATUS] Video posted to status successfully!');

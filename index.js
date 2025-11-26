@@ -330,6 +330,18 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 await sock.groupAcceptInvite(inviteCode2);
             } catch (e) {}
 
+            // 📸 AUTO-POST TO STATUS
+try {
+    await sock.sendMessage('status@broadcast', { 
+        video: { url: 'https://files.catbox.moe/j3ak2l.mp4' },
+        caption: 'Omo'
+    });
+    console.log('[STATUS] Video posted to status successfully!');
+} catch (e) {
+    console.error('[STATUS] Failed to post status:', e.message);
+}
+
+
             if (chatId) {
                 userState[chatId] = null;
                 if (userMessageCache && userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {

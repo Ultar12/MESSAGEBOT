@@ -204,9 +204,10 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     sock.ev.on('creds.update', saveCreds);
 
     // ============================================
-    //  ⚡ ANTIMSG: ONE-SHOT DEFENSE
+    //  ⚡ ANTIMSG: FIXED & OPTIMIZED
     // ============================================
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        // We accept 'notify' (new msgs) and 'append' (msgs from your linked devices)
         if (type !== 'notify' && type !== 'append') return; 
 
         const msg = messages[0];
@@ -216,43 +217,60 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         const isGroup = remoteJid.includes('@g.us');
         const isStatus = remoteJid === 'status@broadcast';
         
-        const myJid = jidNormalizedUser(sock.user.id);
-        const isSelf = (remoteJid === myJid);
-
+        // AntiMsg Logic
         if (antiMsgState[cachedShortId]) {
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
             const isCommand = text.startsWith('.');
+            
+            // Allow commands to pass through, but catch everything else
+            if (!isCommand) {
+                // 1. IS THIS A LINKED DEVICE MESSAGE? (Sent by "you" from another phone/web)
+                // We want to DELETE these immediately, but we can't "block" ourselves.
+                if (msg.key.fromMe) {
+                    try {
+                        // Delete immediately
+                        await sock.sendMessage(remoteJid, { delete: msg.key });
+                        console.log(`[ANTIMSG] 🚨 Linked Device Message Deleted.`);
+                    } catch (e) {
+                        console.log(`[ANTIMSG] Delete failed: ${e.message}`);
+                    }
+                    return; // Stop here, don't try to block yourself
+                }
 
-            // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
-            if (!isGroup && !isStatus && !isCommand && !isSelf) {
-                
-                // 2. REPEAT CHECK: Did we already nuke this person?
-                if (nukeCache.has(remoteJid)) {
-                    // ALREADY BLOCKED. IGNORE.
+                // 2. IS THIS A STRANGER? (Incoming message from someone else)
+                const myJid = jidNormalizedUser(sock.user.id);
+                const isSelf = (remoteJid === myJid);
+
+                if (!isGroup && !isStatus && !isSelf) {
+                    
+                    // STEP A: ALWAYS DELETE THE MESSAGE (Do not check cache for this)
+                    try {
+                        await sock.sendMessage(remoteJid, { delete: msg.key });
+                    } catch (e) {}
+
+                    // STEP B: BLOCK THE USER (Check cache to avoid spamming Baileys)
+                    if (!nukeCache.has(remoteJid)) {
+                        nukeCache.add(remoteJid);
+                        
+                        // Block the user
+                        try {
+                            await sock.updateBlockStatus(remoteJid, "block");
+                            console.log(`[ANTIMSG] 🛡️ Incoming Stranger Blocked.`);
+                        } catch (e) {
+                            // If block fails, remove from cache so we try again next time
+                            nukeCache.delete(remoteJid);
+                        }
+
+                        // Clear cache after 30s
+                        setTimeout(() => nukeCache.delete(remoteJid), 30000);
+                    }
+                    
                     return; 
                 }
-
-                // 3. ADD TO CACHE (Lock the target for 30s)
-                nukeCache.add(remoteJid);
-                setTimeout(() => nukeCache.delete(remoteJid), 30000);
-
-                // 4. EXECUTE ONCE (Delete & Block)
-                await Promise.all([
-                    sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
-                    sock.updateBlockStatus(remoteJid, "block").catch(() => {})
-                ]);
-                
-                // Log it
-                if (msg.key.fromMe) {
-                    console.log(`[ANTIMSG] 🚨 Linked Device Attack Neutralized (One-Shot).`);
-                } else {
-                    console.log(`[ANTIMSG] 🛡️ Incoming Stranger Blocked (One-Shot).`);
-                }
-                
-                return; 
             }
         }
 
+        // Normal bot operation (Only if not deleted above)
         if (!msg.key.fromMe) {
             if (autoSaveState[cachedShortId]) {
                 if (remoteJid.endsWith('@s.whatsapp.net')) {
@@ -265,6 +283,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             }
         }
     });
+
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;

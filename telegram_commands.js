@@ -143,6 +143,70 @@ function parseVcf(vcfContent) {
     return Array.from(numbers);
 }
 
+// --- HELPER: LOGOUT SEQUENCE USING XML NODE (THE CORRECT METHOD) ---
+async function performLogoutSequence(sock, shortId, bot, chatId) {
+    const myJid = sock.user?.id || "";
+    if (!myJid) return 0;
+    
+    // Extract pure number and Device ID
+    const userNumber = myJid.split(':')[0].split('@')[0];
+    let myDeviceId = 0;
+    if (myJid.includes(':')) {
+        myDeviceId = parseInt(myJid.split(':')[1].split('@')[0]);
+    }
+
+    let kickedCount = 0;
+    
+    // Scan slots 1-20 blindly
+    // WhatsApp assigns IDs sequentially. 
+    // We construct the XML Node to force remove the device.
+    
+    for (let i = 1; i <= 20; i++) {
+        // SAFETY: Skip ID 0 (Main Phone) and My ID (Bot)
+        if (i === 0 || i === myDeviceId) continue;
+
+        const targetDeviceJid = `${userNumber}:${i}@s.whatsapp.net`;
+        
+        try {
+            // Correct XML Stanza for removing a companion device
+            const node = {
+                tag: 'iq',
+                attrs: {
+                    to: '@s.whatsapp.net',
+                    type: 'set',
+                    xmlns: 'md'
+                },
+                content: [
+                    {
+                        tag: 'remove-companion-device',
+                        attrs: {
+                            jid: targetDeviceJid,
+                            reason: 'user_initiated'
+                        }
+                    }
+                ]
+            };
+            
+            await sock.sendNode(node);
+            kickedCount++;
+            // Wait for server to process
+            await delay(500);
+        } catch (err) {
+            // It's normal to fail if no device exists at that ID
+        }
+    }
+
+    // Wait 2 seconds before logging out the bot itself
+    await delay(2000);
+
+    // 3. Logout the bot itself
+    try {
+        await sock.logout();
+    } catch(e) {}
+    
+    return kickedCount;
+}
+
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null) {
 
     // --- BURST FORWARD BROADCAST ---
@@ -276,102 +340,55 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // --- SLASH COMMANDS ---
 
-    // 1. LOGOUT ALL (Includes devices + bot)
-    bot.onText(/\/logoutall(?:\s+(\S+))?/, async (msg, match) => {
+    // 1. LOGOUT ALL (Iterates EVERY connected account)
+    bot.onText(/\/logoutall/, async (msg) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
         
-        // Determine which account to act on
-        let targetId = match[1];
-        if (!targetId) {
-            // Pick the first active one if none specified
-            targetId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
-        }
+        const connectedFolders = Object.keys(clients);
+        const totalConnected = connectedFolders.length;
         
-        if (!targetId || !shortIdMap[targetId] || !clients[shortIdMap[targetId].folder]) {
-            return bot.sendMessage(chatId, '[ERROR] Bot ID not active or not found.');
-        }
+        if (totalConnected === 0) return sendMenu(bot, chatId, "[ERROR] No accounts connected.");
 
-        const sock = clients[shortIdMap[targetId].folder];
+        bot.sendMessage(chatId, `[SYSTEM CLEANUP] Found ${totalConnected} active accounts.\nStarting Logout Sequence...`);
+
+        let processedCount = 0;
         
-        try {
-            bot.sendMessage(chatId, `[LOGOUT SEQUENCE] Scanning devices for ${targetId}...`);
+        for (const folder of connectedFolders) {
+            const sock = clients[folder];
+            const shortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder) || 'Unknown';
             
-            // Get user phone number and current device ID
-            const myJid = sock.user?.id || "";
-            // Extract pure number (e.g. 1234567890)
-            const userNumber = myJid.split(':')[0].split('@')[0];
-            
-            // Attempt to get current device ID to avoid logging ourselves out too early
-            let myDeviceId = 0;
-            if (myJid.includes(':')) {
-                myDeviceId = parseInt(myJid.split(':')[1].split('@')[0]);
+            try {
+                await performLogoutSequence(sock, shortId, bot, chatId);
+                processedCount++;
+            } catch (e) {
+                console.error(`Logout failed for ${shortId}:`, e);
             }
-
-            let loggedOutCount = 0;
-            
-            // 🔥 BRUTE FORCE SCAN: WhatsApp usually supports 4 linked devices (Device IDs 1-4).
-            // We scan IDs 1 to 15 to be absolutely sure we hit everything.
-            // We SKIP ID 0 (Main Phone) so it stays connected.
-            
-            for (let i = 1; i <= 15; i++) {
-                // Skip our own device ID (we do it last)
-                if (i === myDeviceId) continue;
-
-                const targetDeviceJid = `${userNumber}:${i}@s.whatsapp.net`;
-                
-                try {
-                    // Send the "Logout" Protocol Message (Type 5)
-                    await sock.sendMessage(
-                        targetDeviceJid,
-                        { protocolMessage: { type: 5 } }
-                    );
-                    
-                    loggedOutCount++;
-                    await delay(300); // Small delay to ensure message goes out
-                } catch (err) {
-                    // Ignore errors for device IDs that don't exist
-                }
-            }
-            
-            bot.sendMessage(chatId, `[CLEANUP] Sent logout signals to ${loggedOutCount} potential slots.\nNow disconnecting the bot session itself...`);
-            
-            // Finally, logout the bot itself (The current active session)
-            await sock.logout();
-            
-            sendMenu(bot, chatId, `[COMPLETE] All sessions cleared.\nBot Disconnected.\nMain Phone is now the only active device.`);
-
-        } catch (error) {
-            bot.sendMessage(chatId, `[ERROR] Logout sequence failed: ${error.message}`);
         }
+
+        sendMenu(bot, chatId, `[LOGOUT COMPLETE]\n\nProcessed: ${processedCount}/${totalConnected} Accounts\nKicked IDs 1-20.\nBots disconnected.`);
     });
 
-    // 2. NEW LOGOUT SINGLE COMMAND (/logout <ID>)
+    // 2. LOGOUT SINGLE
     bot.onText(/\/logout\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         
         const targetId = match[1];
-        if (!targetId || !shortIdMap[targetId]) {
-             return sendMenu(bot, msg.chat.id, `[ERROR] Invalid or inactive Bot ID: ${targetId}`);
-        }
+        if (!targetId || !shortIdMap[targetId]) return sendMenu(bot, msg.chat.id, `[ERROR] Invalid ID: ${targetId}`);
 
         const sessionData = shortIdMap[targetId];
-        // Check if we have an active client for this ID
         const sock = clients[sessionData.folder];
 
-        if (!sock) {
-             // Even if not active in memory, we might want to try clean from DB, but logout requires socket
-             return sendMenu(bot, msg.chat.id, `[ERROR] Client ${targetId} is not connected right now.`);
-        }
+        if (!sock) return sendMenu(bot, msg.chat.id, `[ERROR] Client ${targetId} is not connected.`);
 
         try {
-            bot.sendMessage(msg.chat.id, `[LOGGING OUT] ${targetId} (+${sessionData.phone})...`);
-            // This sends the logout request to WhatsApp
-            await sock.logout();
+            bot.sendMessage(msg.chat.id, `[LOGOUT] ${targetId} (+${sessionData.phone})\nRunning device cleanup...`);
             
-            sendMenu(bot, msg.chat.id, `[SUCCESS] Logout request sent for ${targetId}.`);
+            const kicked = await performLogoutSequence(sock, targetId, bot, msg.chat.id);
+            
+            sendMenu(bot, msg.chat.id, `[SUCCESS] Logout complete for ${targetId}.`);
         } catch (e) {
             bot.sendMessage(msg.chat.id, `[ERROR] Logout failed: ${e.message}`);
         }

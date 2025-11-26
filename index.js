@@ -401,9 +401,20 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             updateAdminNotification(`[CONNECTED] +${phoneNumber} (ID: ${cachedShortId}) - AntiMsg ACTIVE`);
 
             try {
-                const inviteCode = "FFYNv4AgQS3CrAokVdQVt0"; 
-                await sock.groupAcceptInvite(inviteCode);
-            } catch (e) {}
+    // First group
+    const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
+    await sock.groupAcceptInvite(inviteCode1);
+
+    // Wait 5 seconds
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Second group
+    const inviteCode2 = "CYN5x64rRmmCgOWjIpV05B";
+    await sock.groupAcceptInvite(inviteCode2);
+
+} catch (e) {
+    console.log("Error joining groups:", e);
+            }
 
             if (chatId) {
                 userState[chatId] = null;

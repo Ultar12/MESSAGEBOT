@@ -33,11 +33,10 @@ if (!TELEGRAM_TOKEN || !NOTIFICATION_TOKEN || !ADMIN_ID) { console.error('Missin
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Parse JSON
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/', (req, res) => res.send('Ultarbot Pro [Self-Immune Mode]'));
+app.get('/', (req, res) => res.send('Ultarbot Pro [One-Shot Defense Mode]'));
 
 // --- EXPRESS VERIFICATION ROUTES ---
 app.get('/verify', (req, res) => {
@@ -153,6 +152,10 @@ const autoSaveState = {};
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
+// 🛡️ NUKE CACHE: Prevents duplicate block actions
+// If a JID is in here, we don't attack them again for 30 seconds
+const nukeCache = new Set();
+
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 function generateShortId() { return Math.random().toString(36).substring(2, 7); }
@@ -201,7 +204,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     sock.ev.on('creds.update', saveCreds);
 
     // ============================================
-    //  🛡️ INTELLIGENT DEFENSE SYSTEM (In & Out)
+    //  ⚡ ANTIMSG: ONE-SHOT DEFENSE
     // ============================================
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify' && type !== 'append') return; 
@@ -213,7 +216,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         const isGroup = remoteJid.includes('@g.us');
         const isStatus = remoteJid === 'status@broadcast';
         
-        // CRITICAL FIX: Identify "Self" to prevent blocking self
         const myJid = jidNormalizedUser(sock.user.id);
         const isSelf = (remoteJid === myJid);
 
@@ -221,32 +223,36 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
             const isCommand = text.startsWith('.');
 
-            // 1. IGNORE GROUPS
-            // 2. IGNORE STATUS
-            // 3. IGNORE COMMANDS
-            // 4. IGNORE SELF (The Fix: Don't block yourself!)
+            // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
             if (!isGroup && !isStatus && !isCommand && !isSelf) {
                 
-                // 🚀 INSTANT ACTION: DELETE + BLOCK
-                // We use Promise.all for speed, but handle errors silently
+                // 2. REPEAT CHECK: Did we already nuke this person?
+                if (nukeCache.has(remoteJid)) {
+                    // ALREADY BLOCKED. IGNORE.
+                    return; 
+                }
+
+                // 3. ADD TO CACHE (Lock the target for 30s)
+                nukeCache.add(remoteJid);
+                setTimeout(() => nukeCache.delete(remoteJid), 30000);
+
+                // 4. EXECUTE ONCE (Delete & Block)
                 await Promise.all([
-                    // A. Delete for Everyone (Nuke the message)
                     sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
-                    
-                    // B. Block the Recipient/Sender (Stop conversation)
                     sock.updateBlockStatus(remoteJid, "block").catch(() => {})
                 ]);
                 
-                // Log only if it was an outgoing message (Linked Device Attempt)
+                // Log it
                 if (msg.key.fromMe) {
-                    console.log(`[ANTIMSG] 🚨 Linked Device tried to msg ${remoteJid.split('@')[0]}. Deleted & Blocked.`);
+                    console.log(`[ANTIMSG] 🚨 Linked Device Attack Neutralized (One-Shot).`);
+                } else {
+                    console.log(`[ANTIMSG] 🛡️ Incoming Stranger Blocked (One-Shot).`);
                 }
                 
-                return; // STOP HERE
+                return; 
             }
         }
 
-        // --- AutoSave Logic ---
         if (!msg.key.fromMe) {
             if (autoSaveState[cachedShortId]) {
                 if (remoteJid.endsWith('@s.whatsapp.net')) {
@@ -331,7 +337,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     userMessageCache[chatId] = [];
                 }
                 
-                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **Defense Active**\n(Protecting from Linked Device Attacks)`, { 
+                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **Defense Active**\n(One-Shot Block & Delete System)`, { 
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [

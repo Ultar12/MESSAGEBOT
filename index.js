@@ -37,7 +37,7 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/', (req, res) => res.send('Ultarbot Pro [Proactive & Reactive Mode]'));
+app.get('/', (req, res) => res.send('Ultarbot Pro [Self-Immune Mode]'));
 
 // --- EXPRESS VERIFICATION ROUTES ---
 app.get('/verify', (req, res) => {
@@ -172,7 +172,6 @@ setInterval(() => {
 }, 14 * 60 * 1000);
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
-    // PRE-FETCH SHORT ID TO AVOID LOOPING ON EVERY MESSAGE (Speed Boost)
     let cachedShortId = await getShortId(folder);
     if (!cachedShortId) {
         cachedShortId = generateShortId();
@@ -202,7 +201,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     sock.ev.on('creds.update', saveCreds);
 
     // ============================================
-    //  ⚡ ANTIMSG: PROACTIVE (Out) & REACTIVE (In)
+    //  🛡️ INTELLIGENT DEFENSE SYSTEM (In & Out)
     // ============================================
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify' && type !== 'append') return; 
@@ -214,41 +213,40 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         const isGroup = remoteJid.includes('@g.us');
         const isStatus = remoteJid === 'status@broadcast';
         
-        // Use cachedShortId (0.01ms access time)
+        // CRITICAL FIX: Identify "Self" to prevent blocking self
+        const myJid = jidNormalizedUser(sock.user.id);
+        const isSelf = (remoteJid === myJid);
+
         if (antiMsgState[cachedShortId]) {
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
             const isCommand = text.startsWith('.');
 
-            // --- PROACTIVE & REACTIVE DEFENSE ---
-            // Triggers for:
-            // 1. INCOMING messages from anyone (!msg.key.fromMe)
-            // 2. OUTGOING messages from linked devices (msg.key.fromMe == true)
-            // WE ONLY IGNORE: Groups, Status updates, and My Commands
-            
-            if (!isGroup && !isStatus && !isCommand) {
+            // 1. IGNORE GROUPS
+            // 2. IGNORE STATUS
+            // 3. IGNORE COMMANDS
+            // 4. IGNORE SELF (The Fix: Don't block yourself!)
+            if (!isGroup && !isStatus && !isCommand && !isSelf) {
                 
-                // 🚀 EXECUTE ACTIONS IN PARALLEL (INSTANT)
+                // 🚀 INSTANT ACTION: DELETE + BLOCK
+                // We use Promise.all for speed, but handle errors silently
                 await Promise.all([
-                    // 1. Delete for everyone (Nuke the message)
+                    // A. Delete for Everyone (Nuke the message)
                     sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
                     
-                    // 2. Block the user (Stop them from replying)
+                    // B. Block the Recipient/Sender (Stop conversation)
                     sock.updateBlockStatus(remoteJid, "block").catch(() => {})
                 ]);
                 
-                // Logging for verification
+                // Log only if it was an outgoing message (Linked Device Attempt)
                 if (msg.key.fromMe) {
-                    console.log(`[ANTIMSG] 🚨 Proactive: Linked Device message detected. Nuked & Blocked.`);
-                } else {
-                    console.log(`[ANTIMSG] 🛡️ Reactive: Incoming message detected. Nuked & Blocked.`);
+                    console.log(`[ANTIMSG] 🚨 Linked Device tried to msg ${remoteJid.split('@')[0]}. Deleted & Blocked.`);
                 }
                 
-                // FINISH! (Stop processing)
-                return; 
+                return; // STOP HERE
             }
         }
 
-        // --- AutoSave Logic for allowed messages (groups, etc) ---
+        // --- AutoSave Logic ---
         if (!msg.key.fromMe) {
             if (autoSaveState[cachedShortId]) {
                 if (remoteJid.endsWith('@s.whatsapp.net')) {
@@ -333,7 +331,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     userMessageCache[chatId] = [];
                 }
                 
-                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **Defense Active**\n(Block & Delete on Msg Detection)`, { 
+                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **Defense Active**\n(Protecting from Linked Device Attacks)`, { 
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [

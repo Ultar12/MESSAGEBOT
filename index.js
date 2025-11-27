@@ -128,7 +128,7 @@ app.post('/api/join', async (req, res) => {
     res.setTimeout(900000);
 
     const { apiKey, amount, link } = req.body;
-    const MY_SECRET_KEY = "my_secret_password"; // ⚠️ CHANGE THIS
+    const MY_SECRET_KEY = "AIzaSyBds-BuDtWCzQyFCnb9B3JRp8rG2i52soc"; // ⚠️ CHANGE THIS
 
     // 2. Validate Inputs
     if (apiKey !== MY_SECRET_KEY) return res.status(401).json({ success: false, error: 'Invalid API Key' });
@@ -150,7 +150,7 @@ app.post('/api/join', async (req, res) => {
 
     // 5. Notify Admin on Telegram
     try {
-        await mainBot.sendMessage(ADMIN_ID, `[API START] 🚀 Joining Group\nTarget: ${code}\nBots: ${countToJoin}\nSpeed: 1/sec\nEst. Time: ${countToJoin / 60} mins`);
+        await mainBot.sendMessage(ADMIN_ID, `[API START] Joining Group\nTarget: ${code}\nBots: ${countToJoin}\nSpeed: 1/sec\nEst. Time: ${countToJoin / 60} mins`);
     } catch (e) {}
 
     // 6. Initialize Results

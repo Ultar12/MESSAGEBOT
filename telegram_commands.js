@@ -1317,34 +1317,29 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-    // --- LISTENER: Delete Message on Admin Reaction (Fixed & Debug) ---
+        // --- LISTENER: Delete Message on Admin Reaction ---
     bot.on('message_reaction', async (event) => {
-        // 1. Log that an event happened (Check your terminal/console when you react!)
-        console.log(`[REACTION DETECTED] Chat: ${event.chat.id}, Msg: ${event.message_id}`);
+        // ⚠️ CRITICAL: The word 'event' MUST be in the brackets above (event)
+        
+        // Safety check
+        if (!event || !event.user) return;
 
-        // 2. Safety Checks
-        if (!event || !event.user) {
-            console.log('[REACTION FAIL] No user data in reaction.');
-            return;
-        }
-
-        // 3. Clean ID Comparison (Trims spaces to fix .env issues)
+        // Check if Admin
+        // We trim() to ensure no spaces in .env cause issues
         const reactorId = event.user.id.toString().trim();
         const adminId = ADMIN_ID.toString().trim();
 
         if (reactorId === adminId) {
             try {
-                // 4. Attempt Delete
+                // Delete message
                 await bot.deleteMessage(event.chat.id, event.message_id);
-                console.log(`[SUCCESS] Deleted message ${event.message_id}`);
+                console.log(`[DELETED] Message ${event.message_id}`);
             } catch (e) {
-                console.error(`[DELETE ERROR] Bot could not delete: ${e.message}`);
-                // Common causes: Message too old, or Bot is not Admin in the group
+                // Ignore errors
             }
-        } else {
-            console.log(`[IGNORED] Reactor (${reactorId}) is not Admin (${adminId})`);
         }
     });
+
 
 
 

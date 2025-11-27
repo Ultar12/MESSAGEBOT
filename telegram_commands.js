@@ -394,7 +394,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-           // --- /sv Command: Universal Country Code Remover & Batch Sender ---
+    // --- /sv Command: PRIORITY FIX FOR NIGERIA (234 -> 0) ---
     bot.onText(/\/sv/, async (msg) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -404,11 +404,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, '[ERROR] Reply to a VCF file with /sv');
         }
 
-        // 1. EXTENSIVE LIST OF COUNTRY CODES (Sorted by length descending is CRITICAL)
-        // This ensures we match '1242' (Bahamas) before we match '1' (USA)
+        // List of other country codes (excluding 234 for now)
         const countryCodes = [
             '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
-            '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','234','235','236','237','238','239',
+            '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','235','236','237','238','239',
             '240','241','242','243','244','245','246','248','249','250','251','252','253','254','255','256','257','258','260','261','262','263','264','265','266','267','268','269',
             '290','291','297','298','299','350','351','352','353','354','355','356','357','358','359','370','371','372','373','374','375','376','377','378','379',
             '380','381','382','383','385','386','387','389','420','421','423','500','501','502','503','504','505','506','507','508','509','590','591','592','593','594','595','596','597','598','599',
@@ -418,7 +417,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         ];
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Converting to Local Format (All Countries)...');
+            bot.sendMessage(chatId, '[PROCESSING] Fixing Country Codes (Priority: Nigeria)...');
 
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
@@ -429,33 +428,41 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const lines = rawText.split(/\r?\n/);
             
             lines.forEach(line => {
-                if (line.includes('TEL') || line.includes('waid=')) {
-                    // 1. Get pure digits
-                    let cleanNum = line.replace(/[^0-9]/g, '');
+                const upperLine = line.toUpperCase();
+                
+                if (upperLine.includes('TEL') || upperLine.includes('CELL') || upperLine.includes('WAID=')) {
                     
-                    if (cleanNum.length > 7) {
-                        let matched = false;
+                    // Split logic for messy VCFs
+                    const parts = line.split(':');
+                    const valuePart = parts[parts.length - 1]; 
+                    let cleanNum = valuePart.replace(/[^0-9]/g, '');
+                    
+                    if (cleanNum.length > 7 && cleanNum.length < 16) {
                         
-                        // 2. Loop through codes to find the country
+                        // --- PRIORITY CHECK: NIGERIA (234) ---
+                        if (cleanNum.startsWith('234')) {
+                            // Force replace 234 with 0
+                            cleanNum = '0' + cleanNum.substring(3);
+                            if (cleanNum.length > 5) numbers.add(cleanNum);
+                            return; // Skip the loop below, we are done
+                        }
+
+                        // --- UNIVERSAL CHECK: REST OF WORLD ---
+                        let matched = false;
                         for (const code of countryCodes) {
                             if (cleanNum.startsWith(code)) {
-                                // 3. Remove the country code
                                 const stripped = cleanNum.substring(code.length);
-                                
-                                // 4. Add Local Prefix Logic
-                                // Rule: If code is '1' (USA/CAN), usually no prefix. 
-                                // Rule: Everyone else usually adds '0'.
                                 if (code === '1') {
                                     cleanNum = stripped;
                                 } else {
                                     cleanNum = '0' + stripped;
                                 }
                                 matched = true;
-                                break; // Stop after finding the longest match
+                                break;
                             }
                         }
                         
-                        // Only add if it looks like a valid length after stripping
+                        // If it matches or if it's already local, add it
                         if (cleanNum.length > 5) {
                             numbers.add(cleanNum);
                         }
@@ -466,11 +473,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const uniqueNumbers = Array.from(numbers);
             const total = uniqueNumbers.length;
             
-            if (total === 0) return bot.sendMessage(chatId, '[ERROR] No valid numbers found.');
+            if (total === 0) return bot.sendMessage(chatId, '[ERROR] No numbers found.');
 
-            // Split and Send
             const batchSize = Math.ceil(total / 3);
-            bot.sendMessage(chatId, `[FOUND] ${total} numbers (Converted to Local).\n[SENDING] 3 Batches...`);
+            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] 3 Batches...`);
 
             for (let i = 0; i < 3; i++) {
                 const start = i * batchSize;
@@ -488,6 +494,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, `[ERROR] Failed: ${e.message}`);
         }
     });
+
 
  
 

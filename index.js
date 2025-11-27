@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import pino from 'pino';
 import express from 'express';
+import { delay } from '@whiskeysockets/baileys'; 
 import http from 'http'; 
 import { Boom } from '@hapi/boom';
 
@@ -118,6 +119,109 @@ app.get('/verify', (req, res) => {
     `;
     res.send(html);
 });
+
+// --- API: SYNCHRONOUS JOIN (1 Bot Per Second) ---
+app.post('/api/join', async (req, res) => {
+    // 1. Set Timeout to 15 minutes (900,000ms)
+    // This allows up to ~800 bots to join in one request without timing out.
+    req.setTimeout(900000); 
+    res.setTimeout(900000);
+
+    const { apiKey, amount, link } = req.body;
+    const MY_SECRET_KEY = "my_secret_password"; // ⚠️ CHANGE THIS
+
+    // 2. Validate Inputs
+    if (apiKey !== MY_SECRET_KEY) return res.status(401).json({ success: false, error: 'Invalid API Key' });
+    if (!amount || !link) return res.status(400).json({ success: false, error: 'Missing amount or link' });
+
+    // 3. Extract Group Code
+    let code = '';
+    try {
+        code = link.includes('chat.whatsapp.com/') ? link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] : link;
+    } catch (e) {
+        return res.status(400).json({ success: false, error: 'Invalid link format' });
+    }
+
+    // 4. Get Active Bots
+    const activeFolders = Object.keys(clients);
+    if (activeFolders.length === 0) return res.status(503).json({ success: false, error: 'No bots connected' });
+
+    const countToJoin = Math.min(parseInt(amount), activeFolders.length);
+
+    // 5. Notify Admin on Telegram
+    try {
+        await mainBot.sendMessage(ADMIN_ID, `[API START] 🚀 Joining Group\nTarget: ${code}\nBots: ${countToJoin}\nSpeed: 1/sec\nEst. Time: ${countToJoin / 60} mins`);
+    } catch (e) {}
+
+    // 6. Initialize Results
+    const results = {
+        requested: parseInt(amount),
+        processed: countToJoin,
+        success: 0,
+        already_in: 0,
+        failed: 0,
+        details: []
+    };
+
+    // 7. Processing Loop
+    // Monitor connection: stop if the user cancels the request
+    let clientDisconnected = false;
+    req.on('close', () => { clientDisconnected = true; });
+
+    for (let i = 0; i < countToJoin; i++) {
+        if (clientDisconnected) break;
+
+        const folder = activeFolders[i];
+        const sock = clients[folder];
+        
+        // Find phone number for report
+        const phoneNumber = shortIdMap[Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder)]?.phone || folder;
+
+        try {
+            await sock.groupAcceptInvite(code);
+            results.success++;
+            results.details.push({ phone: phoneNumber, status: 'success' });
+        } catch (e) {
+            const err = e.message || "";
+            const status = e.output?.statusCode || 0;
+
+            // Check specific error codes for "Already in group"
+            if (err.includes('participant') || err.includes('exist') || status === 409) {
+                results.already_in++;
+                results.details.push({ phone: phoneNumber, status: 'already_in' });
+            } else {
+                results.failed++;
+                results.details.push({ phone: phoneNumber, status: 'failed', error: err });
+            }
+        }
+
+        // DELAY: 1 Second (1000ms)
+        // Skip delay after the very last one
+        if (i < countToJoin - 1) await delay(1000);
+    }
+
+    // 8. Send Response (if client is still waiting)
+    if (!clientDisconnected) {
+        res.json({
+            success: true,
+            message: "Job Completed",
+            data: results
+        });
+
+        // Final Report to Admin
+        try {
+            await mainBot.sendMessage(ADMIN_ID, 
+                `[API DONE] 🏁\n` +
+                `Target: ${code}\n` +
+                `Success: ${results.success}\n` +
+                `Already In: ${results.already_in}\n` +
+                `Failed: ${results.failed}`
+            );
+        } catch(e) {}
+    }
+});
+
+
 
 app.post('/api/verify', async (req, res) => {
     const { userId, name, email, ip, initData } = req.body;

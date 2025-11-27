@@ -394,12 +394,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-        // --- /sv Command: RAW FILE & VCF PARSER (Universal) ---
-    // Works for .txt, .vcf, or any list of numbers
+            // --- /sv Command: 5 Numbers Per Batch ---
     bot.onText(/\/sv/, async (msg) => {
-        // 1. Delete the user's command
         deleteUserCommand(bot, msg);
-        
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
 
@@ -419,7 +416,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         ];
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Scanning file content...');
+            bot.sendMessage(chatId, '[PROCESSING] Scanning file...');
 
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
@@ -430,68 +427,82 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const lines = rawText.split(/\r?\n/);
             
             lines.forEach(line => {
-                // 1. "Nuclear" Clean: Remove anything that isn't a digit immediately
-                // This allows it to work on VCF lines, TXT lines, CSV lines, anything.
                 let cleanNum = line.replace(/[^0-9]/g, '');
 
-                // 2. Validate Length (7 to 15 digits)
                 if (cleanNum.length > 7 && cleanNum.length < 16) {
-                    
-                    // --- FORCE NIGERIA CHECK (234) ---
+                    // Force Nigeria (234) Check
                     if (cleanNum.startsWith('234')) {
-                        // Remove 234, add 0
                         cleanNum = '0' + cleanNum.substring(3);
                         if (cleanNum.length > 5) numbers.add(cleanNum);
-                        return; // Done with this number
+                        return;
                     }
 
-                    // --- OTHER COUNTRIES CHECK ---
+                    // Other Countries
                     let matched = false;
                     for (const code of countryCodes) {
                         if (cleanNum.startsWith(code)) {
                             const stripped = cleanNum.substring(code.length);
-                            if (code === '1') {
-                                cleanNum = stripped;
-                            } else {
-                                cleanNum = '0' + stripped;
-                            }
+                            cleanNum = (code === '1') ? stripped : '0' + stripped;
                             matched = true;
                             break;
                         }
                     }
-
-                    // If it matches a code OR if it looks like a local number already (e.g. 080...)
-                    if (cleanNum.length > 5) {
-                        numbers.add(cleanNum);
-                    }
+                    if (cleanNum.length > 5) numbers.add(cleanNum);
                 }
             });
 
             const uniqueNumbers = Array.from(numbers);
             const total = uniqueNumbers.length;
             
-            if (total === 0) return bot.sendMessage(chatId, '[ERROR] No valid numbers found in file.');
+            if (total === 0) return bot.sendMessage(chatId, '[ERROR] Empty.');
 
-            // Split and Send
-            const batchSize = Math.ceil(total / 3);
-            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] 3 Batches...`);
+            // --- CHANGED LOGIC: 5 NUMBERS PER BATCH ---
+            const batchSize = 5;
+            const totalBatches = Math.ceil(total / batchSize);
+            
+            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] ${totalBatches} batches (5 per message)...`);
 
-            for (let i = 0; i < 3; i++) {
-                const start = i * batchSize;
-                const end = start + batchSize;
-                const batchChunk = uniqueNumbers.slice(start, end);
-                
+            for (let i = 0; i < total; i += batchSize) {
+                // Get chunk of 5
+                const batchChunk = uniqueNumbers.slice(i, i + batchSize);
                 if (batchChunk.length === 0) continue;
 
-                const msgText = batchChunk.join('\n');
-                await bot.sendMessage(chatId, msgText);
-                await delay(1000); 
+                // Send
+                await bot.sendMessage(chatId, batchChunk.join('\n'));
+                
+                // Delay to prevent Telegram flood limits (Crucial when sending many small messages)
+                await delay(1200); 
             }
+            
+            bot.sendMessage(chatId, '[DONE] All batches sent.');
 
         } catch (e) {
-            bot.sendMessage(chatId, `[ERROR] Failed: ${e.message}`);
+            bot.sendMessage(chatId, `[ERROR] ${e.message}`);
         }
     });
+
+    // --- /stats Command ---
+    bot.onText(/\/stats/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        
+        try {
+            // Count active clients (keys in the clients object)
+            const onlineCount = Object.keys(clients).length;
+            
+            // Count total numbers in database
+            const dbTotal = await countNumbers();
+
+            const text = `*SYSTEM STATISTICS*\n\n` +
+                         `**Online Bots:** ${onlineCount}\n` +
+                         `**Database Numbers:** ${dbTotal}`;
+
+            sendMenu(bot, msg.chat.id, text);
+        } catch (e) {
+            bot.sendMessage(msg.chat.id, `[ERROR] Stats failed: ${e.message}`);
+        }
+    });
+
 
 
 

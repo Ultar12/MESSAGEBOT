@@ -553,6 +553,97 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (contentObj) executeBroadcast(chatId, targetId, contentObj);
     });
 
+        // --- /join [amount] [link] ---
+    // Usage: /join 10 https://chat.whatsapp.com/Dj38...
+    bot.onText(/\/join\s+(\d+)\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+
+        const amount = parseInt(match[1]);
+        const link = match[2];
+
+        // Validate Input
+        if (isNaN(amount) || amount <= 0) {
+            return bot.sendMessage(chatId, '[ERROR] Invalid amount. Usage: /join 10 <link>');
+        }
+        
+        // Extract Invite Code
+        let code = '';
+        try {
+            // Handles both "https://chat..." and just the link
+            if (link.includes('chat.whatsapp.com/')) {
+                code = link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0];
+            } else {
+                code = link;
+            }
+        } catch (e) {
+            return bot.sendMessage(chatId, '[ERROR] Invalid link format.');
+        }
+
+        // Get available active clients
+        // We get keys from clients object because it only contains active connections
+        const activeFolders = Object.keys(clients);
+        const totalAvailable = activeFolders.length;
+
+        if (totalAvailable === 0) return bot.sendMessage(chatId, '[ERROR] No bots connected.');
+
+        // Cap the amount to what we actually have
+        const countToJoin = Math.min(amount, totalAvailable);
+
+        bot.sendMessage(chatId, 
+            `[OPERATION START]\n` +
+            `Target Group: ${code}\n` +
+            `Bots: ${countToJoin}\n` +
+            `Speed: 1 bot / 3 seconds...`
+        );
+
+        let success = 0;
+        let fail = 0;
+
+        // Loop through the selected number of clients
+        for (let i = 0; i < countToJoin; i++) {
+            const folder = activeFolders[i];
+            const sock = clients[folder];
+            
+            // Get Short ID for logging (optional, nice to have)
+            const shortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder) || 'Unknown';
+
+            try {
+                await sock.groupAcceptInvite(code);
+                success++;
+            } catch (e) {
+                // Ignore "already in group" errors to keep stats clean, or count as fail
+                if (e.message && e.message.includes('participant')) {
+                    // Already in group - count as success or ignore
+                    success++; 
+                } else {
+                    fail++;
+                    console.error(`[JOIN FAIL] ${shortId}: ${e.message}`);
+                }
+            }
+
+            // REPORT PROGRESS every 5 bots (to avoid spamming API)
+            if ((i + 1) % 5 === 0) {
+                await bot.sendMessage(chatId, `[PROGRESS] ${i + 1}/${countToJoin} processed...`);
+            }
+
+            // DELAY: 3 Seconds (only if not the last one)
+            if (i < countToJoin - 1) {
+                await delay(3000);
+            }
+        }
+
+        sendMenu(bot, chatId, 
+            `[OPERATION COMPLETE]\n\n` +
+            `Requested: ${amount}\n` +
+            `Processed: ${countToJoin}\n` +
+            `Joined: ${success}\n` +
+            `Failed: ${fail}`
+        );
+    });
+
+
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;

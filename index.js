@@ -356,7 +356,13 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     userMessageCache[chatId] = [];
                 }
                 
-                mainBot.sendMessage(chatId, `[CONNECTED]\nID: \`${cachedShortId}\`\n\nAccount connected successfully!\n\n🛡️ **Defense Active**\n(One-Shot Block & Delete System)`, { 
+                  // --- UPDATED MESSAGE WITH NUMBER ---
+                mainBot.sendMessage(chatId, 
+                    `[CONNECTED]\n` +
+                    `ID: \`${cachedShortId}\`\n` +
+                    `Number: +${phoneNumber}\n\n` +  // <--- Added Number Here
+                    `Account connected successfully!\n\n` +
+                    `**Defense Active**\n(One-Shot Block & Delete System)`,  { 
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [

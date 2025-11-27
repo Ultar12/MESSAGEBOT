@@ -394,44 +394,71 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-       // --- /sv Command: Extract Numbers -> Clean -> Send as 3 Text Batches ---
+           // --- /sv Command: Universal Country Code Remover & Batch Sender ---
     bot.onText(/\/sv/, async (msg) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
-        
         const chatId = msg.chat.id;
 
-        // Check if reply contains document
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(chatId, '[ERROR] Reply to a VCF file with /sv');
         }
 
-        try {
-            bot.sendMessage(chatId, '[PROCESSING] Downloading and converting to text...');
+        // 1. EXTENSIVE LIST OF COUNTRY CODES (Sorted by length descending is CRITICAL)
+        // This ensures we match '1242' (Bahamas) before we match '1' (USA)
+        const countryCodes = [
+            '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
+            '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','234','235','236','237','238','239',
+            '240','241','242','243','244','245','246','248','249','250','251','252','253','254','255','256','257','258','260','261','262','263','264','265','266','267','268','269',
+            '290','291','297','298','299','350','351','352','353','354','355','356','357','358','359','370','371','372','373','374','375','376','377','378','379',
+            '380','381','382','383','385','386','387','389','420','421','423','500','501','502','503','504','505','506','507','508','509','590','591','592','593','594','595','596','597','598','599',
+            '670','672','673','674','675','676','677','678','679','680','681','682','683','685','686','687','688','689','690','691','692','850','852','853','855','856','880','886','960','961','962','963','964','965','966','967','968','970','971','972','973','974','975','976','977','992','993','994','995','996','998',
+            '20','27','30','31','32','33','34','36','39','40','41','43','44','45','46','47','48','49','51','52','53','54','55','56','57','58','60','61','62','63','64','65','66',
+            '81','82','84','86','90','91','92','93','94','95','98','7','1'
+        ];
 
-            // 1. Download File
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Converting to Local Format (All Countries)...');
+
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const rawText = await response.text();
 
-            // 2. Extract & Clean Numbers
             const numbers = new Set();
             const lines = rawText.split(/\r?\n/);
             
             lines.forEach(line => {
-                if (line.includes('TEL')) {
-                    // Remove all non-numeric characters first
+                if (line.includes('TEL') || line.includes('waid=')) {
+                    // 1. Get pure digits
                     let cleanNum = line.replace(/[^0-9]/g, '');
                     
-                    // --- COUNTRY CODE REMOVAL (234 -> 0) ---
-                    // If it starts with 234, replace 234 with 0
-                    if (cleanNum.startsWith('234')) {
-                        cleanNum = '0' + cleanNum.substring(3);
-                    } 
-                    // If it is long enough to be a valid number
-                    if (cleanNum.length > 7 && cleanNum.length < 16) {
-                        numbers.add(cleanNum);
+                    if (cleanNum.length > 7) {
+                        let matched = false;
+                        
+                        // 2. Loop through codes to find the country
+                        for (const code of countryCodes) {
+                            if (cleanNum.startsWith(code)) {
+                                // 3. Remove the country code
+                                const stripped = cleanNum.substring(code.length);
+                                
+                                // 4. Add Local Prefix Logic
+                                // Rule: If code is '1' (USA/CAN), usually no prefix. 
+                                // Rule: Everyone else usually adds '0'.
+                                if (code === '1') {
+                                    cleanNum = stripped;
+                                } else {
+                                    cleanNum = '0' + stripped;
+                                }
+                                matched = true;
+                                break; // Stop after finding the longest match
+                            }
+                        }
+                        
+                        // Only add if it looks like a valid length after stripping
+                        if (cleanNum.length > 5) {
+                            numbers.add(cleanNum);
+                        }
                     }
                 }
             });
@@ -441,10 +468,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             if (total === 0) return bot.sendMessage(chatId, '[ERROR] No valid numbers found.');
 
-            // 3. Split into 3 Batches and Send as Text
+            // Split and Send
             const batchSize = Math.ceil(total / 3);
-            
-            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] 3 Text Lists...`);
+            bot.sendMessage(chatId, `[FOUND] ${total} numbers (Converted to Local).\n[SENDING] 3 Batches...`);
 
             for (let i = 0; i < 3; i++) {
                 const start = i * batchSize;
@@ -453,23 +479,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 
                 if (batchChunk.length === 0) continue;
 
-                // Join numbers with new line
                 const msgText = batchChunk.join('\n');
-
-                // Send as text message
                 await bot.sendMessage(chatId, msgText);
-                
-                // Small delay to keep order
                 await delay(1000); 
             }
-
-            // Optional: Send a completion message
-            // bot.sendMessage(chatId, `[DONE] Sent 3 batches.`);
 
         } catch (e) {
             bot.sendMessage(chatId, `[ERROR] Failed: ${e.message}`);
         }
     });
+
  
 
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {

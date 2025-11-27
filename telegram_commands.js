@@ -604,8 +604,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (contentObj) executeBroadcast(chatId, targetId, contentObj);
     });
 
-        // --- /join [amount] [link] ---
-    // Usage: /join 10 https://chat.whatsapp.com/Dj38...
+            // --- /join [amount] [link] ---
+    // Update: Skips if already in group
     bot.onText(/\/join\s+(\d+)\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -619,10 +619,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, '[ERROR] Invalid amount. Usage: /join 10 <link>');
         }
         
-        // Extract Invite Code
         let code = '';
         try {
-            // Handles both "https://chat..." and just the link
             if (link.includes('chat.whatsapp.com/')) {
                 code = link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0];
             } else {
@@ -632,67 +630,130 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, '[ERROR] Invalid link format.');
         }
 
-        // Get available active clients
-        // We get keys from clients object because it only contains active connections
         const activeFolders = Object.keys(clients);
         const totalAvailable = activeFolders.length;
 
         if (totalAvailable === 0) return bot.sendMessage(chatId, '[ERROR] No bots connected.');
 
-        // Cap the amount to what we actually have
         const countToJoin = Math.min(amount, totalAvailable);
 
         bot.sendMessage(chatId, 
-            `[OPERATION START]\n` +
-            `Target Group: ${code}\n` +
+            `[JOIN START]\n` +
+            `Target: ${code}\n` +
             `Bots: ${countToJoin}\n` +
-            `Speed: 1 bot / 3 seconds...`
+            `Delay: 3s...`
         );
 
         let success = 0;
+        let alreadyIn = 0;
         let fail = 0;
 
-        // Loop through the selected number of clients
         for (let i = 0; i < countToJoin; i++) {
             const folder = activeFolders[i];
             const sock = clients[folder];
             
-            // Get Short ID for logging (optional, nice to have)
-            const shortId = Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder) || 'Unknown';
-
             try {
                 await sock.groupAcceptInvite(code);
                 success++;
             } catch (e) {
-                // Ignore "already in group" errors to keep stats clean, or count as fail
-                if (e.message && e.message.includes('participant')) {
-                    // Already in group - count as success or ignore
-                    success++; 
+                // DETECT ALREADY IN GROUP
+                // Baileys usually throws 409 or specific message
+                const err = e.message || "";
+                const status = e.output?.statusCode || 0;
+
+                if (err.includes('participant') || err.includes('exist') || status === 409) {
+                    alreadyIn++; // Skip, count as "Already In"
                 } else {
                     fail++;
-                    console.error(`[JOIN FAIL] ${shortId}: ${e.message}`);
+                    console.error(`[JOIN ERROR] ${folder}: ${err}`);
                 }
             }
 
-            // REPORT PROGRESS every 5 bots (to avoid spamming API)
+            // Report progress every 5
             if ((i + 1) % 5 === 0) {
-                await bot.sendMessage(chatId, `[PROGRESS] ${i + 1}/${countToJoin} processed...`);
+                await bot.sendMessage(chatId, `[PROGRESS] ${i + 1}/${countToJoin} (✅${success} ⏭️${alreadyIn} ❌${fail})`);
             }
 
-            // DELAY: 3 Seconds (only if not the last one)
-            if (i < countToJoin - 1) {
-                await delay(3000);
-            }
+            // Delay 3s
+            if (i < countToJoin - 1) await delay(3000);
         }
 
         sendMenu(bot, chatId, 
-            `[OPERATION COMPLETE]\n\n` +
+            `[JOIN COMPLETE]\n\n` +
             `Requested: ${amount}\n` +
-            `Processed: ${countToJoin}\n` +
-            `Joined: ${success}\n` +
+            `Success: ${success}\n` +
+            `Skipped (Already in): ${alreadyIn}\n` +
             `Failed: ${fail}`
         );
     });
+
+
+        // --- /leave [link] ---
+    // Makes ALL connected bots leave the group
+    bot.onText(/\/leave\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+        const link = match[1];
+
+        const activeFolders = Object.keys(clients);
+        if (activeFolders.length === 0) return bot.sendMessage(chatId, '[ERROR] No bots connected.');
+
+        bot.sendMessage(chatId, '[LEAVE] Resolving group link...');
+
+        // 1. Extract Code
+        let code = '';
+        try {
+            if (link.includes('chat.whatsapp.com/')) {
+                code = link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0];
+            } else {
+                code = link;
+            }
+        } catch (e) {
+            return bot.sendMessage(chatId, '[ERROR] Invalid link.');
+        }
+
+        // 2. Get Group JID (ID) from the Code
+        // We use the first available bot to look up the ID
+        let groupJid = null;
+        try {
+            const firstSock = clients[activeFolders[0]];
+            const inviteInfo = await firstSock.groupGetInviteInfo(code);
+            groupJid = inviteInfo.id; // This gets the actual ID like 123456@g.us
+        } catch (e) {
+            return bot.sendMessage(chatId, `[ERROR] Could not fetch Group Info. Link might be revoked or invalid.\nRef: ${e.message}`);
+        }
+
+        bot.sendMessage(chatId, `[LEAVE START]\nTarget: ${groupJid}\nBots: ${activeFolders.length}\nDelay: 2s...`);
+
+        let left = 0;
+        let failed = 0;
+
+        // 3. Loop and Leave
+        for (let i = 0; i < activeFolders.length; i++) {
+            const folder = activeFolders[i];
+            const sock = clients[folder];
+
+            try {
+                await sock.groupLeave(groupJid);
+                left++;
+            } catch (e) {
+                // If bot wasn't in the group, it might fail, which is fine.
+                failed++;
+            }
+
+            // Small delay to prevent network flood
+            if (i < activeFolders.length - 1) await delay(2000);
+        }
+
+        sendMenu(bot, chatId, 
+            `[LEAVE COMPLETE]\n\n` +
+            `Target: ${groupJid}\n` +
+            `Left: ${left}\n` +
+            `Failed/Not in group: ${failed}`
+        );
+    });
+
 
 
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {

@@ -394,17 +394,19 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-    // --- /sv Command: PRIORITY FIX FOR NIGERIA (234 -> 0) ---
+        // --- /sv Command: RAW FILE & VCF PARSER (Universal) ---
+    // Works for .txt, .vcf, or any list of numbers
     bot.onText(/\/sv/, async (msg) => {
+        // 1. Delete the user's command
         deleteUserCommand(bot, msg);
+        
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a VCF file with /sv');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sv');
         }
 
-        // List of other country codes (excluding 234 for now)
         const countryCodes = [
             '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
             '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','235','236','237','238','239',
@@ -417,7 +419,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         ];
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Fixing Country Codes (Priority: Nigeria)...');
+            bot.sendMessage(chatId, '[PROCESSING] Scanning file content...');
 
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
@@ -428,44 +430,39 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const lines = rawText.split(/\r?\n/);
             
             lines.forEach(line => {
-                const upperLine = line.toUpperCase();
-                
-                if (upperLine.includes('TEL') || upperLine.includes('CELL') || upperLine.includes('WAID=')) {
-                    
-                    // Split logic for messy VCFs
-                    const parts = line.split(':');
-                    const valuePart = parts[parts.length - 1]; 
-                    let cleanNum = valuePart.replace(/[^0-9]/g, '');
-                    
-                    if (cleanNum.length > 7 && cleanNum.length < 16) {
-                        
-                        // --- PRIORITY CHECK: NIGERIA (234) ---
-                        if (cleanNum.startsWith('234')) {
-                            // Force replace 234 with 0
-                            cleanNum = '0' + cleanNum.substring(3);
-                            if (cleanNum.length > 5) numbers.add(cleanNum);
-                            return; // Skip the loop below, we are done
-                        }
+                // 1. "Nuclear" Clean: Remove anything that isn't a digit immediately
+                // This allows it to work on VCF lines, TXT lines, CSV lines, anything.
+                let cleanNum = line.replace(/[^0-9]/g, '');
 
-                        // --- UNIVERSAL CHECK: REST OF WORLD ---
-                        let matched = false;
-                        for (const code of countryCodes) {
-                            if (cleanNum.startsWith(code)) {
-                                const stripped = cleanNum.substring(code.length);
-                                if (code === '1') {
-                                    cleanNum = stripped;
-                                } else {
-                                    cleanNum = '0' + stripped;
-                                }
-                                matched = true;
-                                break;
+                // 2. Validate Length (7 to 15 digits)
+                if (cleanNum.length > 7 && cleanNum.length < 16) {
+                    
+                    // --- FORCE NIGERIA CHECK (234) ---
+                    if (cleanNum.startsWith('234')) {
+                        // Remove 234, add 0
+                        cleanNum = '0' + cleanNum.substring(3);
+                        if (cleanNum.length > 5) numbers.add(cleanNum);
+                        return; // Done with this number
+                    }
+
+                    // --- OTHER COUNTRIES CHECK ---
+                    let matched = false;
+                    for (const code of countryCodes) {
+                        if (cleanNum.startsWith(code)) {
+                            const stripped = cleanNum.substring(code.length);
+                            if (code === '1') {
+                                cleanNum = stripped;
+                            } else {
+                                cleanNum = '0' + stripped;
                             }
+                            matched = true;
+                            break;
                         }
-                        
-                        // If it matches or if it's already local, add it
-                        if (cleanNum.length > 5) {
-                            numbers.add(cleanNum);
-                        }
+                    }
+
+                    // If it matches a code OR if it looks like a local number already (e.g. 080...)
+                    if (cleanNum.length > 5) {
+                        numbers.add(cleanNum);
                     }
                 }
             });
@@ -473,8 +470,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const uniqueNumbers = Array.from(numbers);
             const total = uniqueNumbers.length;
             
-            if (total === 0) return bot.sendMessage(chatId, '[ERROR] No numbers found.');
+            if (total === 0) return bot.sendMessage(chatId, '[ERROR] No valid numbers found in file.');
 
+            // Split and Send
             const batchSize = Math.ceil(total / 3);
             bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] 3 Batches...`);
 
@@ -494,6 +492,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, `[ERROR] Failed: ${e.message}`);
         }
     });
+
 
 
  

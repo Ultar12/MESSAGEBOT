@@ -394,6 +394,84 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+       // --- /sv Command: Extract Numbers -> Clean -> Send as 3 Text Batches ---
+    bot.onText(/\/sv/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        
+        const chatId = msg.chat.id;
+
+        // Check if reply contains document
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a VCF file with /sv');
+        }
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Downloading and converting to text...');
+
+            // 1. Download File
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const rawText = await response.text();
+
+            // 2. Extract & Clean Numbers
+            const numbers = new Set();
+            const lines = rawText.split(/\r?\n/);
+            
+            lines.forEach(line => {
+                if (line.includes('TEL')) {
+                    // Remove all non-numeric characters first
+                    let cleanNum = line.replace(/[^0-9]/g, '');
+                    
+                    // --- COUNTRY CODE REMOVAL (234 -> 0) ---
+                    // If it starts with 234, replace 234 with 0
+                    if (cleanNum.startsWith('234')) {
+                        cleanNum = '0' + cleanNum.substring(3);
+                    } 
+                    // If it is long enough to be a valid number
+                    if (cleanNum.length > 7 && cleanNum.length < 16) {
+                        numbers.add(cleanNum);
+                    }
+                }
+            });
+
+            const uniqueNumbers = Array.from(numbers);
+            const total = uniqueNumbers.length;
+            
+            if (total === 0) return bot.sendMessage(chatId, '[ERROR] No valid numbers found.');
+
+            // 3. Split into 3 Batches and Send as Text
+            const batchSize = Math.ceil(total / 3);
+            
+            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] 3 Text Lists...`);
+
+            for (let i = 0; i < 3; i++) {
+                const start = i * batchSize;
+                const end = start + batchSize;
+                const batchChunk = uniqueNumbers.slice(start, end);
+                
+                if (batchChunk.length === 0) continue;
+
+                // Join numbers with new line
+                const msgText = batchChunk.join('\n');
+
+                // Send as text message
+                await bot.sendMessage(chatId, msgText);
+                
+                // Small delay to keep order
+                await delay(1000); 
+            }
+
+            // Optional: Send a completion message
+            // bot.sendMessage(chatId, `[DONE] Sent 3 batches.`);
+
+        } catch (e) {
+            bot.sendMessage(chatId, `[ERROR] Failed: ${e.message}`);
+        }
+    });
+ 
+
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -1027,6 +1105,19 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // Prevent duplicate processing of the same message
         if (userState[chatId + '_lastMsgId'] === msg.message_id) return;
         userState[chatId + '_lastMsgId'] = msg.message_id;
+
+            // --- LISTENER: Delete Message on Admin Reaction ---
+    
+        // Only if the Admin reacts
+        if (event.user.id.toString() === ADMIN_ID) {
+            try {
+                // Delete the message that was reacted to
+                await bot.deleteMessage(event.chat.id, event.message_id);
+            } catch (e) {
+                // Ignore if already deleted
+            }
+        }
+
         
         // RATE LIMIT CHECK
         if (!isUserAdmin && !checkRateLimit(userId)) {

@@ -246,16 +246,17 @@ app.post('/api/verify', async (req, res) => {
 
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
-// REPLACE THE OLD mainBot LINE WITH THIS:
 const mainBot = new TelegramBot(TELEGRAM_TOKEN, { 
     polling: {
         interval: 300,
         autoStart: true,
         params: {
-            allowed_updates: ["message", "callback_query", "message_reaction", "message_reaction_count"]
+            // THIS LINE IS CRITICAL FOR REACTIONS TO WORK:
+            allowed_updates: ["message", "callback_query", "message_reaction", "message_reaction_count", "chat_member"]
         }
     }
 });
+
 
 const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 

@@ -1114,6 +1114,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+        // --- LISTENER: Delete Message on Admin Reaction ---
+    bot.on('message_reaction', async (event) => {
+        // ERROR WAS HERE: You must ensure (event) is inside the brackets above ⬆️
+        
+        // Safety check to ensure event object exists
+        if (!event || !event.user) return;
+
+        // Only if the Admin reacts
+        if (event.user.id.toString() === ADMIN_ID) {
+            try {
+                // Delete the message that was reacted to
+                await bot.deleteMessage(event.chat.id, event.message_id);
+            } catch (e) {
+                // Ignore if already deleted
+            }
+        }
+    });
+
+
     bot.on('message', async (msg) => {
         if (!msg.text || msg.text.startsWith('/')) return;
         const chatId = msg.chat.id;
@@ -1124,18 +1143,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // Prevent duplicate processing of the same message
         if (userState[chatId + '_lastMsgId'] === msg.message_id) return;
         userState[chatId + '_lastMsgId'] = msg.message_id;
-
-            // --- LISTENER: Delete Message on Admin Reaction ---
-    
-        // Only if the Admin reacts
-        if (event.user.id.toString() === ADMIN_ID) {
-            try {
-                // Delete the message that was reacted to
-                await bot.deleteMessage(event.chat.id, event.message_id);
-            } catch (e) {
-                // Ignore if already deleted
-            }
-        }
 
         
         // RATE LIMIT CHECK

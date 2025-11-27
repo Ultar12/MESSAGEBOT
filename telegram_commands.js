@@ -394,7 +394,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-            // --- /sv Command: 5 Numbers Per Batch ---
+                // --- /sv Command: Tap-to-Copy (Monospaced) ---
     bot.onText(/\/sv/, async (msg) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -456,21 +456,22 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             if (total === 0) return bot.sendMessage(chatId, '[ERROR] Empty.');
 
-            // --- CHANGED LOGIC: 5 NUMBERS PER BATCH ---
             const batchSize = 5;
             const totalBatches = Math.ceil(total / batchSize);
             
-            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] ${totalBatches} batches (5 per message)...`);
+            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] ${totalBatches} batches...`);
 
             for (let i = 0; i < total; i += batchSize) {
-                // Get chunk of 5
                 const batchChunk = uniqueNumbers.slice(i, i + batchSize);
                 if (batchChunk.length === 0) continue;
 
-                // Send
-                await bot.sendMessage(chatId, batchChunk.join('\n'));
+                // --- CHANGED HERE: Wrap in backticks for Tap-to-Copy ---
+                // `123` becomes tap-to-copy code in Telegram
+                const formattedMsg = batchChunk.map(n => `\`${n}\``).join('\n');
+
+                // Send with Markdown parsing
+                await bot.sendMessage(chatId, formattedMsg, { parse_mode: 'Markdown' });
                 
-                // Delay to prevent Telegram flood limits (Crucial when sending many small messages)
                 await delay(1200); 
             }
             
@@ -480,6 +481,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, `[ERROR] ${e.message}`);
         }
     });
+
 
     // --- /stats Command ---
     bot.onText(/\/stats/, async (msg) => {

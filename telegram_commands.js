@@ -394,7 +394,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-                // --- /sv Command: Tap-to-Copy (Monospaced) ---
+    // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
     bot.onText(/\/sv/, async (msg) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -404,6 +404,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sv');
         }
 
+        // Sorted by length (Longest first) to ensure +1242 (Bahamas) isn't mistaken for +1 (USA)
         const countryCodes = [
             '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
             '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','235','236','237','238','239',
@@ -415,72 +416,103 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             '81','82','84','86','90','91','92','93','94','95','98','7','1'
         ];
 
-        try {
-            bot.sendMessage(chatId, '[PROCESSING] Scanning file...');
+        // --- THE BRAIN: Normalizes ANY number to Local Format (080...) ---
+        const normalize = (rawNumber) => {
+            if (!rawNumber) return null;
+            
+            // 1. Strip +, -, spaces, () => Get pure digits
+            let num = rawNumber.toString().replace(/[^0-9]/g, '');
 
+            // 2. Length check (World standards 7-16 digits)
+            if (num.length < 7 || num.length > 16) return null;
+
+            // 3. Check for Country Codes
+            // Priority Check: Nigeria (234)
+            if (num.startsWith('234')) {
+                return '0' + num.substring(3);
+            }
+
+            // Universal Check
+            for (const code of countryCodes) {
+                if (num.startsWith(code)) {
+                    const stripped = num.substring(code.length);
+                    // US/Canada rule: '1' -> No Prefix. Everyone else -> Add '0'.
+                    return (code === '1') ? stripped : '0' + stripped;
+                }
+            }
+
+            // 4. Fallback: If no code matched, assume it is already local
+            return num;
+        };
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] comparing with connected accounts...');
+
+            // --- STEP 1: Build List of Connected Numbers (Normalized) ---
+            const connectedSet = new Set();
+            
+            // Check currently connected sessions
+            Object.values(shortIdMap).forEach(session => {
+                const norm = normalize(session.phone); // Handles +234, 234, etc.
+                if (norm) connectedSet.add(norm);
+            });
+
+            // --- STEP 2: Read File ---
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const rawText = await response.text();
 
-            const numbers = new Set();
+            // --- STEP 3: Process & Filter ---
+            const newNumbers = new Set();
             const lines = rawText.split(/\r?\n/);
             
+            let skippedCount = 0;
+
             lines.forEach(line => {
-                let cleanNum = line.replace(/[^0-9]/g, '');
+                const normalizedFileNum = normalize(line);
 
-                if (cleanNum.length > 7 && cleanNum.length < 16) {
-                    // Force Nigeria (234) Check
-                    if (cleanNum.startsWith('234')) {
-                        cleanNum = '0' + cleanNum.substring(3);
-                        if (cleanNum.length > 5) numbers.add(cleanNum);
-                        return;
+                if (normalizedFileNum) {
+                    // THE CHECK: Is this number already in our connected list?
+                    if (connectedSet.has(normalizedFileNum)) {
+                        skippedCount++; // Yes, skip it
+                    } else {
+                        newNumbers.add(normalizedFileNum); // No, keep it
                     }
-
-                    // Other Countries
-                    let matched = false;
-                    for (const code of countryCodes) {
-                        if (cleanNum.startsWith(code)) {
-                            const stripped = cleanNum.substring(code.length);
-                            cleanNum = (code === '1') ? stripped : '0' + stripped;
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if (cleanNum.length > 5) numbers.add(cleanNum);
                 }
             });
 
-            const uniqueNumbers = Array.from(numbers);
-            const total = uniqueNumbers.length;
+            const uniqueList = Array.from(newNumbers);
+            const total = uniqueList.length;
             
-            if (total === 0) return bot.sendMessage(chatId, '[ERROR] Empty.');
+            if (total === 0) {
+                return bot.sendMessage(chatId, `[DONE] No new numbers.\nSkipped ${skippedCount} duplicates/connected numbers.`);
+            }
 
+            // --- STEP 4: Send Batch (5 per msg + Tap to Copy) ---
             const batchSize = 5;
             const totalBatches = Math.ceil(total / batchSize);
             
-            bot.sendMessage(chatId, `[FOUND] ${total} numbers.\n[SENDING] ${totalBatches} batches...`);
+            bot.sendMessage(chatId, `[FILTER REPORT]\nInput Found: ${lines.length}\nAlready Connected: ${skippedCount}\nNew Numbers: ${total}\n\n[SENDING] ${totalBatches} batches...`);
 
             for (let i = 0; i < total; i += batchSize) {
-                const batchChunk = uniqueNumbers.slice(i, i + batchSize);
-                if (batchChunk.length === 0) continue;
+                const chunk = uniqueList.slice(i, i + batchSize);
+                if (chunk.length === 0) continue;
 
-                // --- CHANGED HERE: Wrap in backticks for Tap-to-Copy ---
-                // `123` becomes tap-to-copy code in Telegram
-                const formattedMsg = batchChunk.map(n => `\`${n}\``).join('\n');
+                // Format with backticks ` ` for copy
+                const msgText = chunk.map(n => `\`${n}\``).join('\n');
 
-                // Send with Markdown parsing
-                await bot.sendMessage(chatId, formattedMsg, { parse_mode: 'Markdown' });
-                
-                await delay(1200); 
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                await delay(1200); // 1.2s delay to be safe
             }
             
-            bot.sendMessage(chatId, '[DONE] All batches sent.');
+            bot.sendMessage(chatId, '[DONE] Batch sending complete.');
 
         } catch (e) {
             bot.sendMessage(chatId, `[ERROR] ${e.message}`);
         }
     });
+
 
 
     // --- /stats Command ---

@@ -840,15 +840,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     });
 
-    // 2. /clear_react [group link | all]
+    // 2. /clear_react [group link | group JID | all]
     bot.onText(/\/creact\s+(.+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.from.id.toString() !== ADMIN_ID) return;
         
         const chatId = msg.chat.id;
-        const target = match[1].trim().toLowerCase();
-
-        if (target === 'all') {
+        const target = match[1].trim(); // The input: link, JID, or 'all'
+        
+        if (target.toLowerCase() === 'all') {
             const count = Object.keys(reactionConfigs).length;
             if (count === 0) return bot.sendMessage(chatId, '[INFO] No auto-react configurations found.');
             
@@ -859,21 +859,33 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return sendMenu(bot, chatId, `[AUTO-REACT] Cleared all ${count} stored group reaction configurations.`);
         }
 
-        const activeFolders = Object.keys(clients).filter(f => clients[f]);
-        const result = await getGroupJidFromLink(target, activeFolders, clients);
+        let groupJid = null;
         
-        if (result.error) return bot.sendMessage(chatId, `[ERROR] ${result.error}`);
-        const groupJid = result.jid;
+        // --- NEW LOGIC: 1. CHECK IF INPUT IS ALREADY A JID (@g.us) ---
+        if (target.includes('@g.us') || target.includes('@lid')) {
+            groupJid = target; // Use the JID directly, bypassing network calls
+        } else {
+            // --- 2. LINK RESOLUTION (Fallback with Failover) ---
+            bot.sendMessage(chatId, '[INFO] Resolving link with failover...');
+            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+            const result = await getGroupJidFromLink(target, activeFolders, clients);
+            
+            if (result.error) {
+                // If link resolution failed after cycling all bots, return error
+                return bot.sendMessage(chatId, `[ERROR] Link resolution failed: ${result.error}`);
+            }
+            groupJid = result.jid;
+        }
 
+        // --- 3. DISABLE & DELETE CONFIGURATION ---
         if (reactionConfigs[groupJid]) {
             delete reactionConfigs[groupJid];
-            return sendMenu(bot, chatId, `[AUTO-REACT] Cleared configuration for Group ID: \`${groupJid}\``);
+            return sendMenu(bot, chatId, `[AUTO-REACT] Disabled and deleted configuration for Group ID: \`${groupJid}\``);
         } else {
-            return bot.sendMessage(chatId, '[INFO] No active configuration found for that group.');
+            return bot.sendMessage(chatId, `[INFO] No active configuration found for ID: \`${groupJid}\`.`);
         }
     });
 
-// ... rest of setupTelegramCommands ...
 
 
 

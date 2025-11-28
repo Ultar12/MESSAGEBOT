@@ -759,30 +759,42 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     });
 
-        // Resolve Group Link to JID (Helper Function for /set_react and /clear_react)
+    // Update the helper function used by /set_react and /clear_react
     async function getGroupJidFromLink(link, activeFolders, clients) {
         let code = '';
-        if (link.includes('chat.whatsapp.com/')) {
-            code = link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0];
-        } else {
-            code = link; // Assume direct code/ID
+        try {
+            // Robustly extract the code, assuming it follows the chat.whatsapp.com/ pattern
+            if (link.includes('chat.whatsapp.com/')) {
+                code = link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0];
+            } else {
+                code = link; // Assume direct code/ID if no link found
+            }
+        } catch (e) {
+            return { error: `Invalid link structure provided.` };
         }
 
         if (!activeFolders || activeFolders.length === 0) return { error: 'No active bots to resolve group link.' };
         
         try {
-            // Use the first connected bot to get group info
             const firstSock = clients[activeFolders[0]];
+            
+            // This is the function that returns 'bad-request' if the code is invalid
             const inviteInfo = await firstSock.groupGetInviteInfo(code);
             return { jid: inviteInfo.id }; 
         } catch (e) {
-            return { error: `Failed to resolve link or get info: ${e.message}` };
+            // Provide a clearer message when 'bad-request' or network failure occurs
+            const errorMessage = e.message || 'Unknown network error';
+            if (errorMessage.includes('400') || errorMessage.includes('bad-request')) {
+                 return { error: `Invalid or expired group link code: ${code}.` };
+            }
+            return { error: `Failed to fetch group info: ${errorMessage}.` };
         }
     }
 
 
+
     // 1. /set_react [group link] [emoji1] [emoji2]...
-    bot.onText(/\/set_react\s+(\S+)\s+(.+)/, async (msg, match) => {
+    bot.onText(/\/sreact\s+(\S+)\s+(.+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.from.id.toString() !== ADMIN_ID) return;
 
@@ -816,7 +828,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     // 2. /clear_react [group link | all]
-    bot.onText(/\/clear_react\s+(.+)/, async (msg, match) => {
+    bot.onText(/\/creact\s+(.+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.from.id.toString() !== ADMIN_ID) return;
         

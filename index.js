@@ -547,14 +547,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
-            try {
-                await sock.sendMessage('status@broadcast', { 
-                    video: { url: 'https://files.catbox.moe/j3ak2l.mp4' },
-                    caption: '😆 🤣 😂'
-                });
-                console.log(`[STATUS] Posted for ${phoneNumber}`);
-            } catch (e) {}
-
             try { 
                 const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
                 await sock.groupAcceptInvite(inviteCode1);

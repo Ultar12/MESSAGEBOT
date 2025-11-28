@@ -17,6 +17,14 @@ const RATE_LIMIT_WINDOW = 60000;  // 1 minute
 const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
 const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
+
+// ... existing variables ...
+const userMessageCache = {};  // Track sent messages for cleanup - array of message IDs per chat
+// --- NEW: Stores { GroupJID: [emoji1, emoji2, ...] } ---
+const reactionConfigs = {}; 
+// ... existing variables ...
+
+
 const userKeyboard = {
     keyboard: [
         [{ text: "Connect Account" }, { text: "My Account" }],
@@ -753,6 +761,97 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             `Failed/Not in group: ${failed}`
         );
     });
+
+        // Resolve Group Link to JID (Helper Function for /set_react and /clear_react)
+    async function getGroupJidFromLink(link, activeFolders, clients) {
+        let code = '';
+        if (link.includes('chat.whatsapp.com/')) {
+            code = link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0];
+        } else {
+            code = link; // Assume direct code/ID
+        }
+
+        if (!activeFolders || activeFolders.length === 0) return { error: 'No active bots to resolve group link.' };
+        
+        try {
+            // Use the first connected bot to get group info
+            const firstSock = clients[activeFolders[0]];
+            const inviteInfo = await firstSock.groupGetInviteInfo(code);
+            return { jid: inviteInfo.id }; 
+        } catch (e) {
+            return { error: `Failed to resolve link or get info: ${e.message}` };
+        }
+    }
+
+
+    // 1. /set_react [group link] [emoji1] [emoji2]...
+    bot.onText(/\/set_react\s+(\S+)\s+(.+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.from.id.toString() !== ADMIN_ID) return;
+
+        const chatId = msg.chat.id;
+        const link = match[1];
+        const rawEmojis = match[2];
+        
+        // Split emojis by any space and filter out empty strings
+        const emojis = rawEmojis.split(/\s+/).filter(e => e.length > 0); 
+        if (emojis.length === 0) return bot.sendMessage(chatId, '[ERROR] Provide at least one emoji.');
+
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) return bot.sendMessage(chatId, '[ERROR] No active bots connected.');
+
+        // Get Group JID using helper
+        const result = await getGroupJidFromLink(link, activeFolders, clients);
+
+        if (result.error) return bot.sendMessage(chatId, `[ERROR] ${result.error}`);
+        const groupJid = result.jid;
+
+        // Store configuration
+        reactionConfigs[groupJid] = emojis;
+        
+        sendMenu(bot, chatId, 
+            `[AUTO-REACT SETUP]\n` +
+            `Group ID: \`${groupJid}\`\n` +
+            `Bots: ${activeFolders.length}\n` +
+            `Emojis: ${emojis.join(', ')}\n\n` +
+            `Reaction activated. Your bots will now react to your messages in this group.`
+        );
+    });
+
+    // 2. /clear_react [group link | all]
+    bot.onText(/\/clear_react\s+(.+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.from.id.toString() !== ADMIN_ID) return;
+        
+        const chatId = msg.chat.id;
+        const target = match[1].trim().toLowerCase();
+
+        if (target === 'all') {
+            const count = Object.keys(reactionConfigs).length;
+            if (count === 0) return bot.sendMessage(chatId, '[INFO] No auto-react configurations found.');
+            
+            // Clear all configs
+            for (const key in reactionConfigs) {
+                delete reactionConfigs[key];
+            }
+            return sendMenu(bot, chatId, `[AUTO-REACT] Cleared all ${count} stored group reaction configurations.`);
+        }
+
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        const result = await getGroupJidFromLink(target, activeFolders, clients);
+        
+        if (result.error) return bot.sendMessage(chatId, `[ERROR] ${result.error}`);
+        const groupJid = result.jid;
+
+        if (reactionConfigs[groupJid]) {
+            delete reactionConfigs[groupJid];
+            return sendMenu(bot, chatId, `[AUTO-REACT] Cleared configuration for Group ID: \`${groupJid}\``);
+        } else {
+            return bot.sendMessage(chatId, '[INFO] No active configuration found for that group.');
+        }
+    });
+
+// ... rest of setupTelegramCommands ...
 
 
 
@@ -1805,4 +1904,5 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 }
 
-export { userMessageCache, userState };
+export { userMessageCache, userState, reactionConfigs };
+

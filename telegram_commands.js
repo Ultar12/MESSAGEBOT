@@ -18,9 +18,6 @@ const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
 const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 
-// ... existing variables ...
-const userMessageCache = {};  // Track sent messages for cleanup - array of message IDs per chat
-// --- NEW: Stores { GroupJID: [emoji1, emoji2, ...] } ---
 const reactionConfigs = {}; 
 // ... existing variables ...
 

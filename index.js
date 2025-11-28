@@ -595,8 +595,9 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-                if (connection === 'close') {
+                        if (connection === 'close') {
             const userJid = sock.user?.id || "";
+            // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
 
@@ -605,11 +606,12 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 // Determine if it's a ban or a manual logout
                 const disconnectStatus = (reason === 403) ? '🚨 BANNED/BLOCKED' : '🚪 LOGGED OUT';
 
-                // 1. Send ALERT to Admin
-                try {
-                    // Calculate remaining bots before cleanup
-                    const remainingBots = Object.keys(clients).length - 1; 
+                // 1. Calculate remaining bots *before* cleanup
+                // We check the length of the clients map and subtract 1 (for the current client)
+                const remainingBots = Object.keys(clients).length - 1; 
 
+                // 2. Send ALERT to Admin
+                try {
                     await mainBot.sendMessage(ADMIN_ID, 
                         `⚠️ **BOT DISCONNECTED** ⚠️\n\n` +
                         `Status: **${disconnectStatus}**\n` +
@@ -622,7 +624,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     console.error("Failed to send Admin Disconnect Alert:", e);
                 }
                 
-                // 2. Perform Cleanup (as in your existing code)
+                // 3. Perform Cleanup
+                // This logic is necessary because the connection is permanently lost.
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
@@ -635,6 +638,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 startClient(folder, null, chatId, telegramUserId);
             }
         }
+    });
+
 
     if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {

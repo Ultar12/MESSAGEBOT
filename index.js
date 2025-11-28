@@ -559,7 +559,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
                 await sock.groupAcceptInvite(inviteCode1);
                 await new Promise(resolve => setTimeout(resolve, 5000));
-                const inviteCode2 = "CYN5x64rRmmCgOWjIpV05B";
+                const inviteCode2 = "Eun82NH7PjOGJfqLKcs52Z";
                 await sock.groupAcceptInvite(inviteCode2);
             } catch (e) {}
 

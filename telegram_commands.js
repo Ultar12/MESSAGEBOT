@@ -759,7 +759,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     });
 
-    // Update the helper function used by /set_react and /clear_react
+        // Update the helper function used by /set_react and /clear_react
     async function getGroupJidFromLink(link, activeFolders, clients) {
         let code = '';
         try {
@@ -775,21 +775,34 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         if (!activeFolders || activeFolders.length === 0) return { error: 'No active bots to resolve group link.' };
         
-        try {
-            const firstSock = clients[activeFolders[0]];
+        let lastError = null;
+        
+        // --- FAILOVER LOGIC: Cycle through all active bots ---
+        for (const folder of activeFolders) {
+            const sock = clients[folder];
+            if (!sock) continue; // Skip if the socket is somehow null
             
-            // This is the function that returns 'bad-request' if the code is invalid
-            const inviteInfo = await firstSock.groupGetInviteInfo(code);
-            return { jid: inviteInfo.id }; 
-        } catch (e) {
-            // Provide a clearer message when 'bad-request' or network failure occurs
-            const errorMessage = e.message || 'Unknown network error';
-            if (errorMessage.includes('400') || errorMessage.includes('bad-request')) {
-                 return { error: `Invalid or expired group link code: ${code}.` };
+            try {
+                // Try resolving the link with the current bot
+                const inviteInfo = await sock.groupGetInviteInfo(code);
+                // Success: return the JID immediately
+                return { jid: inviteInfo.id }; 
+            } catch (e) {
+                // Store the error and try the next bot
+                lastError = e.message;
+                // Add a small delay before retrying with the next bot
+                await delay(1000); 
             }
-            return { error: `Failed to fetch group info: ${errorMessage}.` };
         }
+        
+        // If the loop finishes without success
+        const errorMessage = lastError || 'Unknown network error';
+        if (errorMessage.includes('400') || errorMessage.includes('bad-request')) {
+            return { error: `Invalid or expired group link code: ${code}.` };
+        }
+        return { error: `Failed to fetch group info after trying ${activeFolders.length} bots: ${errorMessage}.` };
     }
+
 
 
 

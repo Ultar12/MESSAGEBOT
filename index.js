@@ -440,7 +440,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
         }
     }
-});
 
 
 

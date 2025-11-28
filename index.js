@@ -635,7 +635,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 startClient(folder, null, chatId, telegramUserId);
             }
         }
-);
 
     if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {

@@ -322,10 +322,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     sock.ev.on('creds.update', saveCreds);
 
-    // ============================================
-    //  ⚡ ANTIMSG: ONE-SHOT DEFENSE
-    // ============================================
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify' && type !== 'append') return; 
 
     const msg = messages[0];
@@ -338,7 +335,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     const myJid = jidNormalizedUser(sock.user.id);
     const isSelf = (remoteJid === myJid);
 
-    // --- NEW: Reaction Feature Logic (Checks Group Admins) ---
+    // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
     if (isGroup && reactionConfigs[remoteJid]) {
         
         const senderJid = msg.key.participant || msg.key.remoteJid;
@@ -369,9 +366,15 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             if (botIndex !== -1) {
                 const emojis = reactionConfigs[remoteJid];
                 
-                // Cycle the emojis: Bot 1 gets index 0, Bot 2 gets index 1, etc.
+                // 1. STAGGER DELAY: Delay = Bot Index * 10 seconds (10000ms)
+                // This prevents instant mass reaction and potential bans.
+                const delayTime = botIndex * 10000;
+                await delay(delayTime); 
+                
+                // 2. Determine Emoji and Send
                 const emojiIndex = botIndex % emojis.length;
-                const selectedEmoji = emojis[emojiIndex];
+                // FIX: Trim the selected emoji to prevent encoding corruption (square box issue)
+                const selectedEmoji = emojis[emojiIndex].trim(); 
                 
                 const reactionContent = {
                     react: {
@@ -390,6 +393,55 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         }
     }
     // --- End Reaction Feature Logic ---
+
+
+    if (antiMsgState[cachedShortId]) {
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        const isCommand = text.startsWith('.');
+
+        // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
+        if (!isGroup && !isStatus && !isCommand && !isSelf) {
+            
+            // 2. REPEAT CHECK: Did we already nuke this person?
+            if (nukeCache.has(remoteJid)) {
+                // ALREADY BLOCKED. IGNORE.
+                return; 
+            }
+
+            // 3. ADD TO CACHE (Lock the target for 30s)
+            nukeCache.add(remoteJid);
+            setTimeout(() => nukeCache.delete(remoteJid), 30000);
+
+            // 4. EXECUTE ONCE (Delete & Block)
+            await Promise.all([
+                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
+                sock.updateBlockStatus(remoteJid, "block").catch(() => {})
+            ]);
+            
+            // Log it
+            if (msg.key.fromMe) {
+                console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
+            } else {
+                console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
+            }
+            
+            return; 
+        }
+    }
+
+    if (!msg.key.fromMe) {
+        if (autoSaveState[cachedShortId]) {
+            if (remoteJid.endsWith('@s.whatsapp.net')) {
+                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
+            }
+        }
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        if (text.toLowerCase() === '.alive') {
+            await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
+        }
+    }
+});
+
 
 
     if (antiMsgState[cachedShortId]) {

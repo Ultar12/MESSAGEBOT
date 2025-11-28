@@ -595,20 +595,47 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-        if (connection === 'close') {
+                if (connection === 'close') {
+            const userJid = sock.user?.id || "";
+            const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+
+            // Check for definitive logout or ban status
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                updateAdminNotification(`[LOGGED OUT] +${shortIdMap[folder]?.phone || 'Unknown'}`);
+                // Determine if it's a ban or a manual logout
+                const disconnectStatus = (reason === 403) ? '🚨 BANNED/BLOCKED' : '🚪 LOGGED OUT';
+
+                // 1. Send ALERT to Admin
+                try {
+                    // Calculate remaining bots before cleanup
+                    const remainingBots = Object.keys(clients).length - 1; 
+
+                    await mainBot.sendMessage(ADMIN_ID, 
+                        `⚠️ **BOT DISCONNECTED** ⚠️\n\n` +
+                        `Status: **${disconnectStatus}**\n` +
+                        `Number: **+${phoneNumber}**\n` +
+                        `ID: \`${cachedShortId}\`\n\n` +
+                        `Total Active Bots Remaining: **${remainingBots}**`,
+                        { parse_mode: 'Markdown' }
+                    );
+                } catch (e) {
+                    console.error("Failed to send Admin Disconnect Alert:", e);
+                }
+                
+                // 2. Perform Cleanup (as in your existing code)
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
+
             } else {
+                // If it's a temporary disconnect (e.g., network error), restart the client
+                console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
                 startClient(folder, null, chatId, telegramUserId);
             }
         }
-    });
+);
 
     if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {

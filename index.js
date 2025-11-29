@@ -15,6 +15,7 @@ import pino from 'pino';
 import express from 'express';
 import { delay } from '@whiskeysockets/baileys'; 
 import http from 'http'; 
+import https from 'https';
 import { Boom } from '@hapi/boom';
 
 import { setupTelegramCommands, userMessageCache, userState } from './telegram_commands.js';
@@ -286,9 +287,14 @@ setInterval(async () => {
 }, 3600000); 
 
 setInterval(() => {
-    http.get(SERVER_URL, (res) => {}).on('error', (err) => {});
-}, 14 * 60 * 1000);
+    // --- FIX: Dynamically determine the correct module (http or https) ---
+    const protocolModule = SERVER_URL.startsWith('https') ? https : http; 
 
+    // Use the determined module to make the request
+    protocolModule.get(SERVER_URL, (res) => {}).on('error', (err) => {
+        // You can log the error here if needed, but keeping it silent for pings is usually fine
+    });
+}, 14 * 60 * 1000);
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     let cachedShortId = await getShortId(folder);
     if (!cachedShortId) {

@@ -20,12 +20,12 @@ import { Boom } from '@hapi/boom';
 import fetch from 'node-fetch'; // Required for fetch in server routes
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs, autoSaveState // Imported and managed globally
 } from './telegram_commands.js'; 
 
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData
+    getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData, setAutoSaveStatus
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -502,7 +502,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
             // Use antiMsgState and autoSaveState (imported from telegram_commands.js) to save current status
-            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, cachedShortId, antiMsgState[cachedShortId] || false);
+            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId, antiMsgState[cachedShortId] || false);
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 

@@ -28,7 +28,6 @@ import {
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const restartHistory = {}; 
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
@@ -317,6 +316,9 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         browser: getRandomBrowser(), 
         version,
         connectTimeoutMs: 60000,
+        // *** ADDED FOR CONNECTION STABILITY ***
+        keepaliveIntervalMs: 30000, // Send keep-alive pings every 30 seconds
+        // ************************************
         markOnlineOnConnect: true,
         syncFullHistory: false
     });
@@ -584,7 +586,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-                        if (connection === 'close') {
+        if (connection === 'close') {
             const userJid = sock.user?.id || "";
             // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
@@ -613,71 +615,27 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     console.error("Failed to send Admin Disconnect Alert:", e);
                 }
                 
-                // 3. Perform Cleanup
-                // This logic is necessary because the connection is permanently lost.
+                // 3. Perform Cleanup (Permanent Loss)
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
 
-           } else {
-                // --- STRICT 1 RESTART PER 24 HOURS POLICY ---
-                
-                const now = Date.now();
-                const lastRestart = restartHistory[folder] || 0;
-                const ONE_DAY_MS = 24 * 60 * 60 * 1000; // 24 Hours
-                
-                // Check if we already restarted this bot in the last 24 hours
-                if (now - lastRestart < ONE_DAY_MS) {
-                    
-                    // 🛑 LIMIT REACHED: STOP THE BOT
-                    console.log(`[STOPPED] Bot ${cachedShortId}: Daily restart limit reached. Keeping offline.`);
-                    
-                    // Notify Admin
-                    try {
-                        await mainBot.sendMessage(ADMIN_ID, 
-                            `⚠️ **BOT STOPPED (Daily Limit)**\n` +
-                            `Number: +${phoneNumber}\n` +
-                            `ID: \`${cachedShortId}\`\n\n` +
-                            `This bot disconnected twice in 24 hours.\n` +
-                            `Auto-restart cancelled to prevent ban.`,
-                            { parse_mode: 'Markdown' }
-                        );
-                    } catch(e) {}
+            } else {
+                // If it's a temporary disconnect (e.g., network error, timeout), restart the client
 
-                    // Notify User (Owner)
-                    const ownerId = telegramUserId || shortIdMap[cachedShortId]?.chatId;
-                    if (ownerId) {
-                         try {
-                            await mainBot.sendMessage(ownerId, 
-                                `⚠️ **Safety Shutdown**\n\n` +
-                                `Your bot (+${phoneNumber}) lost connection.\n` +
-                                `We have stopped it to protect your number from bans.\n\n` +
-                                `Please /connect again when your internet is stable.`,
-                                { parse_mode: 'Markdown' }
-                            );
-                        } catch(e) {}
-                    }
-
-                    // Clean up memory
+                // --- CLEANUP FOR RECONNECT ---
+                // Remove the old disconnected socket before creating the new one
+                if (clients[folder]) {
                     delete clients[folder];
-
-                } else {
-                    
-                    // ✅ ALLOWED: 1 RESTART (With 60s Safety Delay)
-                    console.log(`[RESTARTING] Bot ${cachedShortId}: Using daily free restart ticket.`);
-                    
-                    // Mark this time so we don't do it again today
-                    restartHistory[folder] = now; 
-
-                    // Wait 60 seconds (Safe Mode) then restart
-                    setTimeout(() => {
-                        startClient(folder, null, chatId, telegramUserId);
-                    }, 60000); 
                 }
-            }
+                // --- END CLEANUP ---
 
+                console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
+                // Call startClient to create a new socket and attempt to reconnect
+                startClient(folder, null, chatId, telegramUserId);
+            }
         }
     });
 

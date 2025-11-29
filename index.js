@@ -15,23 +15,16 @@ import pino from 'pino';
 import express from 'express';
 import { delay } from '@whiskeysockets/baileys'; 
 import http from 'http'; 
-import https from 'https';
+import https from 'https'; // Required for stable keep-alive
 import { Boom } from '@hapi/boom';
 
-// WARNING: You MUST ensure telegram_commands.js exports these variables
 import { 
     setupTelegramCommands, userMessageCache, userState, reactionConfigs 
 } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, 
     getShortId, saveShortId, awardHourlyPoints, deductOnDisconnect, 
-    deleteUserAccount, updateConnectionTime, saveVerificationData, 
-    getEarningsStats, getReferrals, updateBank, createWithdrawal, 
-    setAntiMsgStatus, addNumbersToDb, countNumbers, deleteNumbers, 
-    clearAllNumbers, getUser, createUser, checkNumberInDb, getTodayEarnings, 
-    getYesterdayEarnings, getWithdrawalHistory, getEarningsHistory, 
-    markUserVerified, isUserVerified, getPendingWithdrawals, 
-    updateWithdrawalStatus, addPointsToUser, getWithdrawalDetails
+    deleteUserAccount, updateConnectionTime, saveVerificationData
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -50,7 +43,7 @@ app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req, res) => res.send('Ultarbot Pro [One-Shot Defense Mode]'));
 
-// --- EXPRESS VERIFICATION ROUTES (minimal content) ---
+// --- EXPRESS VERIFICATION ROUTES (omitted content) ---
 app.get('/verify', (req, res) => {
     const html = `<!DOCTYPE html><html><body><h1>User Verification</h1><script src="https://telegram.org/js/telegram-web-app.js"></script></body></html>`;
     res.send(html);
@@ -58,6 +51,7 @@ app.get('/verify', (req, res) => {
 
 // API: /api/join
 app.post('/api/join', async (req, res) => {
+    // API logic remains the same (synchronous join)
     req.setTimeout(900000); 
     res.setTimeout(900000);
     const { apiKey, amount, link } = req.body;
@@ -118,6 +112,8 @@ app.post('/api/join', async (req, res) => {
 
 
 app.post('/api/verify', async (req, res) => {
+    const { userId, name, email, ip, initData } = req.body;
+    if (!userId || !name || !email) return res.json({ success: false, message: 'Please fill all fields' });
     // Verification logic omitted for brevity
     res.json({ success: true, message: 'Verification complete' });
 });
@@ -162,6 +158,7 @@ setInterval(async () => {
 
 // --- FIXED KEEP-ALIVE ---
 setInterval(() => {
+    // FIX: Uses HTTPS for external pings
     const pingProtocol = SERVER_URL.startsWith('https://') ? https : http;
     
     if (!pingProtocol) {
@@ -432,6 +429,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
             } else {
                 // --- FIX: LIMITED RETRY FOR NEW/DROPPED SESSIONS ONLY ---
+                // We check if the session is already fully established (exists in the global clients map)
                 const isExistingConnectedBot = clients[folder] !== undefined;
 
                 if (!isExistingConnectedBot) {
@@ -439,13 +437,12 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     console.log(`[RECONNECT] Session ${cachedShortId} dropped during handshake. Pausing 10s before retrying...`);
                     
                     // Add a delay to prevent cryptographic corruption or spamming WhatsApp
-                    // NOTE: targetNumber and telegramUserId were passed to startClient initially
                     await delay(10000); 
-                    
+
                     // Call startClient to restart the linking process
                     startClient(folder, targetNumber, chatId, telegramUserId);
                 }
-                // If it IS an existing, fully connected bot (clients[folder] is defined), we do NOTHING.
+                // If it IS an existing, fully connected bot, we do nothing to prevent ban loops.
             }
         }
     });
@@ -476,7 +473,7 @@ async function boot() {
         if (session.antimsg) antiMsgState[shortId] = true;
         if (session.autosave) autoSaveState[shortId] = true; 
 
-        // CRITICAL: Ensure boot uses the original parameters if available, but for boot it's usually just session ID
+        // CRITICAL: Ensure boot uses the original parameters if available
         startClient(session.session_id, session.phone, session.telegram_user_id, session.telegram_user_id);
     }
     console.log(`[BOOT] Server ready`);

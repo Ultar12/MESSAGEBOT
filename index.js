@@ -17,14 +17,15 @@ import { delay } from '@whiskeysockets/baileys';
 import http from 'http'; 
 import { Boom } from '@hapi/boom';
 
-// NOTE: Ensure your telegram_commands.js exports antiMsgState and autoSaveState
 import { 
+    // NOTE: Assuming antiMsgState and autoSaveState are exported here, 
+    // as they are used globally below.
     setupTelegramCommands, userMessageCache, userState, reactionConfigs, antiMsgState, autoSaveState
-} from './telegram_commands.js'; 
-// NOTE: Ensure your db.js exports setAutoSaveStatus
+} from './telegram_commands.js';
+
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData, setAutoSaveStatus
+    getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -266,6 +267,7 @@ const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
 const clients = {}; 
 const shortIdMap = {}; 
+const antiMsgState = {}; 
 const autoSaveState = {}; 
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
@@ -540,17 +542,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
-            // FIX: Corrected Call Signature (7 Arguments)
-            // Order: sessionId, phone, credsData, telegramUserId, antimsg (BOOL), autosave (BOOL), shortId (STRING)
-            await saveSessionToDb(
-                folder, 
-                phoneNumber, 
-                content, 
-                telegramUserId || 'admin', 
-                antiMsgState[cachedShortId] || false, // BOOL
-                autoSaveState[cachedShortId] || false, // BOOL
-                cachedShortId // STRING
-            );
+            // NOTE: Using the original saveSessionToDb call here (7 arguments with 'true' for is_connected)
+            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId);
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
@@ -637,7 +630,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 // --- CRITICAL FIX: SMART ANTI-BAN RESTART ---
                 if (isRegistered) {
                     // 1. REGISTERED Bot: DO NOT RESTART. This prevents ban loops.
-                    console.log(`[DISCONNECT] Temporary disconnect for ${cachedShortId}. Reason: ${reason}. REGISTERED bot: Not restarting.`);
+                    console.log(`[DISCONNECT] Temporary drop for ${cachedShortId}. REGISTERED bot: Not restarting.`);
                 } else {
                     // 2. UNREGISTERED Bot (Linking phase): RESTART to refresh QR/Code.
                     console.log(`[RECONNECT] Attempting restart for NEW client ${cachedShortId}. Reason: ${reason}`);
@@ -678,8 +671,6 @@ async function boot() {
     console.log(`[BOOT] Server ready`);
 }
 
-// NOTE: We need to import antiMsgState and autoSaveState into this file
-// from telegram_commands.js, so we pass them to setupTelegramCommands
 setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
 
 boot().catch(err => {

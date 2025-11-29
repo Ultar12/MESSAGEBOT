@@ -316,9 +316,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         browser: getRandomBrowser(), 
         version,
         connectTimeoutMs: 60000,
-        // *** ADDED FOR CONNECTION STABILITY ***
-        keepaliveIntervalMs: 30000, // Send keep-alive pings every 30 seconds
-        // ************************************
         markOnlineOnConnect: true,
         syncFullHistory: false
     });
@@ -586,7 +583,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-        if (connection === 'close') {
+                        if (connection === 'close') {
             const userJid = sock.user?.id || "";
             // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
@@ -615,7 +612,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     console.error("Failed to send Admin Disconnect Alert:", e);
                 }
                 
-                // 3. Perform Cleanup (Permanent Loss)
+                // 3. Perform Cleanup
+                // This logic is necessary because the connection is permanently lost.
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
@@ -623,17 +621,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 delete clients[folder];
 
             } else {
-                // If it's a temporary disconnect (e.g., network error, timeout), restart the client
-
-                // --- CLEANUP FOR RECONNECT ---
-                // Remove the old disconnected socket before creating the new one
-                if (clients[folder]) {
-                    delete clients[folder];
-                }
-                // --- END CLEANUP ---
-
+                // If it's a temporary disconnect (e.g., network error), restart the client
                 console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
-                // Call startClient to create a new socket and attempt to reconnect
                 startClient(folder, null, chatId, telegramUserId);
             }
         }

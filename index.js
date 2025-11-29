@@ -620,11 +620,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
 
-            } else {
-                // If it's a temporary disconnect (e.g., network error), restart the client
-                console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
-                startClient(folder, null, chatId, telegramUserId);
-            }
+            } 
         }
     });
 

@@ -20,7 +20,7 @@ import { Boom } from '@hapi/boom';
 import fetch from 'node-fetch'; // Required for fetch in server routes
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs, autoSaveState // Imported and managed globally
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs
 } from './telegram_commands.js'; 
 
 import { 

@@ -266,7 +266,6 @@ const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
 const clients = {}; 
 const shortIdMap = {}; 
-const antiMsgState = {}; 
 const autoSaveState = {}; 
 const qrMessageCache = {}; 
 const qrActiveState = {}; 

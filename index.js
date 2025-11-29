@@ -14,7 +14,7 @@ import path from 'path';
 import pino from 'pino';
 import express from 'express';
 import { delay } from '@whiskeysockets/baileys'; 
-import http from 'http'; 
+import http from 'https'; 
 import { Boom } from '@hapi/boom';
 
 import { 
@@ -290,8 +290,15 @@ setInterval(async () => {
 }, 3600000); 
 
 setInterval(() => {
-    http.get(SERVER_URL, (res) => {}).on('error', (err) => {});
+    setInterval(() => {
+    const pingProtocol = SERVER_URL.startsWith('https') ? https : http; // Choose protocol based on URL
+
+    // Use the selected protocol module
+    pingProtocol.get(SERVER_URL, (res) => {}).on('error', (err) => {
+        console.error('[PING ERROR]', err.message); // Added error log for better visibility
+    });
 }, 14 * 60 * 1000);
+
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     let cachedShortId = await getShortId(folder);

@@ -20,7 +20,7 @@ import { Boom } from '@hapi/boom';
 import fetch from 'node-fetch'; // Required for fetch in server routes
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs, autoSaveState // Imported and managed globally
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs, antiMsgState, autoSaveState // Imported and managed globally
 } from './telegram_commands.js'; 
 
 import { 
@@ -265,8 +265,7 @@ const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
 const clients = {}; 
 const shortIdMap = {}; 
-const antiMsgState = {}; 
-// Removed autoSaveState from here as it's now imported from telegram_commands.js
+// antiMsgState and autoSaveState are managed via imported objects
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
@@ -475,11 +474,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 // QR Timeout: If not scanned within 60 seconds, delete message and stop retrying
                 setTimeout(async () => {
                     if (qrMessageCache[folder] && connection !== 'open') {
-                        try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
+                        try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].message_id); } catch (e) {}
                         delete qrMessageCache[folder];
-                        
-                        // If not registered, this will lead to a 'close' event 
-                        // and the 'else' block below will handle the restart (or not)
                     }
                 }, 60000);
             } catch (e) { delete qrActiveState[folder]; }
@@ -501,9 +497,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
-            // Use antiMsgState and autoSaveState (imported from telegram_commands.js) to save current status
-            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId, antiMsgState[cachedShortId] || false);
             
+            // ************ FIX: Corrected Call Signature (7 Arguments) ************
+            // Order: sessionId, phone, credsData, telegramUserId, antimsg (BOOL), autosave (BOOL), shortId (STRING)
+            await saveSessionToDb(
+                folder, 
+                phoneNumber, 
+                content, 
+                telegramUserId || 'admin', 
+                antiMsgState[cachedShortId] || false, // BOOL
+                autoSaveState[cachedShortId] || false, // BOOL
+                cachedShortId // STRING
+            );
+            // ************ END FIX ************
+
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
             // Group joins logic
@@ -546,7 +553,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-        // --- Connection Close (Critical Ban Fix Area) ---
+        // --- Connection Close (CRITICAL FIX: ZERO AUTO-RESTART) ---
         if (connection === 'close') {
             const userJid = sock.user?.id || "";
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
@@ -582,16 +589,12 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             } else {
                 // If it's a temporary disconnect (e.g., network error or QR timeout)
                 
-                if (isRegistered) {
-                    // 1. REGISTERED Bot (Existing Session): DO NOT RESTART.
-                    // This prevents aggressive reconnection loops that lead to 403 (ban).
-                    console.log(`[DISCONNECT] Temporary disconnect for ${cachedShortId}. Reason: ${reason}. NOT restarting (Registered).`);
-                } else {
-                    // 2. UNREGISTERED Bot (Initial Pairing): RESTART ONCE.
-                    // This is necessary for the QR code or pairing code to be refreshed/retried.
-                    console.log(`[RECONNECT] Attempting restart for NEW client ${cachedShortId}. Reason: ${reason}`);
-                    startClient(folder, null, chatId, telegramUserId);
-                }
+                // 🛑 CRITICAL FIX: ZERO AUTO-RESTART POLICY
+                // We do not restart, regardless of registration status, to prevent bans.
+                console.log(`[DISCONNECT] Temporary disconnect for ${cachedShortId}. Reason: ${reason}. ZERO AUTO-RESTART POLICY ACTIVE.`);
+                
+                // If this happens during QR/Pairing, the user must manually trigger a new connection attempt.
+                // startClient(folder, null, chatId, telegramUserId); // REMOVED to prevent ban.
             }
         }
     });

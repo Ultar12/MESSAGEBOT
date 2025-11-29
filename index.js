@@ -14,7 +14,9 @@ import path from 'path';
 import pino from 'pino';
 import express from 'express';
 import { delay } from '@whiskeysockets/baileys'; 
-import http from 'https'; 
+import http from 'http'; 
+import https from 'https'; // <-- This is the missing piece!
+
 import { Boom } from '@hapi/boom';
 
 import { 

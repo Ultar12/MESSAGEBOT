@@ -18,9 +18,8 @@ import http from 'http';
 import { Boom } from '@hapi/boom';
 
 import { 
-    // We assume antiMsgState and autoSaveState are exported from telegram_commands.js
-    // to be used here. If they are not exported, this will break again.
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs, antiMsgState, autoSaveState // <--- Assuming these are exported here
+    // ... existing imports
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
 } from './telegram_commands.js';
 // ... rest of main file imp
 import { 
@@ -267,9 +266,8 @@ const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
 const clients = {}; 
 const shortIdMap = {}; 
-// FIX: REMOVED redundant local const declarations to solve SyntaxError
-// const antiMsgState = {}; 
-// const autoSaveState = {}; 
+const antiMsgState = {}; 
+const autoSaveState = {}; 
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
@@ -495,8 +493,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        // CRITICAL: Get registration status BEFORE proceeding
-        const isRegistered = sock.authState.creds.registered; 
 
         if (connection === 'open' && qrMessageCache[folder]) {
             const { messageId, chatId: qrChatId } = qrMessageCache[folder];
@@ -587,7 +583,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-        if (connection === 'close') {
+                        if (connection === 'close') {
             const userJid = sock.user?.id || "";
             // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
@@ -625,17 +621,9 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 delete clients[folder];
 
             } else {
-                // If it's a temporary disconnect (e.g., network error or QR timeout)
-                
-                // --- CRITICAL FIX: SMART ANTI-BAN RESTART ---
-                if (isRegistered) {
-                    // 1. REGISTERED Bot: DO NOT RESTART. This prevents ban loops.
-                    console.log(`[DISCONNECT] Temporary drop for ${cachedShortId}. REGISTERED bot: Not restarting.`);
-                } else {
-                    // 2. UNREGISTERED Bot (Linking phase): RESTART to refresh QR/Code.
-                    console.log(`[RECONNECT] Attempting restart for NEW client ${cachedShortId}. Reason: ${reason}`);
-                    startClient(folder, null, chatId, telegramUserId);
-                }
+                // If it's a temporary disconnect (e.g., network error), restart the client
+                console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
+                startClient(folder, null, chatId, telegramUserId);
             }
         }
     });

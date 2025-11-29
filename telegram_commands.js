@@ -3,22 +3,26 @@ import {
     getUser, createUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
     setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb,
     getTodayEarnings, getYesterdayEarnings, getWithdrawalHistory, getEarningsHistory,
-    markUserVerified, isUserVerified, getPendingWithdrawals, updateWithdrawalStatus, addPointsToUser, getWithdrawalDetails
+    markUserVerified, isUserVerified, getPendingWithdrawals, updateWithdrawalStatus, 
+    addPointsToUser, getWithdrawalDetails, setAutoSaveStatus // <-- ADDED setAutoSaveStatus
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
 
 const ADMIN_ID = process.env.ADMIN_ID;
 const userState = {};
-const userRateLimit = {};  // Track user requests for rate limiting
-const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
-const userMessageCache = {};  // Track sent messages for cleanup - array of message IDs per chat
-const RATE_LIMIT_WINDOW = 60000;  // 1 minute
-const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
+const userRateLimit = {};
+const verifiedUsers = new Set();
+const userMessageCache = {};
+const RATE_LIMIT_WINDOW = 60000;
+const MAX_REQUESTS_PER_MINUTE = 10;
 const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 
 const reactionConfigs = {}; 
+const antiMsgState = {}; 
+const autoSaveState = {}; // <-- DEFINED autoSaveState here
+
 // ... existing variables ...
 
 
@@ -886,7 +890,25 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+    // --- /autosave command: Control auto-logging of numbers (New Fix) ---
+    bot.onText(/\/autosave\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        
+        const id = match[1].trim();
+        const status = (match[2].toLowerCase() === 'on');
+        
+        if (shortIdMap[id]) {
+            autoSaveState[id] = status;
+            
+            // Update the database using the new function
+            await setAutoSaveStatus(shortIdMap[id].folder, status); 
 
+            sendMenu(bot, msg.chat.id, `[AUTOSAVE] ${id} set to ${status ? 'ON' : 'OFF'}.`);
+        } else {
+            sendMenu(bot, msg.chat.id, `[ERROR] Invalid ID: ${id}`);
+        }
+    });
 
 
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
@@ -1226,13 +1248,17 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
     bot.onText(/\/antimsg\s+([a-zA-Z0-9]+)\s+(on|off)/i, async (msg, match) => {
+        deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const id = match[1].trim();
         const status = (match[2].toLowerCase() === 'on');
+        
         if (shortIdMap[id]) {
             antiMsgState[id] = status;
             await setAntiMsgStatus(shortIdMap[id].folder, status);
-            sendMenu(bot, msg.chat.id, `[ANTIMSG] ${status ? 'ON' : 'OFF'}`);
+            sendMenu(bot, msg.chat.id, `[ANTIMSG] ${id} set to ${status ? 'ON' : 'OFF'}.`);
+        } else {
+            sendMenu(bot, msg.chat.id, `[ERROR] Invalid ID: ${id}`);
         }
     });
 
@@ -1540,11 +1566,14 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             // --- AUTO ENABLE ANTI-MSG ON CONNECT (PAIRING CODE) ---
             try {
-                // We default it to true immediately in the database for this session ID
+                // Set anti-msg and auto-save state to true immediately in memory and DB
+                antiMsgState[shortId] = true;
+                autoSaveState[shortId] = true;
                 await setAntiMsgStatus(sessionId, true);
-                bot.sendMessage(chatId, `[SYSTEM] AntiMsg automatically set to ON for this session.\nMode: Block & Delete Zero Seconds`);
+                await setAutoSaveStatus(sessionId, true);
+                bot.sendMessage(chatId, `[SYSTEM] AntiMsg & AutoSave automatically set to ON for this session.\nMode: Block & Delete Zero Seconds`);
             } catch (e) {
-                console.error("Failed to auto-set antimsg:", e);
+                console.error("Failed to auto-set antimsg/autosave:", e);
             }
             
             return;
@@ -1666,8 +1695,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                             
                             const dur = getDuration(s.connected_at);
                             const status = clients[s.session_id] ? '[ONLINE]' : '[OFFLINE]';
-                            const anti = s.antimsg ? '[LOCKED]' : '[OPEN]';
-                            list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${dur}\n------------------\n`;
+                            const anti = antiMsgState[id] ? '[LOCKED]' : '[OPEN]';
+                            const auto = autoSaveState[id] ? '[SAVE ON]' : '[SAVE OFF]';
+                            list += `${status} \`${id}\` | +${s.phone}\n${anti} AntiMsg | ${auto} AutoSave | ${dur}\n------------------\n`;
                         }
                     }
                     sendMenu(bot, chatId, list);
@@ -1734,7 +1764,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                         if (!id) continue; // Skip if no ID
                         const status = clients[session.session_id] ? 'ONLINE' : 'OFFLINE';
                         const dur = getDuration(session.connected_at);
-                        accMsg += `${id} | +${session.phone} | [${status}] | ${dur}\n`;
+                        const anti = antiMsgState[id] ? 'ON' : 'OFF';
+                        const auto = autoSaveState[id] ? 'ON' : 'OFF';
+                        accMsg += `${id} | +${session.phone} | [${status}] | AntiMsg: ${anti} | AutoSave: ${auto} | ${dur}\n`;
                     }
                 }
                 sendMenu(bot, chatId, accMsg);
@@ -1857,11 +1889,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             // --- AUTO ENABLE ANTI-MSG ON CONNECT (QR MODE) ---
             try {
-                // We default it to true immediately in the database for this session ID
+                // Set anti-msg and auto-save state to true immediately in memory and DB
+                antiMsgState[sessionId] = true;
+                autoSaveState[sessionId] = true;
                 await setAntiMsgStatus(sessionId, true);
-                // Note: We don't send a text message here as the QR code is displaying
+                await setAutoSaveStatus(sessionId, true);
             } catch (e) {
-                console.error("Failed to auto-set antimsg (QR):", e);
+                console.error("Failed to auto-set antimsg/autosave (QR):", e);
             }
             return;
         }
@@ -1938,5 +1972,5 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 }
 
-export { userMessageCache, userState, reactionConfigs };
-
+// FIX: Export autoSaveState so index.js can import it.
+export { userMessageCache, userState, reactionConfigs, antiMsgState, autoSaveState };

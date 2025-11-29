@@ -626,7 +626,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             // CRITICAL FIX: The "else" (reconnect) block is completely removed.
             // All non-fatal connections (503, 428, network loss) will now end the session cleanup.
             // -----------------------------------------------------------
-        }
+        
 
 
 

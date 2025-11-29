@@ -3,9 +3,7 @@ import 'dotenv/config';
 
 const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    // Note: For Render/Heroku, rejectUnauthorized: false is common, but less secure. 
-    // If possible, use secure connection settings.
-    ssl: { rejectUnauthorized: false } 
+    ssl: { rejectUnauthorized: false } // Required for Render/Heroku
 });
 
 export async function initDb() {
@@ -111,25 +109,16 @@ export async function initDb() {
 
 // ================= SESSIONS =================
 
-/**
- * FIX: This signature is now strictly 7 arguments to match the intended logic,
- * eliminating the previous confusion about an 8th 'is_connected' parameter.
- * Order: sessionId, phone, credsData, telegramUserId, antimsg, autosave, shortId
- */
 export async function saveSessionToDb(sessionId, phone, credsData, telegramUserId, antimsg, autosave, shortId = null) {
     try {
         await pool.query(
-            // The query parameters are now correctly ordered to match the function parameters
             `INSERT INTO wa_sessions (session_id, phone, creds, antimsg, autosave, telegram_user_id, connected_at, short_id) 
              VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7) 
              ON CONFLICT (session_id) 
              DO UPDATE SET creds = $3, phone = $2, antimsg = $4, autosave = $5, telegram_user_id = $6, short_id = $7, connected_at = CURRENT_TIMESTAMP`,
             [sessionId, phone, credsData, antimsg, autosave, telegramUserId, shortId]
         );
-    } catch (e) { 
-        // Log the error message, not just the object.
-        console.error('[DB] Save Session Error', e.message); 
-    }
+    } catch (e) { console.error('[DB] Save Session Error', e.message); }
 }
 
 export async function updateConnectionTime(sessionId) {
@@ -140,15 +129,6 @@ export async function setAntiMsgStatus(sessionId, status) {
     try {
         await pool.query('UPDATE wa_sessions SET antimsg = $1 WHERE session_id = $2', [status, sessionId]);
     } catch (e) { console.error('[DB] AntiMsg Update Error:', e.message); }
-}
-
-/**
- * NEW: Function to set autosave status (Required for /autosave command)
- */
-export async function setAutoSaveStatus(sessionId, status) {
-    try {
-        await pool.query('UPDATE wa_sessions SET autosave = $1 WHERE session_id = $2', [status, sessionId]);
-    } catch (e) { console.error('[DB] AutoSave Update Error:', e.message); }
 }
 
 export async function getAllSessions(telegramUserId = null) {
@@ -384,12 +364,14 @@ export async function saveVerificationData(telegramId, name, address, email, ip,
 
 // ================= FINANCIALS & STATS =================
 
+// --- ADDED MISSING FUNCTION HERE ---
 export async function getPendingWithdrawals() {
     try {
         const res = await pool.query(`SELECT id, telegram_id, amount_points, amount_ngn, created_at FROM withdrawals WHERE status = 'PENDING' ORDER BY created_at ASC`);
         return res.rows;
     } catch (e) { return []; }
 }
+// -----------------------------------
 
 export async function getEarningsStats(telegramId) {
     const today = new Date(); today.setHours(0,0,0,0);

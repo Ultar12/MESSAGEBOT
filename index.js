@@ -17,12 +17,12 @@ import { delay } from '@whiskeysockets/baileys';
 import http from 'http'; 
 import { Boom } from '@hapi/boom';
 
+// --- FIXED IMPORT: We remove antiMsgState and autoSaveState from import list.
+// They are passed *into* setupTelegramCommands, not imported from it.
 import { 
-    // NOTE: Assuming antiMsgState and autoSaveState are exported here, 
-    // as they are used globally below.
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs, antiMsgState, autoSaveState
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
 } from './telegram_commands.js';
-
+// ... rest of main file imp
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
     getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData
@@ -267,8 +267,8 @@ const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
 const clients = {}; 
 const shortIdMap = {}; 
-const antiMsgState = {}; 
-const autoSaveState = {}; 
+// FIX: REMOVED redundant 'const antiMsgState = {};' and 'const autoSaveState = {};' 
+// These variables are imported from telegram_commands.js but were being redeclared here.
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 

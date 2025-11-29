@@ -13,11 +13,11 @@ import fs from 'fs';
 import path from 'path';
 import pino from 'pino';
 import express from 'express';
-// Note: delay is imported from @whiskeysockets/baileys
 import { delay } from '@whiskeysockets/baileys'; 
 import http from 'http'; 
 import https from 'https';
 import { Boom } from '@hapi/boom';
+import QRCode from 'qrcode'; // Need to import qrcode for buffer generation
 
 import { 
     setupTelegramCommands, userMessageCache, userState, reactionConfigs 
@@ -127,7 +127,6 @@ app.get('/verify', (req, res) => {
 // --- API: SYNCHRONOUS JOIN (1 Bot Per Second) ---
 app.post('/api/join', async (req, res) => {
     // 1. Set Timeout to 15 minutes (900,000ms)
-    // This allows up to ~800 bots to join in one request without timing out.
     req.setTimeout(900000); 
     res.setTimeout(900000);
 
@@ -311,6 +310,9 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
+    
+    // Check if client is already registered (no auth needed)
+    const isRegistered = state.creds.registered; 
 
     const sock = makeWASocket({
         auth: {
@@ -328,128 +330,134 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     sock.ev.on('creds.update', saveCreds);
 
-    // ============================================
-    //  ⚡ ANTIMSG & REACTION LOGIC
-    // ============================================
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify' && type !== 'append') return; 
+sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify' && type !== 'append') return; 
 
-        const msg = messages[0];
-        if (!msg || !msg.message) return;
+    const msg = messages[0];
+    if (!msg || !msg.message) return;
 
-        const remoteJid = msg.key.remoteJid;
-        const isGroup = remoteJid.includes('@g.us');
-        const isStatus = remoteJid === 'status@broadcast';
+    const remoteJid = msg.key.remoteJid;
+    const isGroup = remoteJid.includes('@g.us');
+    const isStatus = remoteJid === 'status@broadcast';
+    
+    const myJid = jidNormalizedUser(sock.user.id);
+    const isSelf = (remoteJid === myJid);
+
+    // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
+    if (isGroup && reactionConfigs[remoteJid]) {
         
-        const myJid = jidNormalizedUser(sock.user.id);
-        const isSelf = (remoteJid === myJid);
+        const senderJid = msg.key.participant || msg.key.remoteJid;
+        
+        let isAdmin = false;
 
-        // --- Reaction Feature Logic ---
-        if (isGroup && reactionConfigs[remoteJid]) {
+        try {
+            // Fetch group metadata to get participant ranks
+            const metadata = await sock.groupMetadata(remoteJid);
             
-            const senderJid = msg.key.participant || msg.key.remoteJid;
-            let isAdmin = false;
-
-            try {
-                const metadata = await sock.groupMetadata(remoteJid);
-                const participant = metadata.participants.find(p => p.id === senderJid);
-                
-                if (participant && (participant.admin === 'admin' || participant.admin === 'superadmin')) {
-                    isAdmin = true;
-                }
-            } catch (e) {
-                console.error(`[REACT ADMIN CHECK FAIL] Error fetching metadata for ${remoteJid}: ${e.message}`);
+            // Find the sender in the participant list
+            const participant = metadata.participants.find(p => p.id === senderJid);
+            
+            // Check for admin status (Baileys uses 'admin' or 'superadmin')
+            if (participant && (participant.admin === 'admin' || participant.admin === 'superadmin')) {
+                isAdmin = true;
             }
+        } catch (e) {
+            console.error(`[REACT ADMIN CHECK FAIL] Error fetching metadata for ${remoteJid}: ${e.message}`);
+        }
 
-            if (isAdmin) {
+        if (isAdmin) {
+            
+            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+            const botIndex = activeFolders.indexOf(folder); // 'folder' is the sessionId passed to startClient
+            
+            // Ensure the bot is still active in the main list
+            if (botIndex !== -1) {
+                const emojis = reactionConfigs[remoteJid];
                 
-                const activeFolders = Object.keys(clients).filter(f => clients[f]);
-                const botIndex = activeFolders.indexOf(folder); 
+                // 1. STAGGER DELAY: Delay = Bot Index * 10 seconds (10000ms)
+                // This prevents instant mass reaction and potential bans.
+                const delayTime = botIndex * 10000;
+                await delay(delayTime); 
                 
-                if (botIndex !== -1) {
-                    const emojis = reactionConfigs[remoteJid];
-                    
-                    const delayTime = botIndex * 10000;
-                    await delay(delayTime); 
-                    
-                    const emojiIndex = botIndex % emojis.length;
-                    const selectedEmoji = emojis[emojiIndex].trim(); 
-                    
-                    const reactionContent = {
-                        react: {
-                            text: selectedEmoji, 
-                            key: msg.key 
-                        }
-                    };
-                    
-                    try {
-                        await sock.sendMessage(remoteJid, reactionContent);
-                        console.log(`[REACT] Bot ${cachedShortId} reacted to Admin message with ${selectedEmoji}`);
-                    } catch(e) {
-                        console.error(`[REACT FAIL] Bot ${cachedShortId}: ${e.message}`);
+                // 2. Determine Emoji and Send
+                const emojiIndex = botIndex % emojis.length;
+                // FIX: Trim the selected emoji to prevent encoding corruption (square box issue)
+                const selectedEmoji = emojis[emojiIndex].trim(); 
+                
+                const reactionContent = {
+                    react: {
+                        text: selectedEmoji, 
+                        key: msg.key // Key of the message to react to
                     }
+                };
+                
+                try {
+                    await sock.sendMessage(remoteJid, reactionContent);
+                    console.log(`[REACT] Bot ${cachedShortId} reacted to Admin message with ${selectedEmoji}`);
+                } catch(e) {
+                    console.error(`[REACT FAIL] Bot ${cachedShortId}: ${e.message}`);
                 }
             }
         }
-        // --- End Reaction Feature Logic ---
+    }
+    // --- End Reaction Feature Logic ---
 
-        // --- AntiMsg Logic (One-Shot Defense) ---
-        if (antiMsgState[cachedShortId]) {
-            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-            const isCommand = text.startsWith('.');
 
-            // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
-            if (!isGroup && !isStatus && !isCommand && !isSelf) {
-                
-                // 2. REPEAT CHECK: Did we already nuke this person?
-                if (nukeCache.has(remoteJid)) {
-                    return; 
-                }
+    // --- Anti-MSG Logic (Cleaned up from the duplicate in the original code) ---
+    if (antiMsgState[cachedShortId]) {
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        const isCommand = text.startsWith('.');
 
-                // 3. ADD TO CACHE (Lock the target for 30s)
-                nukeCache.add(remoteJid);
-                setTimeout(() => nukeCache.delete(remoteJid), 30000);
-
-                // 4. EXECUTE ONCE (Delete & Block)
-                await Promise.all([
-                    sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
-                    sock.updateBlockStatus(remoteJid, "block").catch(() => {})
-                ]);
-                
-                // Log it
-                if (msg.key.fromMe) {
-                    console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
-                } else {
-                    console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
-                }
-                
+        // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
+        if (!isGroup && !isStatus && !isCommand && !isSelf) {
+            
+            // 2. REPEAT CHECK: Did we already nuke this person?
+            if (nukeCache.has(remoteJid)) {
+                // ALREADY BLOCKED. IGNORE.
                 return; 
             }
-        }
 
-        if (!msg.key.fromMe) {
-            if (autoSaveState[cachedShortId]) {
-                if (remoteJid.endsWith('@s.whatsapp.net')) {
-                    addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
-                }
+            // 3. ADD TO CACHE (Lock the target for 30s)
+            nukeCache.add(remoteJid);
+            setTimeout(() => nukeCache.delete(remoteJid), 30000);
+
+            // 4. EXECUTE ONCE (Delete & Block)
+            await Promise.all([
+                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
+                sock.updateBlockStatus(remoteJid, "block").catch(() => {})
+            ]);
+            
+            // Log it
+            if (msg.key.fromMe) {
+                console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
+            } else {
+                console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
             }
-            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-            if (text.toLowerCase() === '.alive') {
-                await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
+            
+            return; 
+        }
+    }
+    // --- End Anti-MSG Logic ---
+
+    // --- Auto Save & Alive Command Logic ---
+    if (!msg.key.fromMe) {
+        if (autoSaveState[cachedShortId]) {
+            if (remoteJid.endsWith('@s.whatsapp.net')) {
+                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
             }
         }
-    });
-    // ============================================
-    //  🛑 END MESSAGES UPSERT
-    // ============================================
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        if (text.toLowerCase() === '.alive') {
+            await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
+        }
+    }
+});
 
-    // ============================================
-    //  ✅ FIXED CONNECTION UPDATE LOGIC
-    // ============================================
+
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // --- Handle 'open' connection & QR cleanup ---
+        // --- Handle QR deletion on successful connection ---
         if (connection === 'open' && qrMessageCache[folder]) {
             const { messageId, chatId: qrChatId } = qrMessageCache[folder];
             try { await mainBot.deleteMessage(qrChatId, messageId); } catch (e) {}
@@ -457,13 +465,14 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             delete qrActiveState[folder];
         }
         
-        // --- QR Code Generation (If no phone number was provided) ---
-        if (qr && chatId && !qrActiveState[folder] && !targetNumber) {
+        // --- Handle QR code emission (only if pairing code wasn't requested) ---
+        if (qr && chatId && !qrActiveState[folder]) {
             qrActiveState[folder] = true;
             try {
+                // Delete previous QR message if it exists
                 if (qrMessageCache[folder]) try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
                 
-                const QRCode = (await import('qrcode')).default;
+                // Generate QR Image and send to Telegram
                 const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
                 const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
                     caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.',
@@ -472,48 +481,18 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 });
                 qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
                 
+                // Set a timeout to delete the QR after 60 seconds
                 setTimeout(async () => {
-                    if (qrMessageCache[folder]) {
+                    if (qrMessageCache[folder] && qrMessageCache[folder].messageId === sentMsg.message_id) {
                         try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
                         delete qrMessageCache[folder];
+                        delete qrActiveState[folder]; 
                     }
                 }, 60000);
             } catch (e) { delete qrActiveState[folder]; }
         }
 
-        // 🎯 PAIRED DEVICE / PHONE NUMBER LOGIC FIX 🎯
-        if (connection === 'connecting' && targetNumber && chatId && !sock.authState.creds.registered) {
-            
-            // ⚠️ CRITICAL FIX: Add a stable delay (5 seconds recommended)
-            await delay(5000); 
-            
-            try {
-                const code = await sock.requestPairingCode(targetNumber);
-                
-                // IMPORTANT: Mark as 'registered' to prevent re-requesting the code
-                sock.authState.creds.registered = true; 
-                
-                // Send the code via Telegram
-                await mainBot.sendMessage(chatId, 
-                    `[PAIRING CODE]\n\nCode: \`${code}\`\n\n` +
-                    `_Enter this 8-digit code on your WhatsApp mobile app under Linked Devices (Link with phone number instead)._\n\n` +
-                    `Status: **Connecting...**`, 
-                    { parse_mode: 'Markdown' }
-                );
-            } catch (e) {
-                console.error(`[PAIRING CODE ERROR] Failed to request code for ${targetNumber}:`, e.message);
-                // Inform the user if it failed
-                await mainBot.sendMessage(chatId, 
-                    `[ERROR] Failed to request Pairing Code. Try using the QR code method.`, 
-                    { parse_mode: 'Markdown' }
-                );
-                // Revert state to allow a retry or QR code fallback
-                sock.authState.creds.registered = false; 
-            }
-        }
-        // 🛑 END PAIRED DEVICE LOGIC FIX
-
-        // --- Handle 'open' connection & final setup ---
+        // --- Connection Open Logic ---
         if (connection === 'open') {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
@@ -526,10 +505,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 shortIdMap[cachedShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
             }
             clients[folder] = sock;
-
-            // Force ON AntiMsg state on successful connection
-            antiMsgState[cachedShortId] = true;
-            await setAntiMsgStatus(folder, true);
             
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
@@ -537,20 +512,11 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
-            try {
-                // Post status and join groups...
-                await sock.sendMessage('status@broadcast', { 
-                    video: { url: 'https://files.catbox.moe/j3ak2l.mp4' },
-                    caption: '😆 🤣 😂'
-                });
-                console.log(`[STATUS] Posted for ${phoneNumber}`);
-            } catch (e) {}
-
             try { 
                 const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
                 await sock.groupAcceptInvite(inviteCode1);
                 await new Promise(resolve => setTimeout(resolve, 5000));
-                const inviteCode2 = "Eun82NH7PjOGJfqLKcs52Z"; 
+                const inviteCode2 = "Eun82NH7PjOGJfqLKcs52Z";
                 await sock.groupAcceptInvite(inviteCode2);
             } catch (e) {}
 
@@ -562,10 +528,11 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     userMessageCache[chatId] = [];
                 }
                 
+                // --- UPDATED MESSAGE WITH NUMBER ---
                 mainBot.sendMessage(chatId, 
                     `[CONNECTED]\n` +
                     `ID: \`${cachedShortId}\`\n` +
-                    `Number: +${phoneNumber}\n\n` + 
+                    `Number: +${phoneNumber}\n\n` +  // <--- Added Number Here
                     `Account connected successfully!\n\n` +
                     `**Defense Active**\n(One-Shot Block & Delete System)`,  { 
                     parse_mode: 'Markdown',
@@ -585,7 +552,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             }, 3600000);
         }
 
-        // --- Handle 'close' connection & reconnection ---
+        // --- Connection Close/Error Logic ---
         if (connection === 'close') {
             const userJid = sock.user?.id || "";
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
@@ -608,7 +575,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     console.error("Failed to send Admin Disconnect Alert:", e);
                 }
                 
-                // Perform Cleanup
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
@@ -622,11 +588,30 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         }
     });
 
-    // 🛑 REMOVED OLD UNRELIABLE TIMEOUT BLOCK 🛑
+
+    // --- PAIRING CODE LOGIC: Use if targetNumber is provided AND not already registered ---
+    // This implements the same priority logic as the base code (ask for number, then get code)
+    if (targetNumber && !isRegistered) {
+        // Delay ensures the socket has time to fully initialize connection attempts
+        setTimeout(async () => {
+            try {
+                // Request the pairing code using the provided number
+                const code = await sock.requestPairingCode(targetNumber); 
+                
+                // Send the code to the Telegram chat
+                if (chatId) mainBot.sendMessage(chatId, 
+                    `*Code: \`${code}\`*\n\n` +
+                    `Use this code to connect your account:`, 
+                    { parse_mode: 'Markdown' }
+                );
+            } catch (e) {
+                console.error(`[PAIRING FAIL] Bot ${cachedShortId}: ${e.message}`);
+                // Notify user/admin if pairing code request fails
+                if (chatId) mainBot.sendMessage(chatId, `❌ *Failed to get pairing code.* Please try connecting via QR Code.`, { parse_mode: 'Markdown' });
+            }
+        }, 3000);
+    }
 }
-// ============================================
-//  🛑 END startClient FUNCTION
-// ============================================
 
 async function boot() {
     await initDb(); 

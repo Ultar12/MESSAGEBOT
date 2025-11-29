@@ -17,10 +17,10 @@ import { delay } from '@whiskeysockets/baileys';
 import http from 'http'; 
 import { Boom } from '@hapi/boom';
 
-// --- FIXED IMPORT: We remove antiMsgState and autoSaveState from import list.
-// They are passed *into* setupTelegramCommands, not imported from it.
 import { 
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
+    // We assume antiMsgState and autoSaveState are exported from telegram_commands.js
+    // to be used here. If they are not exported, this will break again.
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs, antiMsgState, autoSaveState // <--- Assuming these are exported here
 } from './telegram_commands.js';
 // ... rest of main file imp
 import { 
@@ -267,8 +267,9 @@ const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
 const clients = {}; 
 const shortIdMap = {}; 
-// FIX: REMOVED redundant 'const antiMsgState = {};' and 'const autoSaveState = {};' 
-// These variables are imported from telegram_commands.js but were being redeclared here.
+// FIX: REMOVED redundant local const declarations to solve SyntaxError
+// const antiMsgState = {}; 
+// const autoSaveState = {}; 
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
@@ -542,7 +543,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
-            // NOTE: Using the original saveSessionToDb call here (7 arguments with 'true' for is_connected)
             await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId);
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);

@@ -518,139 +518,138 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-// --- Place this code INSIDE your setupTelegramCommands function ---
+    // --- /sendgroup [message] | [bot_count] | [group_link] ---
+    // Executes a message send job across X bots with a 3-second delay between each bot.
+    bot.onText(/^\/sendgroup (.+?) \| (\d+) \| (.+)$/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const adminId = String(ADMIN_ID); 
 
-mainBot.onText(/^\/sendgroup (.+?) \| (\d+) \| (.+)$/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const adminId = String(process.env.ADMIN_ID); 
+        // 1. Authorization Check (Only admin can run broadcast)
+        if (String(chatId) !== adminId) {
+            return bot.sendMessage(chatId, "🚫 Access Denied. This command is for the bot administrator only.");
+        }
 
-    // 1. Authorization Check (Only admin can run broadcast)
-    if (String(chatId) !== adminId) {
-        return mainBot.sendMessage(chatId, "🚫 Access Denied. This command is for the bot administrator only.");
-    }
+        const message = match[1].trim();
+        const botCount = parseInt(match[2].trim());
+        const groupLinkOrCode = match[3].trim();
 
-    const message = match[1].trim();
-    const botCount = parseInt(match[2].trim());
-    const groupLinkOrCode = match[3].trim();
+        if (botCount <= 0 || isNaN(botCount)) {
+            return bot.sendMessage(chatId, "❌ Bot count must be a valid number greater than zero.");
+        }
 
-    if (botCount <= 0 || isNaN(botCount)) {
-        return mainBot.sendMessage(chatId, "❌ Bot count must be a valid number greater than zero.");
-    }
-
-    // 2. Extract Group Code
-    let groupCode = '';
-    try {
-        groupCode = groupLinkOrCode.includes('chat.whatsapp.com/') 
-            ? groupLinkOrCode.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] 
-            : groupLinkOrCode;
-    } catch (e) {
-        return mainBot.sendMessage(chatId, '❌ Invalid group link format.', { parse_mode: 'Markdown' });
-    }
-    
-    // 3. Get Active Bots and Limit Count
-    const activeFolders = Object.keys(clients).filter(folder => clients[folder]);
-    const countToUse = Math.min(botCount, activeFolders.length);
-    
-    if (countToUse === 0) {
-        return mainBot.sendMessage(chatId, '❌ No active bots available to send the message.', { parse_mode: 'Markdown' });
-    }
-
-    // 4. Initial Report
-    const startingMsg = await mainBot.sendMessage(chatId, 
-        `⏳ Starting Group Broadcast Job...\n` +
-        `Bots Selected: ${countToUse}/${activeFolders.length}\n` +
-        `Target Group: ${groupCode}\n` +
-        `Message: "${message.substring(0, 50)}..."\n` +
-        `Interval: 3 seconds (to avoid rate limits)\n\n` +
-        `*Progress: 0/${countToUse}*`, 
-        { parse_mode: 'Markdown' }
-    );
-    
-    // 5. Initialize Results
-    let successCount = 0;
-    let failCount = 0;
-    let alreadyInCount = 0;
-
-    // 6. Processing Loop (The core logic)
-    for (let i = 0; i < countToUse; i++) {
-        const folder = activeFolders[i];
-        const sock = clients[folder];
-        
-        // Find phone number for report
-        const shortIdEntry = shortIdMap[Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder)];
-        const phoneNumber = shortIdEntry?.phone || folder;
-        
-        let statusText = `Bot +${phoneNumber} (\`${shortIdEntry.folder}\`): `;
-
+        // 2. Extract Group Code
+        let groupCode = '';
         try {
-            let groupJid = null;
-            
-            // Step 6a: Attempt to join the group
-            await sock.groupAcceptInvite(groupCode);
-            await delay(1000); // Short delay after joining
-            
-            // Step 6b: Find the Group JID (Required to send a message)
-            const metadata = await sock.groupGetInviteInfo(groupCode);
-            groupJid = metadata.id;
-
-            // Step 6c: Send the message
-            await sock.sendMessage(groupJid, { text: message });
-            successCount++;
-            statusText += '✅ Message Sent.';
-
+            groupCode = groupLinkOrCode.includes('chat.whatsapp.com/') 
+                ? groupLinkOrCode.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] 
+                : groupLinkOrCode;
         } catch (e) {
-            const err = String(e.message) || String(e);
-            
-            // Check specific error codes for "Already in group"
-            if (err.includes('participant') || err.includes('exist') || err.includes('409')) {
-                alreadyInCount++;
-                statusText += '⚠️ Already in group, assumed successful.';
-            } else {
-                failCount++;
-                statusText += `❌ Failed: ${err.substring(0, 50)}...`;
-                console.error(`[BROADCAST FAIL] Bot ${folder}: ${err}`);
-            }
+            return bot.sendMessage(chatId, '❌ Invalid group link format.', { parse_mode: 'Markdown' });
         }
         
-        // 7. Update Progress Message
-        try {
-            await mainBot.editMessageText(
-                `⏳ Group Broadcast Job In Progress...\n` +
-                `Bots Selected: ${countToUse}/${activeFolders.length}\n` +
-                `Target Group: ${groupCode}\n` +
-                `Interval: 3 seconds\n\n` +
-                `*Progress: ${i + 1}/${countToUse}* (Sent: ${successCount}, Failed: ${failCount})\n\n` +
-                `Last Bot Status:\n\`${statusText}\``,
-                {
-                    chat_id: chatId,
-                    message_id: startingMsg.message_id,
-                    parse_mode: 'Markdown'
+        // 3. Get Active Bots and Limit Count
+        const activeFolders = Object.keys(clients).filter(folder => clients[folder]);
+        const countToUse = Math.min(botCount, activeFolders.length);
+        
+        if (countToUse === 0) {
+            return bot.sendMessage(chatId, '❌ No active bots available to send the message.', { parse_mode: 'Markdown' });
+        }
+
+        // 4. Initial Report (using deleteOldMessagesAndSend is safer here)
+        const startingMsg = await bot.sendMessage(chatId, 
+            `⏳ Starting Group Broadcast Job...\n` +
+            `Bots Selected: ${countToUse}/${activeFolders.length}\n` +
+            `Target Group: ${groupCode}\n` +
+            `Interval: 3 seconds (to avoid rate limits)\n\n` +
+            `*Progress: 0/${countToUse}*`, 
+            { parse_mode: 'Markdown' }
+        );
+        
+        // 5. Initialize Results
+        let successCount = 0;
+        let failCount = 0;
+        let alreadyInCount = 0;
+
+        // 6. Processing Loop (The core logic)
+        for (let i = 0; i < countToUse; i++) {
+            const folder = activeFolders[i];
+            const sock = clients[folder];
+            
+            const shortIdEntry = shortIdMap[Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder)];
+            const phoneNumber = shortIdEntry?.phone || folder;
+            
+            let statusText = `Bot +${phoneNumber} (\`${folder}\`): `; // Use folder as short ID may not be mapped yet
+
+            try {
+                let groupJid = null;
+                
+                // Step 6a: Attempt to join the group
+                await sock.groupAcceptInvite(groupCode);
+                await delay(1000); 
+                
+                // Step 6b: Find the Group JID (Required to send a message)
+                const metadata = await sock.groupGetInviteInfo(groupCode);
+                groupJid = metadata.id;
+
+                // Step 6c: Send the message
+                await sock.sendMessage(groupJid, { text: message });
+                successCount++;
+                statusText += '✅ Message Sent.';
+
+            } catch (e) {
+                const err = String(e.message) || String(e);
+                
+                // Check specific error codes for "Already in group"
+                if (err.includes('participant') || err.includes('exist') || err.includes('409')) {
+                    alreadyInCount++;
+                    statusText += '⚠️ Already in group, message assumed sent.';
+                } else {
+                    failCount++;
+                    statusText += `❌ Failed: ${err.substring(0, 50)}...`;
+                    console.error(`[BROADCAST FAIL] Bot ${folder}: ${err}`);
                 }
-            );
-        } catch (e) { /* Ignore edit errors */ }
+            }
+            
+            // 7. Update Progress Message
+            try {
+                await bot.editMessageText(
+                    `⏳ Group Broadcast Job In Progress...\n` +
+                    `Bots Selected: ${countToUse}/${activeFolders.length}\n` +
+                    `Target Group: ${groupCode}\n` +
+                    `Interval: 3 seconds\n\n` +
+                    `*Progress: ${i + 1}/${countToUse}* (Sent: ${successCount}, Failed: ${failCount}, In Group: ${alreadyInCount})\n\n` +
+                    `Last Bot Status:\n\`${statusText}\``,
+                    {
+                        chat_id: chatId,
+                        message_id: startingMsg.message_id,
+                        parse_mode: 'Markdown'
+                    }
+                );
+            } catch (e) { /* Ignore edit errors */ }
 
 
-        // 8. DELAY: 3 Seconds between bots
-        if (i < countToUse - 1) await delay(3000);
-    }
-    
-    // 9. Final Report
-    const finalReport = 
-        `[JOB DONE] 🏁 Group Broadcast Complete!\n` +
-        `Target: ${groupCode}\n` +
-        `Bots Used: ${countToUse}\n` +
-        `✅ Successfully Sent/Already In: ${successCount + alreadyInCount}\n` +
-        `❌ Failed: ${failCount}`;
+            // 8. DELAY: 3 Seconds between bots
+            if (i < countToUse - 1) await delay(3000);
+        }
+        
+        // 9. Final Report
+        const finalReport = 
+            `[JOB DONE] 🏁 Group Broadcast Complete!\n\n` +
+            `Target Group: ${groupCode}\n` +
+            `Bots Used: ${countToUse}\n` +
+            `✅ Successfully Sent: ${successCount}\n` +
+            `⚠️ Already In Group: ${alreadyInCount}\n` +
+            `❌ Failed: ${failCount}`;
 
-    try {
-        // Send final message (or edit the last progress message)
-        await mainBot.sendMessage(chatId, finalReport, { parse_mode: 'Markdown' });
-    } catch(e) {}
-});
+        try {
+            // Send final message via sendMenu to clean up the chat
+            await sendMenu(bot, chatId, finalReport);
+        } catch(e) {}
+    });
+    // --- END /sendgroup ---
 
-// --- Remember to update the dependencies passed to setupTelegramCommands ---
-// e.g., setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount, delay);
-
+ 
 
     // --- /stats Command ---
     bot.onText(/\/stats/, async (msg) => {

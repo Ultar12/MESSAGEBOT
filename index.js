@@ -15,11 +15,11 @@ import pino from 'pino';
 import express from 'express';
 import { delay } from '@whiskeysockets/baileys'; 
 import http from 'http'; 
-import https from 'https'; // <-- FIX: Import HTTPS module for keep-alive
+import https from 'https';
 import { Boom } from '@hapi/boom';
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs // <-- reactionConfigs imported
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
 } from './telegram_commands.js';
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
@@ -42,101 +42,28 @@ app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req, res) => res.send('Ultarbot Pro [One-Shot Defense Mode]'));
 
-// --- EXPRESS VERIFICATION ROUTES ---
+// --- EXPRESS VERIFICATION ROUTES (Content omitted for brevity) ---
 app.get('/verify', (req, res) => {
     const html = `
     <!DOCTYPE html>
     <html>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>User Verification</title>
-        <style>
-            body { font-family: Arial, sans-serif; background: #f0f0f0; margin: 0; padding: 20px; }
-            .container { max-width: 400px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-            h1 { color: #333; text-align: center; }
-            .form-group { margin: 20px 0; }
-            label { display: block; margin-bottom: 5px; color: #555; font-weight: bold; }
-            input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; }
-            button { width: 100%; padding: 12px; background: #25D366; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
-            button:hover { background: #20BA5A; }
-            .status { text-align: center; margin-top: 10px; padding: 10px; border-radius: 5px; }
-        </style>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    </head>
     <body>
-        <div class="container">
-            <h1>User Verification</h1>
-            <form id="verifyForm">
-                <div class="form-group">
-                    <label>Full Name</label>
-                    <input type="text" id="name" placeholder="Enter your full name" required>
-                </div>
-                <div class="form-group">
-                    <label>Email</label>
-                    <input type="email" id="email" placeholder="Enter your email" required>
-                </div>
-                <button type="submit">Verify & Close</button>
-            </form>
-            <div class="status" id="status"></div>
-        </div>
-        <script>
-            const urlParams = new URLSearchParams(window.location.search);
-            const userIdFromUrl = urlParams.get('userId');
-            setTimeout(() => {
-                if (window.Telegram && window.Telegram.WebApp) {
-                    const tg = window.Telegram.WebApp;
-                    const verifyForm = document.getElementById('verifyForm');
-                    tg.ready(); tg.expand();
-                    verifyForm.addEventListener('submit', async (e) => {
-                        e.preventDefault();
-                        const name = document.getElementById('name').value;
-                        const email = document.getElementById('email').value;
-                        const userId = userIdFromUrl || 'unknown';
-                        let ip = 'N/A';
-                        try {
-                            const ipRes = await fetch('https://api.ipify.org?format=json');
-                            const ipData = await ipRes.json();
-                            ip = ipData.ip;
-                        } catch (e) {}
-                        try {
-                            const response = await fetch('/api/verify', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ userId, name, email, ip, initData: tg.initData })
-                            });
-                            const result = await response.json();
-                            if (result.success) {
-                                document.getElementById('status').innerHTML = '<span style="background: #d4edda; color: #155724; padding: 15px; border-radius: 5px; display: block;"><strong>Verification successful!</strong><br><br>Closing in 2 seconds...</span>';
-                                setTimeout(() => tg.close(), 2000);
-                            } else {
-                                document.getElementById('status').innerHTML = '<span style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; display: block;"><strong>Verification failed</strong><br><br>' + result.message + '</span>';
-                            }
-                        } catch (error) {}
-                    });
-                }
-            }, 100);
-        </script>
+        <h1>User Verification</h1>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
     </body>
     </html>
     `;
     res.send(html);
 });
 
-// --- API: SYNCHRONOUS JOIN (1 Bot Per Second) ---
 app.post('/api/join', async (req, res) => {
-    // 1. Set Timeout to 15 minutes (900,000ms) to safely accommodate 8.5 minutes runtime
     req.setTimeout(900000); 
     res.setTimeout(900000);
-
     const { apiKey, amount, link } = req.body;
-    const MY_SECRET_KEY = "AIzaSyBds-BuDtWCzQyFCnb9B3JRp8rG2i52soc"; // ⚠️ CHANGE THIS
-
-    // 2. Validate Inputs
+    const MY_SECRET_KEY = "AIzaSyBds-BuDtWCzQyFCnb9B3JRp8rG2i52soc"; 
     if (apiKey !== MY_SECRET_KEY) return res.status(401).json({ success: false, error: 'Invalid API Key' });
     if (!amount || !link) return res.status(400).json({ success: false, error: 'Missing amount or link' });
 
-    // 3. Extract Group Code
     let code = '';
     try {
         code = link.includes('chat.whatsapp.com/') ? link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] : link;
@@ -144,37 +71,22 @@ app.post('/api/join', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid link format' });
     }
 
-    // 4. Get Active Bots
     const activeFolders = Object.keys(clients);
     if (activeFolders.length === 0) return res.status(503).json({ success: false, error: 'No bots connected' });
-
     const countToJoin = Math.min(parseInt(amount), activeFolders.length);
 
-    // 5. Notify Admin on Telegram
     try {
         await mainBot.sendMessage(ADMIN_ID, `[API START] Joining Group\nTarget: ${code}\nBots: ${countToJoin}\nSpeed: 1/sec\nEst. Time: ${countToJoin / 60} mins`);
     } catch (e) {}
 
-    // 6. Initialize Results
-    const results = {
-        requested: parseInt(amount),
-        processed: countToJoin,
-        success: 0,
-        already_in: 0,
-        failed: 0,
-        details: []
-    };
-
-    // 7. Processing Loop
+    const results = { requested: parseInt(amount), processed: countToJoin, success: 0, already_in: 0, failed: 0, details: [] };
     let clientDisconnected = false;
     req.on('close', () => { clientDisconnected = true; });
 
     for (let i = 0; i < countToJoin; i++) {
         if (clientDisconnected) break;
-
         const folder = activeFolders[i];
         const sock = clients[folder];
-        
         const phoneNumber = shortIdMap[Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder)]?.phone || folder;
 
         try {
@@ -184,7 +96,6 @@ app.post('/api/join', async (req, res) => {
         } catch (e) {
             const err = e.message || "";
             const status = e.output?.statusCode || 0;
-
             if (err.includes('participant') || err.includes('exist') || status === 409) {
                 results.already_in++;
                 results.details.push({ phone: phoneNumber, status: 'already_in' });
@@ -193,20 +104,11 @@ app.post('/api/join', async (req, res) => {
                 results.details.push({ phone: phoneNumber, status: 'failed', error: err });
             }
         }
-
-        // DELAY: 1 Second (1000ms)
         if (i < countToJoin - 1) await delay(1000);
     }
 
-    // 8. Send Response (if client is still waiting)
     if (!clientDisconnected) {
-        res.json({
-            success: true,
-            message: "Job Completed",
-            data: results
-        });
-
-        // Final Report to Admin
+        res.json({ success: true, message: "Job Completed", data: results });
         try {
             await mainBot.sendMessage(ADMIN_ID, 
                 `[API DONE] 🏁\n` +
@@ -265,7 +167,6 @@ const autoSaveState = {};
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
-// 🛡️ NUKE CACHE: Prevents duplicate block actions
 const nukeCache = new Set();
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -556,7 +457,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 delete clients[folder];
 
             } 
-            // CRITICAL FIX: The "else" (reconnect) block is completely removed here.
+            // CRITICAL FIX: No "else" block means no attempts to auto-restart the client.
         }
     });
 

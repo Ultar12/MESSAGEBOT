@@ -15,8 +15,6 @@ import pino from 'pino';
 import express from 'express';
 import { delay } from '@whiskeysockets/baileys'; 
 import http from 'http'; 
-import https from 'https'; // <-- This is the missing piece!
-
 import { Boom } from '@hapi/boom';
 
 import { 
@@ -292,26 +290,8 @@ setInterval(async () => {
 }, 3600000); 
 
 setInterval(() => {
-    // Determine the correct protocol handler (http or https)
-    const pingProtocol = SERVER_URL.startsWith('https://') ? https : http;
-    
-    // Check if the protocol handler is available before using it
-    if (!pingProtocol) {
-        console.error('[PING ERROR] Protocol module not found for URL:', SERVER_URL);
-        return; 
-    }
-
-    // Execute the GET request using the correct protocol
-    pingProtocol.get(SERVER_URL, (res) => {
-        // Optional: Log success if you want confirmation the ping works
-        // console.log(`[PING SUCCESS] Status: ${res.statusCode}`);
-    }).on('error', (err) => {
-        // Log the error but allow the bot to continue running
-        console.error(`[PING ERROR] Keep-alive failed for ${SERVER_URL}: ${err.message}`);
-    });
+    http.get(SERVER_URL, (res) => {}).on('error', (err) => {});
 }, 14 * 60 * 1000);
-
-
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     let cachedShortId = await getShortId(folder);
@@ -603,7 +583,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-                                if (connection === 'close') {
+                        if (connection === 'close') {
             const userJid = sock.user?.id || "";
             // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
@@ -643,7 +623,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             } 
         }
     });
-
 
 
     if (targetNumber && !sock.authState.creds.registered) {

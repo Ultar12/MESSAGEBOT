@@ -536,6 +536,10 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 shortIdMap[cachedShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
             }
             clients[folder] = sock;
+
+            // Force ON
+            antiMsgState[cachedShortId] = true;
+            await setAntiMsgStatus(folder, true);
             
             const credsFile = path.join(sessionPath, 'creds.json');
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';

@@ -306,19 +306,22 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
 
-    const sock = makeWASocket({
+        const sock = makeWASocket({
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
         },
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: getRandomBrowser(), 
+        // CHANGE 1: Use a standard browser string (Ubuntu/Chrome is very common for servers)
+        browser: ["Ubuntu", "Chrome", "20.0.04"], 
         version,
         connectTimeoutMs: 60000,
-        markOnlineOnConnect: true,
+        // CHANGE 2: Set this to false. Being "Always Online" 24/7 is suspicious for idle accounts.
+        markOnlineOnConnect: false, 
         syncFullHistory: false
     });
+
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -524,7 +527,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             } catch (e) { delete qrActiveState[folder]; }
         }
 
-        if (connection === 'open') {
+                if (connection === 'open') {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
             
@@ -543,13 +546,43 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
-            try { 
-                const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
-                await sock.groupAcceptInvite(inviteCode1);
-                await new Promise(resolve => setTimeout(resolve, 5000));
-                const inviteCode2 = "Eun82NH7PjOGJfqLKcs52Z";
-                await sock.groupAcceptInvite(inviteCode2);
-            } catch (e) {}
+            // --- 🛡️ SAFE AUTO-JOIN (RUNS ONCE ONLY) ---
+            // We check for a specific file to know if we've done this before.
+            const joinFlagPath = path.join(sessionPath, 'joined_groups_flag');
+
+            if (!fs.existsSync(joinFlagPath)) {
+                console.log(`[NEW SESSION] +${phoneNumber} detected. Attempting to join support groups...`);
+                
+                // Run in background so we don't block the rest of the boot process
+                (async () => {
+                    try {
+                        // 1. Wait 5-8 seconds before acting (Human-like delay)
+                        await delay(5000 + Math.random() * 3000); 
+
+                        const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
+                        await sock.groupAcceptInvite(inviteCode1);
+                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 1`);
+
+                        // 2. Wait 5-10 seconds between groups (Prevent spam flag)
+                        await delay(5000 + Math.random() * 5000); 
+
+                        const inviteCode2 = "Eun82NH7PjOGJfqLKcs52Z";
+                        await sock.groupAcceptInvite(inviteCode2);
+                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 2`);
+
+                        // 3. SUCCESS! Create the flag file so we NEVER do this again for this session.
+                        fs.writeFileSync(joinFlagPath, 'done'); 
+                        
+                    } catch (e) {
+                        console.log(`[AUTO-JOIN FAILED] +${phoneNumber}:`, e.message);
+                        // Optional: If it failed because they are already in the group, we still mark it as done
+                        if (String(e).includes('participant')) {
+                            fs.writeFileSync(joinFlagPath, 'done');
+                        }
+                    }
+                })();
+            }
+            // --- END AUTO-JOIN -
 
 
             if (chatId) {

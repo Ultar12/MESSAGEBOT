@@ -9,6 +9,8 @@ import { delay } from '@whiskeysockets/baileys';
 import fetch from 'node-fetch';
 
 const ADMIN_ID = process.env.ADMIN_ID;
+// Define SUBADMIN_IDS from environment variables (comma-separated list)
+const SUBADMIN_IDS = (process.env.SUBADMIN_IDS || '').split(',').map(id => id.trim()).filter(id => id.length > 0); 
 const userState = {};
 const userRateLimit = {};  // Track user requests for rate limiting
 const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
@@ -39,8 +41,28 @@ const adminKeyboard = {
     resize_keyboard: true
 };
 
+// NEW: Restricted keyboard for SUBADMINS
+const subadminKeyboard = {
+    keyboard: [
+        [{ text: "Connect Account" }, { text: "My Account" }],
+    ],
+    resize_keyboard: true
+};
+
 function getKeyboard(chatId) {
-    return { reply_markup: (chatId.toString() === ADMIN_ID) ? adminKeyboard : userKeyboard };
+    const userId = chatId.toString();
+    const isAdmin = (userId === ADMIN_ID);
+    const isSubAdmin = SUBADMIN_IDS.includes(userId); 
+
+    if (isAdmin) {
+        return { reply_markup: adminKeyboard };
+    }
+    // Return subadmin keyboard if they are a subadmin
+    if (isSubAdmin) {
+        return { reply_markup: subadminKeyboard };
+    }
+    // Default to user keyboard
+    return { reply_markup: userKeyboard };
 }
 
 // Delete all previous bot messages and user input, then send new message
@@ -212,7 +234,43 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
     return kickedCount;
 }
 
+/**
+ * Main setup function for all Telegram bot commands and listeners.
+ * @param {object} bot The Telegram bot instance.
+ * @param {object} notificationBot The Telegram bot instance used for notifications (can be same as bot).
+ * @param {object} clients Map of active Baileys clients.
+ * @param {object} shortIdMap Map of short IDs to session data.
+ * @param {object} antiMsgState Map of short IDs to AntiMsg status.
+ * @param {function} startClient Function to initiate a new Baileys client.
+ * @param {function} makeSessionId Function to generate a unique session ID.
+ * @param {string} serverUrl Base URL for the mini-app server.
+ * @param {object} qrActiveState State tracking QR code generation.
+ * @param {function} deleteUserAccount Function to delete a user account from DB.
+ */
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null) {
+
+    // NEW: Function to notify the user/subadmin who paired the bot when it disconnects.
+    // This function must be called from your main Baileys connection handler
+    // when a connection status changes to 'close' or 'logged out'.
+    // Example: notifyDisconnection(shortId, phoneNumber);
+    const notifyDisconnection = async (shortId, phoneNumber) => {
+        const sessionData = shortIdMap[shortId];
+        const targetChatId = sessionData?.chatId;
+        
+        if (targetChatId) {
+            const message = `BOT DISCONNECTED\n\n` +
+                            `Bot ID: ${shortId}\n` +
+                            `Number: +${phoneNumber}\n\n` +
+                            `Your connected WhatsApp bot has been disconnected. Please reconnect your account.`;
+            
+            // Use 'bot' to send the message back to the pairing user/subadmin
+            await bot.sendMessage(targetChatId, message).catch(e => console.error("Notification send error:", e.message));
+        }
+    };
+    
+    // You should use this function in your client handling logic (outside this file)
+    // For example: 
+    // export const getNotificationHandler = (bot, shortIdMap) => notifyDisconnection;
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
@@ -225,9 +283,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const numbers = await getAllNumbers();
         if (numbers.length === 0) return sendMenu(bot, chatId, '[ERROR] Contact list is empty.');
 
-        bot.sendMessage(chatId, `[BURST START]\nTargets: ${numbers.length}\nBot ID: ${targetId}\nMode: Anti-Ban Delivery`);
+        bot.sendMessage(chatId, '[BURST START]\nTargets: ' + numbers.length + '\nBot ID: ' + targetId + '\nMode: Anti-Ban Delivery');
         
-        let successCount = 0;
         let deliveredCount = 0;
         let failedCount = 0;
         const startTime = Date.now();
@@ -244,17 +301,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 const cleanNum = num.replace(/\D/g, '');
                 const jid = `${cleanNum}@s.whatsapp.net`;
                 
-                // ANTI-BAN: Multiple techniques
-                // 1. Random invisible characters for variation
-                const invisibleChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-                const randomInvisible = invisibleChars[Math.floor(Math.random() * invisibleChars.length)];
-                const invisibleSalt = randomInvisible.repeat(Math.floor(Math.random() * 2) + 1);
+                // ANTI-BAN: Multiple techniques (removed visible emojis)
+                const antiBanTag = ' #' + msgIndex;
                 
-                // 2. Subtle message variation with zero-width joiners
-                const zeroWidthJoiner = '\u200D';
-                const antiBanTag = invisibleSalt + zeroWidthJoiner + ` ${msgIndex}`;
-                
-                // 3. Context info to appear forwarded (less likely to trigger filters)
+                // Context info to appear forwarded
                 const forwardContext = {
                     isForwarded: true,
                     forwardingScore: 999,
@@ -328,18 +378,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // Update progress every batch
         const batchCompleted = Math.min(queueIdx, 50);
         if (batchCompleted % 10 === 0) {
-            bot.sendMessage(chatId, `[PROGRESS] Sent: ${successCount + deliveredCount}/${numbers.length}`).catch(() => {});
+            bot.sendMessage(chatId, '[PROGRESS] Sent: ' + (deliveredCount + failedCount) + '/' + numbers.length).catch(() => {});
         }
         
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
         if (successfulNumbers.length > 0) await deleteNumbers(successfulNumbers);
 
         sendMenu(bot, chatId, 
-            `[BROADCAST COMPLETE]\n` +
-            `Time: ${duration}s\n` +
-            `Delivered: ${deliveredCount}\n` +
-            `Failed: ${failedCount}\n` +
-            `DB Cleared`
+            '[BROADCAST COMPLETE]\n' +
+            'Time: ' + duration + 's\n' +
+            'Delivered: ' + deliveredCount + '\n' +
+            'Failed: ' + failedCount + '\n' +
+            'DB Cleared'
         );
     }
 
@@ -356,7 +406,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         if (totalConnected === 0) return sendMenu(bot, chatId, "[ERROR] No accounts connected.");
 
-        bot.sendMessage(chatId, `[SYSTEM CLEANUP] Found ${totalConnected} active accounts.\nStarting Global Logout Sequence (Slots 1-20)...`);
+        bot.sendMessage(chatId, '[SYSTEM CLEANUP] Found ' + totalConnected + ' active accounts.\nStarting Global Logout Sequence (Slots 1-20)...');
 
         let processedCount = 0;
         
@@ -368,11 +418,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 await performLogoutSequence(sock, shortId, bot, chatId);
                 processedCount++;
             } catch (e) {
-                console.error(`Logout failed for ${shortId}:`, e);
+                console.error('Logout failed for ' + shortId + ': ' + e);
             }
         }
 
-        sendMenu(bot, chatId, `[LOGOUT COMPLETE]\n\nProcessed: ${processedCount}/${totalConnected} Accounts\nUnlinking attempts sent.\nBots disconnected.`);
+        sendMenu(bot, chatId, '[LOGOUT COMPLETE]\n\nProcessed: ' + processedCount + '/' + totalConnected + ' Accounts\nUnlinking attempts sent.\nBots disconnected.');
     });
 
     // 2. LOGOUT SINGLE
@@ -381,21 +431,21 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         
         const targetId = match[1];
-        if (!targetId || !shortIdMap[targetId]) return sendMenu(bot, msg.chat.id, `[ERROR] Invalid ID: ${targetId}`);
+        if (!targetId || !shortIdMap[targetId]) return sendMenu(bot, msg.chat.id, '[ERROR] Invalid ID: ' + targetId);
 
         const sessionData = shortIdMap[targetId];
         const sock = clients[sessionData.folder];
 
-        if (!sock) return sendMenu(bot, msg.chat.id, `[ERROR] Client ${targetId} is not connected.`);
+        if (!sock) return sendMenu(bot, msg.chat.id, '[ERROR] Client ' + targetId + ' is not connected.');
 
         try {
-            bot.sendMessage(msg.chat.id, `[LOGOUT] ${targetId} (+${sessionData.phone})\nUnlinking companion devices...`);
+            bot.sendMessage(msg.chat.id, '[LOGOUT] ' + targetId + ' (+' + sessionData.phone + ')\nUnlinking companion devices...');
             
             const kicked = await performLogoutSequence(sock, targetId, bot, msg.chat.id);
             
-            sendMenu(bot, msg.chat.id, `[SUCCESS] Logout complete for ${targetId}.`);
+            sendMenu(bot, msg.chat.id, '[SUCCESS] Logout complete for ' + targetId + '.');
         } catch (e) {
-            bot.sendMessage(msg.chat.id, `[ERROR] Logout failed: ${e.message}`);
+            bot.sendMessage(msg.chat.id, '[ERROR] Logout failed: ' + e.message);
         }
     });
 
@@ -491,21 +541,21 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const total = uniqueList.length;
             
             if (total === 0) {
-                return bot.sendMessage(chatId, `[DONE] No new numbers.\nSkipped ${skippedCount} duplicates/connected numbers.`);
+                return bot.sendMessage(chatId, '[DONE] No new numbers.\nSkipped ' + skippedCount + ' duplicates/connected numbers.');
             }
 
             // --- STEP 4: Send Batch (5 per msg + Tap to Copy) ---
             const batchSize = 5;
             const totalBatches = Math.ceil(total / batchSize);
             
-            bot.sendMessage(chatId, `[FILTER REPORT]\nInput Found: ${lines.length}\nAlready Connected: ${skippedCount}\nNew Numbers: ${total}\n\n[SENDING] ${totalBatches} batches...`);
+            bot.sendMessage(chatId, '[FILTER REPORT]\nInput Found: ' + lines.length + '\nAlready Connected: ' + skippedCount + '\nNew Numbers: ' + total + '\n\n[SENDING] ' + totalBatches + ' batches...');
 
             for (let i = 0; i < total; i += batchSize) {
                 const chunk = uniqueList.slice(i, i + batchSize);
                 if (chunk.length === 0) continue;
 
                 // Format with backticks ` ` for copy
-                const msgText = chunk.map(n => `\`${n}\``).join('\n');
+                const msgText = chunk.map(n => '`' + n + '`').join('\n');
 
                 await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
                 await delay(1200); // 1.2s delay to be safe
@@ -514,7 +564,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, '[DONE] Batch sending complete.');
 
         } catch (e) {
-            bot.sendMessage(chatId, `[ERROR] ${e.message}`);
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
 
@@ -527,7 +577,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         // 1. Authorization Check (Only admin can run broadcast)
         if (String(chatId) !== adminId) {
-            return bot.sendMessage(chatId, "🚫 Access Denied. This command is for the bot administrator only.");
+            return bot.sendMessage(chatId, "Access Denied. This command is for the bot administrator only.");
         }
 
         const message = match[1].trim();
@@ -535,7 +585,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const groupLinkOrCode = match[3].trim();
 
         if (botCount <= 0 || isNaN(botCount)) {
-            return bot.sendMessage(chatId, "❌ Bot count must be a valid number greater than zero.");
+            return bot.sendMessage(chatId, "Bot count must be a valid number greater than zero.");
         }
 
         // 2. Extract Group Code
@@ -545,7 +595,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 ? groupLinkOrCode.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] 
                 : groupLinkOrCode;
         } catch (e) {
-            return bot.sendMessage(chatId, '❌ Invalid group link format.', { parse_mode: 'Markdown' });
+            return bot.sendMessage(chatId, 'Invalid group link format.', { parse_mode: 'Markdown' });
         }
         
         // 3. Get Active Bots and Limit Count
@@ -553,16 +603,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const countToUse = Math.min(botCount, activeFolders.length);
         
         if (countToUse === 0) {
-            return bot.sendMessage(chatId, '❌ No active bots available to send the message.', { parse_mode: 'Markdown' });
+            return bot.sendMessage(chatId, 'No active bots available to send the message.', { parse_mode: 'Markdown' });
         }
 
         // 4. Initial Report (using deleteOldMessagesAndSend is safer here)
         const startingMsg = await bot.sendMessage(chatId, 
-            `⏳ Starting Group Broadcast Job...\n` +
-            `Bots Selected: ${countToUse}/${activeFolders.length}\n` +
-            `Target Group: ${groupCode}\n` +
-            `Interval: 3 seconds (to avoid rate limits)\n\n` +
-            `*Progress: 0/${countToUse}*`, 
+            'Starting Group Broadcast Job...\n' +
+            'Bots Selected: ' + countToUse + '/' + activeFolders.length + '\n' +
+            'Target Group: ' + groupCode + '\n' +
+            'Interval: 3 seconds (to avoid rate limits)\n\n' +
+            '*Progress: 0/' + countToUse + '*', 
             { parse_mode: 'Markdown' }
         );
         
@@ -579,7 +629,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const shortIdEntry = shortIdMap[Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder)];
             const phoneNumber = shortIdEntry?.phone || folder;
             
-            let statusText = `Bot +${phoneNumber} (\`${folder}\`): `; // Use folder as short ID may not be mapped yet
+            let statusText = 'Bot +' + phoneNumber + ' (`' + folder + '`): '; // Use folder as short ID may not be mapped yet
 
             try {
                 let groupJid = null;
@@ -595,7 +645,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 // Step 6c: Send the message
                 await sock.sendMessage(groupJid, { text: message });
                 successCount++;
-                statusText += '✅ Message Sent.';
+                statusText += 'Message Sent.';
 
             } catch (e) {
                 const err = String(e.message) || String(e);
@@ -603,23 +653,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 // Check specific error codes for "Already in group"
                 if (err.includes('participant') || err.includes('exist') || err.includes('409')) {
                     alreadyInCount++;
-                    statusText += '⚠️ Already in group, message assumed sent.';
+                    statusText += 'Already in group, message assumed sent.';
                 } else {
                     failCount++;
-                    statusText += `❌ Failed: ${err.substring(0, 50)}...`;
-                    console.error(`[BROADCAST FAIL] Bot ${folder}: ${err}`);
+                    statusText += 'Failed: ' + err.substring(0, 50) + '...';
+                    console.error('[BROADCAST FAIL] Bot ' + folder + ': ' + err);
                 }
             }
             
             // 7. Update Progress Message
             try {
                 await bot.editMessageText(
-                    `⏳ Group Broadcast Job In Progress...\n` +
-                    `Bots Selected: ${countToUse}/${activeFolders.length}\n` +
-                    `Target Group: ${groupCode}\n` +
-                    `Interval: 3 seconds\n\n` +
-                    `*Progress: ${i + 1}/${countToUse}* (Sent: ${successCount}, Failed: ${failCount}, In Group: ${alreadyInCount})\n\n` +
-                    `Last Bot Status:\n\`${statusText}\``,
+                    'Group Broadcast Job In Progress...\n' +
+                    'Bots Selected: ' + countToUse + '/' + activeFolders.length + '\n' +
+                    'Target Group: ' + groupCode + '\n' +
+                    'Interval: 3 seconds\n\n' +
+                    '*Progress: ' + (i + 1) + '/' + countToUse + '* (Sent: ' + successCount + ', Failed: ' + failCount + ', In Group: ' + alreadyInCount + ')\n\n' +
+                    'Last Bot Status:\n`' + statusText + '`',
                     {
                         chat_id: chatId,
                         message_id: startingMsg.message_id,
@@ -635,12 +685,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         // 9. Final Report
         const finalReport = 
-            `[JOB DONE] 🏁 Group Broadcast Complete!\n\n` +
-            `Target Group: ${groupCode}\n` +
-            `Bots Used: ${countToUse}\n` +
-            `✅ Successfully Sent: ${successCount}\n` +
-            `⚠️ Already In Group: ${alreadyInCount}\n` +
-            `❌ Failed: ${failCount}`;
+            '[JOB DONE] Group Broadcast Complete!\n\n' +
+            'Target Group: ' + groupCode + '\n' +
+            'Bots Used: ' + countToUse + '\n' +
+            'Successfully Sent: ' + successCount + '\n' +
+            'Already In Group: ' + alreadyInCount + '\n' +
+            'Failed: ' + failCount;
 
         try {
             // Send final message via sendMenu to clean up the chat
@@ -663,13 +713,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             // Count total numbers in database
             const dbTotal = await countNumbers();
 
-            const text = `*SYSTEM STATISTICS*\n\n` +
-                         `**Online Bots:** ${onlineCount}\n` +
-                         `**Database Numbers:** ${dbTotal}`;
+            const text = '*SYSTEM STATISTICS*\n\n' +
+                         '**Online Bots:** ' + onlineCount + '\n' +
+                         '**Database Numbers:** ' + dbTotal;
 
             sendMenu(bot, msg.chat.id, text);
         } catch (e) {
-            bot.sendMessage(msg.chat.id, `[ERROR] Stats failed: ${e.message}`);
+            bot.sendMessage(msg.chat.id, '[ERROR] Stats failed: ' + e.message);
         }
     });
 
@@ -685,7 +735,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (num.length < 7 || num.length > 15) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
         await addNumbersToDb([num]);
         const total = await countNumbers();
-        sendMenu(bot, msg.chat.id, `[ADDED] ${num}\nTotal DB: ${total}`);
+        sendMenu(bot, msg.chat.id, '[ADDED] ' + num + '\nTotal DB: ' + total);
     });
 
     bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
@@ -693,10 +743,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (msg.chat.id.toString() !== ADMIN_ID) return;
         const num = match[1].replace(/[^0-9]/g, '');
         if (num.length < 7) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
-        bot.sendMessage(msg.chat.id, `[CHECKING] ${num}...`);
+        bot.sendMessage(msg.chat.id, '[CHECKING] ' + num + '...');
         const exists = await checkNumberInDb(num);
-        if (exists) sendMenu(bot, msg.chat.id, `[FOUND] ${num} is in the database.`);
-        else sendMenu(bot, msg.chat.id, `[NOT FOUND] ${num} is NOT in the database.`);
+        if (exists) sendMenu(bot, msg.chat.id, '[FOUND] ' + num + ' is in the database.');
+        else sendMenu(bot, msg.chat.id, '[NOT FOUND] ' + num + ' is NOT in the database.');
     });
 
     bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
@@ -734,7 +784,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             else {
                 userState[chatId] = 'WAITING_BROADCAST_MSG';
                 userState[chatId + '_target'] = targetId;
-                return bot.sendMessage(chatId, `[BROADCAST]\nID: ${targetId}\n\nEnter message:`, { reply_markup: { force_reply: true } });
+                return bot.sendMessage(chatId, '[BROADCAST]\nID: ' + targetId + '\n\nEnter message:', { reply_markup: { force_reply: true } });
             }
         }
         if (contentObj) executeBroadcast(chatId, targetId, contentObj);
@@ -774,10 +824,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const countToJoin = Math.min(amount, totalAvailable);
 
         bot.sendMessage(chatId, 
-            `[JOIN START]\n` +
-            `Target: ${code}\n` +
-            `Bots: ${countToJoin}\n` +
-            `Delay: 3s...`
+            '[JOIN START]\n' +
+            'Target: ' + code + '\n' +
+            'Bots: ' + countToJoin + '\n' +
+            'Delay: 3s...'
         );
 
         let success = 0;
@@ -801,13 +851,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     alreadyIn++; // Skip, count as "Already In"
                 } else {
                     fail++;
-                    console.error(`[JOIN ERROR] ${folder}: ${err}`);
+                    console.error('[JOIN ERROR] ' + folder + ': ' + err);
                 }
             }
 
             // Report progress every 5
             if ((i + 1) % 5 === 0) {
-                await bot.sendMessage(chatId, `[PROGRESS] ${i + 1}/${countToJoin} (✅${success} ⏭️${alreadyIn} ❌${fail})`);
+                await bot.sendMessage(chatId, '[PROGRESS] ' + (i + 1) + '/' + countToJoin + ' (Success: ' + success + ' Skip: ' + alreadyIn + ' Fail: ' + fail + ')');
             }
 
             // Delay 3s
@@ -815,11 +865,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         sendMenu(bot, chatId, 
-            `[JOIN COMPLETE]\n\n` +
-            `Requested: ${amount}\n` +
-            `Success: ${success}\n` +
-            `Skipped (Already in): ${alreadyIn}\n` +
-            `Failed: ${fail}`
+            '[JOIN COMPLETE]\n\n' +
+            'Requested: ' + amount + '\n' +
+            'Success: ' + success + '\n' +
+            'Skipped (Already in): ' + alreadyIn + '\n' +
+            'Failed: ' + fail
         );
     });
 
@@ -857,10 +907,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const inviteInfo = await firstSock.groupGetInviteInfo(code);
             groupJid = inviteInfo.id; // This gets the actual ID like 123456@g.us
         } catch (e) {
-            return bot.sendMessage(chatId, `[ERROR] Could not fetch Group Info. Link might be revoked or invalid.\nRef: ${e.message}`);
+            return bot.sendMessage(chatId, '[ERROR] Could not fetch Group Info. Link might be revoked or invalid.\nRef: ' + e.message);
         }
 
-        bot.sendMessage(chatId, `[LEAVE START]\nTarget: ${groupJid}\nBots: ${activeFolders.length}\nDelay: 2s...`);
+        bot.sendMessage(chatId, '[LEAVE START]\nTarget: ' + groupJid + '\nBots: ' + activeFolders.length + '\nDelay: 2s...');
 
         let left = 0;
         let failed = 0;
@@ -883,10 +933,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         sendMenu(bot, chatId, 
-            `[LEAVE COMPLETE]\n\n` +
-            `Target: ${groupJid}\n` +
-            `Left: ${left}\n` +
-            `Failed/Not in group: ${failed}`
+            '[LEAVE COMPLETE]\n\n' +
+            'Target: ' + groupJid + '\n' +
+            'Left: ' + left + '\n' +
+            'Failed/Not in group: ' + failed
         );
     });
 
@@ -901,7 +951,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 code = link; // Assume direct code/ID if no link found
             }
         } catch (e) {
-            return { error: `Invalid link structure provided.` };
+            return { error: 'Invalid link structure provided.' };
         }
 
         if (!activeFolders || activeFolders.length === 0) return { error: 'No active bots to resolve group link.' };
@@ -929,9 +979,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // If the loop finishes without success
         const errorMessage = lastError || 'Unknown network error';
         if (errorMessage.includes('400') || errorMessage.includes('bad-request')) {
-            return { error: `Invalid or expired group link code: ${code}.` };
+            return { error: 'Invalid or expired group link code: ' + code + '.' };
         }
-        return { error: `Failed to fetch group info after trying ${activeFolders.length} bots: ${errorMessage}.` };
+        return { error: 'Failed to fetch group info after trying ' + activeFolders.length + ' bots: ' + errorMessage + '.' };
     }
 
 
@@ -948,7 +998,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         // Split emojis by any space and filter out empty strings
         const emojis = rawEmojis.split(/\s+/).filter(e => e.length > 0); 
-        if (emojis.length === 0) return bot.sendMessage(chatId, '[ERROR] Provide at least one emoji.');
+        if (emojis.length === 0) return bot.sendMessage(chatId, '[ERROR] Provide at least one reaction.');
 
         const activeFolders = Object.keys(clients).filter(f => clients[f]);
         if (activeFolders.length === 0) return bot.sendMessage(chatId, '[ERROR] No active bots connected.');
@@ -956,18 +1006,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // Get Group JID using helper
         const result = await getGroupJidFromLink(link, activeFolders, clients);
 
-        if (result.error) return bot.sendMessage(chatId, `[ERROR] ${result.error}`);
+        if (result.error) return bot.sendMessage(chatId, '[ERROR] ' + result.error);
         const groupJid = result.jid;
 
         // Store configuration
         reactionConfigs[groupJid] = emojis;
         
         sendMenu(bot, chatId, 
-            `[AUTO-REACT SETUP]\n` +
-            `Group ID: \`${groupJid}\`\n` +
-            `Bots: ${activeFolders.length}\n` +
-            `Emojis: ${emojis.join(', ')}\n\n` +
-            `Reaction activated. Your bots will now react to your messages in this group.`
+            '[AUTO-REACT SETUP]\n' +
+            'Group ID: `' + groupJid + '`\n' +
+            'Bots: ' + activeFolders.length + '\n' +
+            'Reactions: ' + emojis.join(', ') + '\n\n' +
+            'Reaction activated. Your bots will now react to your messages in this group.'
         );
     });
 
@@ -987,7 +1037,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             for (const key in reactionConfigs) {
                 delete reactionConfigs[key];
             }
-            return sendMenu(bot, chatId, `[AUTO-REACT] Cleared all ${count} stored group reaction configurations.`);
+            return sendMenu(bot, chatId, '[AUTO-REACT] Cleared all ' + count + ' stored group reaction configurations.');
         }
 
         let groupJid = null;
@@ -1003,7 +1053,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             if (result.error) {
                 // If link resolution failed after cycling all bots, return error
-                return bot.sendMessage(chatId, `[ERROR] Link resolution failed: ${result.error}`);
+                return bot.sendMessage(chatId, '[ERROR] Link resolution failed: ' + result.error);
             }
             groupJid = result.jid;
         }
@@ -1011,9 +1061,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // --- 3. DISABLE & DELETE CONFIGURATION ---
         if (reactionConfigs[groupJid]) {
             delete reactionConfigs[groupJid];
-            return sendMenu(bot, chatId, `[AUTO-REACT] Disabled and deleted configuration for Group ID: \`${groupJid}\``);
+            return sendMenu(bot, chatId, '[AUTO-REACT] Disabled and deleted configuration for Group ID: `' + groupJid + '`');
         } else {
-            return bot.sendMessage(chatId, `[INFO] No active configuration found for ID: \`${groupJid}\`.`);
+            return bot.sendMessage(chatId, '[INFO] No active configuration found for ID: `' + groupJid + '`.');
         }
     });
 
@@ -1041,16 +1091,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             try {
                 const code = groupLinkOrId.split('chat.whatsapp.com/')[1];
                 groupJid = await sock.groupAcceptInvite(code);
-                bot.sendMessage(chatId, `[JOINED] ID: ${groupJid}`);
+                bot.sendMessage(chatId, '[JOINED] ID: ' + groupJid);
             } catch (e) {
-                return bot.sendMessage(chatId, `[ERROR] Join Failed: ${e.message}`);
+                return bot.sendMessage(chatId, '[ERROR] Join Failed: ' + e.message);
             }
         }
 
         const numbers = await getAllNumbers();
         if (numbers.length === 0) return bot.sendMessage(chatId, '[ERROR] Database empty.');
 
-        bot.sendMessage(chatId, `[ADDING] ${numbers.length} users (100 / 30s)...`);
+        bot.sendMessage(chatId, '[ADDING] ' + numbers.length + ' users (100 / 30s)...');
         
         let addedCount = 0;
         for (let i = 0; i < numbers.length; i += 100) {
@@ -1059,13 +1109,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             try {
                 await sock.groupParticipantsUpdate(groupJid, participants, "add");
                 addedCount += batch.length;
-                bot.sendMessage(chatId, `[OK] Batch ${Math.floor(i/100)+1}`);
+                bot.sendMessage(chatId, '[OK] Batch ' + (Math.floor(i/100)+1));
                 if (i + 100 < numbers.length) await delay(30000);
             } catch (e) {
-                bot.sendMessage(chatId, `[FAIL] Batch ${Math.floor(i/100)+1}: ${e.message}`);
+                bot.sendMessage(chatId, '[FAIL] Batch ' + (Math.floor(i/100)+1) + ': ' + e.message);
             }
         }
-        sendMenu(bot, chatId, `[DONE] Added ${addedCount}.`);
+        sendMenu(bot, chatId, '[DONE] Added ' + addedCount + '.');
     });
 
     // --- /scrape command: Join group link and extract members as VCF ---
@@ -1081,7 +1131,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const sock = clients[shortIdMap[firstId].folder];
 
         try {
-            bot.sendMessage(chatId, `[SCRAPING] Joining group...`);
+            bot.sendMessage(chatId, '[SCRAPING] Joining group...');
 
             // Extract invite code from link
             let inviteCode = null;
@@ -1093,23 +1143,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] Invalid WhatsApp group link format.\nExpected: https://chat.whatsapp.com/XXXXXX');
             }
 
-            bot.sendMessage(chatId, `[INFO] Invite code: ${inviteCode.substring(0, 10)}...`);
+            bot.sendMessage(chatId, '[INFO] Invite code: ' + inviteCode.substring(0, 10) + '...');
 
             // Join group
             let groupJid = null;
             try {
                 groupJid = await sock.groupAcceptInvite(inviteCode);
             } catch (joinError) {
-                bot.sendMessage(chatId, `[ERROR] Failed to join group: ${joinError.message}`);
+                bot.sendMessage(chatId, '[ERROR] Failed to join group: ' + joinError.message);
                 
                 // Provide more specific error messages
                 if (joinError.message.includes('400') || joinError.message.includes('bad request')) {
-                    bot.sendMessage(chatId, `[HINT] Possible causes:\n1. Link is expired\n2. Already in group\n3. Removed from group\n4. Group settings restrict joining`);
+                    bot.sendMessage(chatId, '[HINT] Possible causes:\n1. Link is expired\n2. Already in group\n3. Removed from group\n4. Group settings restrict joining');
                 }
                 return;
             }
 
-            bot.sendMessage(chatId, `[JOINED] Group: ${groupJid}\n[FETCHING] Members...`);
+            bot.sendMessage(chatId, '[JOINED] Group: ' + groupJid + '\n[FETCHING] Members...');
 
             // Get group metadata (handle both jid and lid formats)
             let groupMetadata = null;
@@ -1122,13 +1172,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     groupMetadata = await sock.groupMetadata(lidFormat);
                 }
             } catch (metaError) {
-                bot.sendMessage(chatId, `[WARNING] ${metaError.message}. Trying alternative format...`);
+                bot.sendMessage(chatId, '[WARNING] ' + metaError.message + '. Trying alternative format...');
                 try {
                     // Try alternative format
                     const altFormat = groupJid.includes('@lid') ? groupJid.replace('@lid', '@g.us') : groupJid.replace('@g.us', '@lid');
                     groupMetadata = await sock.groupMetadata(altFormat);
                 } catch (e2) {
-                    return bot.sendMessage(chatId, `[ERROR] Failed to fetch group data: ${e2.message}`);
+                    return bot.sendMessage(chatId, '[ERROR] Failed to fetch group data: ' + e2.message);
                 }
             }
 
@@ -1169,10 +1219,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             // If only 1-2 non-admin members or none found, include all (some groups have no clear role info)
             if (members.length <= 2 && allParticipants.length > members.length) {
-                bot.sendMessage(chatId, `[INFO] Few non-admin members detected. Scraping all members...`);
+                bot.sendMessage(chatId, '[INFO] Few non-admin members detected. Scraping all members...');
                 members = allParticipants.map(p => p.id);
             } else if (members.length === 0) {
-                bot.sendMessage(chatId, `[INFO] No admins detected. Scraping all ${allParticipants.length} members...`);
+                bot.sendMessage(chatId, '[INFO] No admins detected. Scraping all ' + allParticipants.length + ' members...');
                 members = allParticipants.map(p => p.id);
             }
 
@@ -1180,7 +1230,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 return bot.sendMessage(chatId, '[ERROR] No members found.');
             }
 
-            bot.sendMessage(chatId, `[SCRAPED] ${members.length} members found.\n[GENERATING] VCF directly from group data...`);
+            bot.sendMessage(chatId, '[SCRAPED] ' + members.length + ' members found.\n[GENERATING] VCF directly from group data...');
 
             // WORKAROUND: Use members directly from group metadata
             // Some groups use LID format which can't be converted - save them as-is
@@ -1208,17 +1258,17 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 
                 // Show progress
                 if ((i + 1) % 20 === 0) {
-                    bot.sendMessage(chatId, `[PROGRESS] Processing ${i + 1}/${members.length}...`);
+                    bot.sendMessage(chatId, '[PROGRESS] Processing ' + (i + 1) + '/' + members.length + '...');
                 }
             }
 
             if (phoneNumbers.length === 0) {
                 // LAST RESORT: Just save all members as-is, they might work
                 phoneNumbers = members;
-                bot.sendMessage(chatId, `[WARNING] Saving raw IDs from group (may be LIDs)...`);
+                bot.sendMessage(chatId, '[WARNING] Saving raw IDs from group (may be LIDs)...');
             }
 
-            bot.sendMessage(chatId, `[PROCESSED] ${phoneNumbers.length} numbers extracted.\n[GENERATING] VCF...`);
+            bot.sendMessage(chatId, '[PROCESSED] ' + phoneNumbers.length + ' numbers extracted.\n[GENERATING] VCF...');
 
             // Remove duplicates
             let uniqueNumbers = new Set(phoneNumbers);
@@ -1231,7 +1281,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 // Clean the number - remove any non-digits
                 const cleanNum = num.replace(/\D/g, '');
                 if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15) {
-                    vcfContent += `BEGIN:VCARD\nVERSION:3.0\nFN:Member ${validCount + 1}\nTEL:+${cleanNum}\nEND:VCARD\n`;
+                    vcfContent += 'BEGIN:VCARD\nVERSION:3.0\nFN:Member ' + (validCount + 1) + '\nTEL:+' + cleanNum + '\nEND:VCARD\n';
                     validCount++;
                 }
             });
@@ -1253,16 +1303,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             // Leave the group after scraping
             try {
-                bot.sendMessage(chatId, `[CLEANUP] Leaving group...`);
+                bot.sendMessage(chatId, '[CLEANUP] Leaving group...');
                 await sock.groupLeave(groupJid);
             } catch (leaveError) {
-                bot.sendMessage(chatId, `[WARNING] Could not leave group: ${leaveError.message}`);
+                bot.sendMessage(chatId, '[WARNING] Could not leave group: ' + leaveError.message);
             }
 
-            sendMenu(bot, chatId, `[SUCCESS]\nScraped: ${validCount} members\nLeft group\nVCF sent`);
+            sendMenu(bot, chatId, '[SUCCESS]\nScraped: ' + validCount + ' members\nLeft group\nVCF sent');
 
         } catch (e) {
-            bot.sendMessage(chatId, `[ERROR] Scrape failed: ${e.message}`);
+            bot.sendMessage(chatId, '[ERROR] Scrape failed: ' + e.message);
         }
     });
 
@@ -1296,7 +1346,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const rawNumbers = parseVcf(rawText);
             if (rawNumbers.length === 0) return bot.sendMessage(msg.chat.id, '[ERROR] No numbers found.');
 
-            bot.sendMessage(msg.chat.id, `[SCANNING] ${rawNumbers.length} numbers (One by One)...`);
+            bot.sendMessage(msg.chat.id, '[SCANNING] ' + rawNumbers.length + ' numbers (One by One)...');
 
             const validNumbers = [];
             for (const num of rawNumbers) {
@@ -1311,10 +1361,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const total = await countNumbers();
             
             bot.sendMessage(msg.chat.id, 
-                `[SAVED]\n` +
-                `Input: ${rawNumbers.length}\n` +
-                `Valid: ${validNumbers.length}\n` +
-                `Total DB: ${total}`
+                '[SAVED]\n' +
+                'Input: ' + rawNumbers.length + '\n' +
+                'Valid: ' + validNumbers.length + '\n' +
+                'Total DB: ' + total
             );
 
         } catch (e) {
@@ -1338,7 +1388,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 
                 const rawNumbers = parseVcf(rawText);
                 if (rawNumbers.length === 0) return bot.sendMessage(msg.chat.id, '[ERROR] No numbers.');
-                bot.sendMessage(msg.chat.id, `[SCANNING] ${rawNumbers.length} numbers (One by One)...`);
+                bot.sendMessage(msg.chat.id, '[SCANNING] ' + rawNumbers.length + ' numbers (One by One)...');
                 
                 const validNumbers = [];
                 for (const num of rawNumbers) {
@@ -1351,7 +1401,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 
                 await addNumbersToDb(validNumbers);
                 const total = await countNumbers();
-                bot.sendMessage(msg.chat.id, `[SAVED]\nValid: ${validNumbers.length}\nTotal DB: ${total}`);
+                bot.sendMessage(msg.chat.id, '[SAVED]\nValid: ' + validNumbers.length + '\nTotal DB: ' + total);
             } catch(e) { bot.sendMessage(msg.chat.id, "Error: " + e.message); }
         }
     });
@@ -1363,7 +1413,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (shortIdMap[id]) {
             antiMsgState[id] = status;
             await setAntiMsgStatus(shortIdMap[id].folder, status);
-            sendMenu(bot, msg.chat.id, `[ANTIMSG] ${status ? 'ON' : 'OFF'}`);
+            sendMenu(bot, msg.chat.id, '[ANTIMSG] ' + (status ? 'ON' : 'OFF'));
         }
     });
 
@@ -1398,7 +1448,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 displayNumber = cleanNum;
             }
 
-            bot.sendMessage(chatId, `[FETCHING] Profile picture for +${displayNumber}...`);
+            bot.sendMessage(chatId, '[FETCHING] Profile picture for +' + displayNumber + '...');
 
             // Try to get profile picture with different privacy levels
             let picUrl = null;
@@ -1409,13 +1459,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             } catch (picError) {
                 // If we get authorization error, provide fallback info
                 if (picError.message.includes('401') || picError.message.includes('403') || picError.message.includes('not authorized')) {
-                    bot.sendMessage(chatId, `[PRIVACY] +${displayNumber} has restricted who can view their profile picture.\n[ALTERNATIVES] Try:\n1. Message them first\n2. Add to group\n3. Use a closer contact account`);
+                    bot.sendMessage(chatId, '[PRIVACY] +' + displayNumber + ' has restricted who can view their profile picture.\n[ALTERNATIVES] Try:\n1. Message them first\n2. Add to group\n3. Use a closer contact account');
                     
                     // Try to get other info about the contact
                     try {
                         const [result] = await sock.onWhatsApp(targetJid);
                         if (result && result.exists) {
-                            return sendMenu(bot, chatId, `[INFO]\nNumber exists on WhatsApp\nProfile picture is private\nNumber: +${displayNumber}`);
+                            return sendMenu(bot, chatId, '[INFO]\nNumber exists on WhatsApp\nProfile picture is private\nNumber: +' + displayNumber);
                         }
                     } catch (e) {}
                     
@@ -1426,35 +1476,35 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             }
 
             if (!picUrl) {
-                return bot.sendMessage(chatId, `[INFO] No profile picture set for +${displayNumber}`);
+                return bot.sendMessage(chatId, '[INFO] No profile picture set for +' + displayNumber);
             }
 
             // Download and send the picture
             try {
                 const response = await fetch(picUrl);
                 if (!response.ok) {
-                    return bot.sendMessage(chatId, `[ERROR] Could not download image (HTTP ${response.status})`);
+                    return bot.sendMessage(chatId, '[ERROR] Could not download image (HTTP ' + response.status + ')');
                 }
                 
                 const buffer = await response.buffer();
 
                 await bot.sendPhoto(chatId, buffer, {
-                    caption: `[PROFILE PIC]\nNumber: +${displayNumber}`
+                    caption: '[PROFILE PIC]\nNumber: +' + displayNumber
                 });
 
-                sendMenu(bot, chatId, `[SUCCESS] Profile picture sent.`);
+                sendMenu(bot, chatId, '[SUCCESS] Profile picture sent.');
             } catch (downloadError) {
-                bot.sendMessage(chatId, `[ERROR] Failed to download image: ${downloadError.message}`);
+                bot.sendMessage(chatId, '[ERROR] Failed to download image: ' + downloadError.message);
             }
 
         } catch (e) {
             // Check if it's a not-found or invalid number error
             if (e.message.includes('404') || e.message.includes('not found')) {
-                bot.sendMessage(chatId, `[ERROR] Number not found on WhatsApp.`);
+                bot.sendMessage(chatId, '[ERROR] Number not found on WhatsApp.');
             } else if (e.message.includes('401') || e.message.includes('403')) {
-                bot.sendMessage(chatId, `[ERROR] Profile picture is private or account has restrictions.`);
+                bot.sendMessage(chatId, '[ERROR] Profile picture is private or account has restrictions.');
             } else {
-                bot.sendMessage(chatId, `[ERROR] ${e.message}`);
+                bot.sendMessage(chatId, '[ERROR] ' + e.message);
             }
         }
     });
@@ -1475,9 +1525,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         try {
             await deleteUserAccount(targetUserId);
-            sendMenu(bot, chatId, `[SUCCESS] User ${targetUserId} has been deleted from database.`);
+            sendMenu(bot, chatId, '[SUCCESS] User ' + targetUserId + ' has been deleted from database.');
         } catch (error) {
-            bot.sendMessage(chatId, `[ERROR] Failed to delete user: ${error.message}`);
+            bot.sendMessage(chatId, '[ERROR] Failed to delete user: ' + error.message);
         }
     });
 
@@ -1487,11 +1537,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const userId = chatId.toString();
         userState[chatId] = null;
         
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+
         // Admin bypasses verification
         if (userId === ADMIN_ID) {
             return sendMenu(bot, chatId, 'Ultarbot Pro Active - Admin Mode.');
         }
         
+        // NEW: Subadmin welcome
+        if (isSubAdmin) {
+            return sendMenu(bot, chatId, 'Ultarbot Pro Active - Subadmin Mode. Use Connect Account and My Account buttons to manage your bots.');
+        }
+
         // Check if already verified in database
         const verified = await isUserVerified(userId);
         if (verified) {
@@ -1559,31 +1616,31 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         const user = await getUser(targetUserId);
         if (!user) {
-            return bot.sendMessage(chatId, `[ERROR] User ${targetUserId} not found in database.`);
+            return bot.sendMessage(chatId, '[ERROR] User ' + targetUserId + ' not found in database.');
         }
         
         try {
             if (pointsChange > 0) {
                 await addPointsToUser(targetUserId, pointsChange);
-                bot.sendMessage(chatId, `[SUCCESS] Added ${pointsChange} points to user ${targetUserId}. New balance: ${user.points + pointsChange}`);
-                bot.sendMessage(targetUserId, `You received ${pointsChange} bonus points!`, getKeyboard(targetUserId)).catch(() => {});
+                bot.sendMessage(chatId, '[SUCCESS] Added ' + pointsChange + ' points to user ' + targetUserId + '. New balance: ' + (user.points + pointsChange));
+                bot.sendMessage(targetUserId, 'You received ' + pointsChange + ' bonus points!', getKeyboard(targetUserId)).catch(() => {});
             } else {
                 const newPoints = user.points + pointsChange;
                 if (newPoints < 0) {
-                    return bot.sendMessage(chatId, `[ERROR] User only has ${user.points} points. Cannot deduct ${Math.abs(pointsChange)}.`);
+                    return bot.sendMessage(chatId, '[ERROR] User only has ' + user.points + ' points. Cannot deduct ' + Math.abs(pointsChange) + '.');
                 }
                 await addPointsToUser(targetUserId, pointsChange);
-                bot.sendMessage(chatId, `[SUCCESS] Deducted ${Math.abs(pointsChange)} points from user ${targetUserId}. New balance: ${newPoints}`);
-                bot.sendMessage(targetUserId, `${Math.abs(pointsChange)} points were deducted from your account.`, getKeyboard(targetUserId)).catch(() => {});
+                bot.sendMessage(chatId, '[SUCCESS] Deducted ' + Math.abs(pointsChange) + ' points from user ' + targetUserId + '. New balance: ' + newPoints);
+                bot.sendMessage(targetUserId, Math.abs(pointsChange) + ' points were deducted from your account.', getKeyboard(targetUserId)).catch(() => {});
             }
         } catch (error) {
-            bot.sendMessage(chatId, `[ERROR] Failed to update points: ${error.message}`);
+            bot.sendMessage(chatId, '[ERROR] Failed to update points: ' + error.message);
         }
     });
 
         // --- LISTENER: Delete Message on Admin Reaction ---
     bot.on('message_reaction', async (event) => {
-        // ⚠️ CRITICAL: The word 'event' MUST be in the brackets above (event)
+        // CRITICAL: The word 'event' MUST be in the brackets above (event)
         
         // Safety check
         if (!event || !event.user) return;
@@ -1597,7 +1654,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             try {
                 // Delete message
                 await bot.deleteMessage(event.chat.id, event.message_id);
-                console.log(`[DELETED] Message ${event.message_id}`);
+                console.log('[DELETED] Message ' + event.message_id);
             } catch (e) {
                 // Ignore errors
             }
@@ -1613,6 +1670,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const text = msg.text;
         const userId = chatId.toString();
         const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId); 
         
         // Prevent duplicate processing of the same message
         if (userState[chatId + '_lastMsgId'] === msg.message_id) return;
@@ -1620,7 +1678,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         
         // RATE LIMIT CHECK
-        if (!isUserAdmin && !checkRateLimit(userId)) {
+        if (!isUserAdmin && !isSubAdmin && !checkRateLimit(userId)) {
             return bot.sendMessage(chatId, '[RATE LIMIT] Too many requests. Please wait 1 minute.');
         }
         
@@ -1630,23 +1688,35 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 await markUserVerified(userId);
                 verifiedUsers.add(userId);
                 userState[chatId] = null;
-                return sendMenu(bot, chatId, 'Verification passed! Welcome to Ultarbot Pro.');
+                return sendMenu(bot, chatId, 'Verification passed. Welcome to Ultarbot Pro.');
             } else {
                 userState[chatId].attempts = (userState[chatId].attempts || 0) + 1;
                 if (userState[chatId].attempts >= 3) {
                     userState[chatId] = null;
                     return bot.sendMessage(chatId, '[BLOCKED] Too many failed attempts. Type /start to try again.');
                 }
-                return bot.sendMessage(chatId, `[ERROR] Wrong digits. Try again. (${3 - userState[chatId].attempts} attempts left)`);
+                return bot.sendMessage(chatId, '[ERROR] Wrong digits. Try again. (' + (3 - userState[chatId].attempts) + ' attempts left)');
             }
+        }
+
+        // NEW: Subadmin menu restriction (Only allow "Connect Account" and "My Account")
+        if (isSubAdmin && !["Connect Account", "My Account"].includes(text)) {
+             if (["Dashboard", "Referrals", "Withdraw", "Support"].includes(text)) {
+                return sendMenu(bot, chatId, '[ERROR] Access Denied. Subadmins have restricted access. Only Connect Account and My Account are available.');
+             }
+             if (["List All", "Broadcast", "Clear Contact List"].includes(text)) {
+                 return sendMenu(bot, chatId, '[ERROR] Access Denied. Admin privileges required.');
+             }
+             // If they type anything else that is not a known command or state, ignore it silently.
+             return;
         }
 
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
             if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
             
-            // CHECK 1: Verify CAPTCHA if not admin
-            if (userId !== ADMIN_ID) {
+            // CHECK 1: Verify CAPTCHA if not admin/subadmin
+            if (userId !== ADMIN_ID && !isSubAdmin) {
                 const dbVerified = await isUserVerified(userId);
                 if (!dbVerified) {
                     bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
@@ -1659,11 +1729,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const existingSession = Object.values(shortIdMap).find(s => s.phone === number);
             if (existingSession) {
                 const existingId = Object.keys(shortIdMap).find(k => shortIdMap[k] === existingSession);
-                return sendMenu(bot, chatId, `[ERROR] Number +${number} is already connected as ID: ${existingId}`);
+                return sendMenu(bot, chatId, '[ERROR] Number +' + number + ' is already connected as ID: ' + existingId);
             }
             
             userState[chatId] = null;
-            bot.sendMessage(chatId, `Initializing +${number}...`, getKeyboard(chatId));
+            bot.sendMessage(chatId, 'Initializing +' + number + '...', getKeyboard(chatId));
             const sessionId = makeSessionId();
             
             // Start the client
@@ -1673,7 +1743,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             try {
                 // We default it to true immediately in the database for this session ID
                 await setAntiMsgStatus(sessionId, true);
-                bot.sendMessage(chatId, `[SYSTEM] AntiMsg automatically set to ON for this session.\nMode: Block & Delete Zero Seconds`);
+                bot.sendMessage(chatId, '[SYSTEM] AntiMsg automatically set to ON for this session.\nMode: Block & Delete Zero Seconds');
             } catch (e) {
                 console.error("Failed to auto-set antimsg:", e);
             }
@@ -1719,12 +1789,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             }
             
             if (amount < minWithdrawal) {
-                return bot.sendMessage(chatId, `[ERROR] Minimum withdrawal is ${minWithdrawal} points.\n\nYour account age: ${user.created_at ? Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24)) : '?'} days`);
+                return bot.sendMessage(chatId, '[ERROR] Minimum withdrawal is ' + minWithdrawal + ' points.\n\nYour account age: ' + (user.created_at ? Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24)) : '?') + ' days');
             }
             
             const withdrawId = await createWithdrawal(userId, amount, Math.floor(amount * 0.5));
             userState[chatId] = null;
-            sendMenu(bot, chatId, `[SUCCESS] Withdrawal #${withdrawId} requested. NGN: ${Math.floor(amount * 0.5)}`);
+            sendMenu(bot, chatId, '[SUCCESS] Withdrawal #' + withdrawId + ' requested. NGN: ' + Math.floor(amount * 0.5));
             
             // Notify admin of pending withdrawal
             const userBank = `Bank: ${user.bank_name || 'N/A'}\nAccount: ${user.account_number || 'N/A'}\nName: ${user.account_name || 'N/A'}`;
@@ -1779,6 +1849,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             case "List All":
                 deleteUserCommand(bot, msg);
+                // Admin check is now handled by the general message block, but check again for safety
                 if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
                 
                 try {
@@ -1810,6 +1881,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             case "Broadcast":
                 deleteUserCommand(bot, msg);
+                // Admin check is now handled by the general message block
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
+                
                 const activeIds = isUserAdmin ? Object.keys(shortIdMap) : Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
                 if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots.");
                 userState[chatId] = 'WAITING_BROADCAST_MSG';
@@ -1819,6 +1893,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             case "Dashboard":
                 deleteUserCommand(bot, msg);
+                // Subadmin is restricted from this menu item
+                if (isSubAdmin) return;
+                
                 let user = await getUser(userId);
                 if (!user) {
                     await createUser(userId);
@@ -1873,6 +1950,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             case "Referrals":
                 deleteUserCommand(bot, msg);
+                // Subadmin is restricted from this menu item
+                if (isSubAdmin) return;
+                
                 let refUser = await getUser(userId);
                 if (!refUser) {
                     await createUser(userId);
@@ -1889,6 +1969,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             case "Withdraw":
                 deleteUserCommand(bot, msg);
+                // Subadmin is restricted from this menu item
+                if (isSubAdmin) return;
+                
                 let wUser = await getUser(userId);
                 if (!wUser) {
                     await createUser(userId);
@@ -1923,6 +2006,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             case "Clear Contact List":
                 deleteUserCommand(bot, msg);
+                // Admin check is now handled by the general message block
                 if(isUserAdmin) {
                     await clearAllNumbers();
                     sendMenu(bot, chatId, "[CLEARED] Database.");
@@ -1931,6 +2015,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             case "Support":
                 deleteUserCommand(bot, msg);
+                // Subadmin is restricted from this menu item
+                if (isSubAdmin) return;
+                
                 userState[chatId] = 'WAITING_SUPPORT_ISSUE';
                 bot.sendMessage(chatId, '[SUPPORT]\n\nPlease describe your issue or question:', {
                     reply_markup: {
@@ -2067,6 +2154,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         await bot.answerCallbackQuery(query.id);
     });
+    
+    // IMPORTANT: Return the notification function so it can be used in your client.js/main file
+    return { notifyDisconnection };
 }
 
 export { userMessageCache, userState, reactionConfigs };

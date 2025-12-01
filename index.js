@@ -18,10 +18,8 @@ import http from 'http';
 import { Boom } from '@hapi/boom';
 
 import { 
-    // ... existing imports
     setupTelegramCommands, userMessageCache, userState, reactionConfigs 
 } from './telegram_commands.js';
-// ... rest of main file imp
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
     getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData
@@ -132,7 +130,7 @@ app.post('/api/join', async (req, res) => {
     res.setTimeout(900000);
 
     const { apiKey, amount, link } = req.body;
-    const MY_SECRET_KEY = "AIzaSyBds-BuDtWCzQyFCnb9B3JRp8rG2i52soc"; // ⚠️ CHANGE THIS
+    const MY_SECRET_KEY = "AIzaSyBds-BuDtWCzQyFCnb9B3JRp8rG2i52soc"; // CHANGE THIS
 
     // 2. Validate Inputs
     if (apiKey !== MY_SECRET_KEY) return res.status(401).json({ success: false, error: 'Invalid API Key' });
@@ -154,7 +152,7 @@ app.post('/api/join', async (req, res) => {
 
     // 5. Notify Admin on Telegram
     try {
-        await mainBot.sendMessage(ADMIN_ID, `[API START] Joining Group\nTarget: ${code}\nBots: ${countToJoin}\nSpeed: 1/sec\nEst. Time: ${countToJoin / 60} mins`);
+        await mainBot.sendMessage(ADMIN_ID, `[API START] Joining Group\nTarget: ${code}\nBots: ${countToJoin}\nSpeed: 1/sec\nEst. Time: ${(countToJoin / 60).toFixed(2)} mins`);
     } catch (e) {}
 
     // 6. Initialize Results
@@ -215,7 +213,7 @@ app.post('/api/join', async (req, res) => {
         // Final Report to Admin
         try {
             await mainBot.sendMessage(ADMIN_ID, 
-                `[API DONE] 🏁\n` +
+                `[API DONE]\n` +
                 `Target: ${code}\n` +
                 `Success: ${results.success}\n` +
                 `Already In: ${results.already_in}\n` +
@@ -275,6 +273,9 @@ const qrActiveState = {};
 // If a JID is in here, we don't attack them again for 30 seconds
 const nukeCache = new Set();
 
+// Placeholder for the disconnection notification function
+let notifyDisconnection = () => {};
+
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 function generateShortId() { return Math.random().toString(36).substring(2, 7); }
@@ -313,11 +314,9 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         },
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        // CHANGE 1: Use a standard browser string (Ubuntu/Chrome is very common for servers)
         browser: ["Ubuntu", "Chrome", "20.0.04"], 
         version,
         connectTimeoutMs: 60000,
-        // CHANGE 2: Set this to false. Being "Always Online" 24/7 is suspicious for idle accounts.
         markOnlineOnConnect: false, 
         syncFullHistory: false
     });
@@ -370,19 +369,17 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 const emojis = reactionConfigs[remoteJid];
                 
                 // 1. STAGGER DELAY: Delay = Bot Index * 10 seconds (10000ms)
-                // This prevents instant mass reaction and potential bans.
                 const delayTime = botIndex * 10000;
                 await delay(delayTime); 
                 
                 // 2. Determine Emoji and Send
                 const emojiIndex = botIndex % emojis.length;
-                // FIX: Trim the selected emoji to prevent encoding corruption (square box issue)
                 const selectedEmoji = emojis[emojiIndex].trim(); 
                 
                 const reactionContent = {
                     react: {
                         text: selectedEmoji, 
-                        key: msg.key // Key of the message to react to
+                        key: msg.key 
                     }
                 };
                 
@@ -396,54 +393,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         }
     }
     // --- End Reaction Feature Logic ---
-
-
-    if (antiMsgState[cachedShortId]) {
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        const isCommand = text.startsWith('.');
-
-        // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
-        if (!isGroup && !isStatus && !isCommand && !isSelf) {
-            
-            // 2. REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) {
-                // ALREADY BLOCKED. IGNORE.
-                return; 
-            }
-
-            // 3. ADD TO CACHE (Lock the target for 30s)
-            nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000);
-
-            // 4. EXECUTE ONCE (Delete & Block)
-            await Promise.all([
-                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
-                sock.updateBlockStatus(remoteJid, "block").catch(() => {})
-            ]);
-            
-            // Log it
-            if (msg.key.fromMe) {
-                console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
-            } else {
-                console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
-            }
-            
-            return; 
-        }
-    }
-
-    if (!msg.key.fromMe) {
-        if (autoSaveState[cachedShortId]) {
-            if (remoteJid.endsWith('@s.whatsapp.net')) {
-                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
-            }
-        }
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (text.toLowerCase() === '.alive') {
-            await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
-        }
-    }
-
 
 
     if (antiMsgState[cachedShortId]) {
@@ -527,7 +476,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             } catch (e) { delete qrActiveState[folder]; }
         }
 
-                if (connection === 'open') {
+        if (connection === 'open') {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
             
@@ -592,11 +541,10 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     userMessageCache[chatId] = [];
                 }
                 
-                  // --- UPDATED MESSAGE WITH NUMBER ---
                 mainBot.sendMessage(chatId, 
                     `[CONNECTED]\n` +
                     `ID: \`${cachedShortId}\`\n` +
-                    `Number: +${phoneNumber}\n\n` +  // <--- Added Number Here
+                    `Number: +${phoneNumber}\n\n` +  
                     `Account connected successfully!\n\n` +
                     `**Defense Active**\n(One-Shot Block & Delete System)`,  { 
                     parse_mode: 'Markdown',
@@ -616,7 +564,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }, 3600000);
         }
 
-                        if (connection === 'close') {
+        if (connection === 'close') {
             const userJid = sock.user?.id || "";
             // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
@@ -624,17 +572,16 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
             // Check for definitive logout or ban status
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                // Determine if it's a ban or a manual logout
-                const disconnectStatus = (reason === 403) ? '🚨 BANNED/BLOCKED' : '🚪 LOGGED OUT';
+                const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT';
 
-                // 1. Calculate remaining bots *before* cleanup
-                // We check the length of the clients map and subtract 1 (for the current client)
-                const remainingBots = Object.keys(clients).length - 1; 
-
-                // 2. Send ALERT to Admin
+                // 1. Notify the user/subadmin who paired it that it's permanently gone
+                notifyDisconnection(cachedShortId, phoneNumber);
+                
+                // 2. Send Admin Alert (Admin needs to know the type of permanent loss)
                 try {
+                    const remainingBots = Object.keys(clients).length - 1; 
                     await mainBot.sendMessage(ADMIN_ID, 
-                        `⚠️ **BOT DISCONNECTED** ⚠️\n\n` +
+                        `[BOT DISCONNECTED]\n\n` +
                         `Status: **${disconnectStatus}**\n` +
                         `Number: **+${phoneNumber}**\n` +
                         `ID: \`${cachedShortId}\`\n\n` +
@@ -646,7 +593,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 }
                 
                 // 3. Perform Cleanup
-                // This logic is necessary because the connection is permanently lost.
                 await deductOnDisconnect(folder);
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
@@ -654,7 +600,12 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 delete clients[folder];
 
             } else {
-                // If it's a temporary disconnect (e.g., network error), restart the client
+                // If it's a temporary disconnect (e.g., network error), notify and restart
+                
+                // 1. Notify the user/subadmin who paired it
+                notifyDisconnection(cachedShortId, phoneNumber);
+                
+                // 2. Restart Client
                 console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
                 startClient(folder, null, chatId, telegramUserId);
             }
@@ -674,6 +625,11 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
 async function boot() {
     await initDb(); 
+    
+    // 1. Capture the handler function
+    const handlers = setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
+    notifyDisconnection = handlers.notifyDisconnection; // Assign the captured function
+
     const savedSessions = await getAllSessions(null);
     for (const session of savedSessions) {
         const folderPath = path.join(SESSIONS_DIR, session.session_id);
@@ -691,8 +647,6 @@ async function boot() {
     }
     console.log(`[BOOT] Server ready`);
 }
-
-setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
 
 boot().catch(err => {
     console.error('[BOOT] Error:', err.message);

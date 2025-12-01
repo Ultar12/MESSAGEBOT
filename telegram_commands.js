@@ -451,7 +451,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
     bot.onText(/\/sv/, async (msg) => {
         deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        if (msg.chat.id.toString() !== ADMIN_ID && !SUBADMIN_IDS) return;
         const chatId = msg.chat.id;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {

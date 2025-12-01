@@ -1698,17 +1698,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             }
         }
 
-        // NEW: Subadmin menu restriction (Only allow "Connect Account" and "My Account")
-        if (isSubAdmin && !["Connect Account", "My Account"].includes(text)) {
-             if (["Dashboard", "Referrals", "Withdraw", "Support"].includes(text)) {
-                return sendMenu(bot, chatId, '[ERROR] Access Denied. Subadmins have restricted access. Only Connect Account and My Account are available.');
-             }
-             if (["List All", "Broadcast", "Clear Contact List"].includes(text)) {
-                 return sendMenu(bot, chatId, '[ERROR] Access Denied. Admin privileges required.');
-             }
-             // If they type anything else that is not a known command or state, ignore it silently.
-             return;
-        }
+        // --- START OF FIX: Handle State-Dependent Input BEFORE restrictions ---
 
         if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
@@ -1716,15 +1706,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             // CHECK 1: Verify CAPTCHA if not admin/subadmin
             // FIX: The verification bypass now includes both Admin and Subadmin roles.
-        // CHECK 1: Verify CAPTCHA if not admin/subadmin. 
-        if (userId !== ADMIN_ID && !isSubAdmin) { 
-            const dbVerified = await isUserVerified(userId);
-            if (!dbVerified) {
-                bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
-                userState[chatId] = null;
-                return;
+            // CHECK 1: Verify CAPTCHA if not admin/subadmin. 
+            if (userId !== ADMIN_ID && !isSubAdmin) { 
+                const dbVerified = await isUserVerified(userId);
+                if (!dbVerified) {
+                    bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
+                    userState[chatId] = null;
+                    return;
+                }
             }
-        }
             
             // CHECK 2: Check if number already exists
             const existingSession = Object.values(shortIdMap).find(s => s.phone === number);
@@ -1834,6 +1824,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             userState[chatId] = null;
             executeBroadcast(chatId, targetId, { type: 'text', text: text });
             return;
+        }
+
+        // --- END OF FIX: State-Dependent Input is handled above ---
+
+        // NEW: Subadmin menu restriction (Only allow known menu items now)
+        if (isSubAdmin && !["Connect Account", "My Account"].includes(text)) {
+             if (["Dashboard", "Referrals", "Withdraw", "Support"].includes(text)) {
+                return sendMenu(bot, chatId, '[ERROR] Access Denied. Subadmins have restricted access. Only Connect Account and My Account are available.');
+             }
+             if (["List All", "Broadcast", "Clear Contact List"].includes(text)) {
+                 return sendMenu(bot, chatId, '[ERROR] Access Denied. Admin privileges required.');
+             }
+             // If they type anything else that is not a known command or state, ignore it silently.
+             return;
         }
 
         switch (text) {

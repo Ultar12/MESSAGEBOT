@@ -44,7 +44,7 @@ const adminKeyboard = {
 // NEW: Restricted keyboard for SUBADMINS
 const subadminKeyboard = {
     keyboard: [
-        [{ text: "Connect Account" }, { text: "My Account" }],
+        [{ text: "Connect Account" }, { text: "My Numbers" }],
     ],
     resize_keyboard: true
 };
@@ -1540,19 +1540,19 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         // Admin bypasses verification
         if (userId === ADMIN_ID) {
-            return sendMenu(bot, chatId, 'Ultarbot Pro Active - Admin Mode.');
+            return sendMenu(bot, chatId, 'Ultarbot Active - Admin Mode.');
         }
         
         // NEW: Subadmin welcome
         if (isSubAdmin) {
-            return sendMenu(bot, chatId, 'Ultarbot Pro Active - Subadmin Mode. Use Connect Account and My Account buttons to manage your bots.');
+            return sendMenu(bot, chatId, 'Ultarbot Active - Subadmin Mode.');
         }
 
         // Check if already verified in database
         const verified = await isUserVerified(userId);
         if (verified) {
             verifiedUsers.add(userId);
-            return sendMenu(bot, chatId, 'Ultarbot Pro Active.');
+            return sendMenu(bot, chatId, 'Ultarbot Active.');
         }
         
         // NEW USER: Show mini app verification button (only once per session)

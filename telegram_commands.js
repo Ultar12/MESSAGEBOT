@@ -1715,14 +1715,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
             
             // CHECK 1: Verify CAPTCHA if not admin/subadmin
-            if (userId !== ADMIN_ID && !isSubAdmin) {
-                const dbVerified = await isUserVerified(userId);
-                if (!dbVerified) {
-                    bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
-                    userState[chatId] = null;
-                    return;
-                }
+            // FIX: The verification bypass now includes both Admin and Subadmin roles.
+        // CHECK 1: Verify CAPTCHA if not admin/subadmin. 
+        if (userId !== ADMIN_ID && !isSubAdmin) { 
+            const dbVerified = await isUserVerified(userId);
+            if (!dbVerified) {
+                bot.sendMessage(chatId, '[SECURITY] Please complete CAPTCHA verification first.');
+                userState[chatId] = null;
+                return;
             }
+        }
             
             // CHECK 2: Check if number already exists
             const existingSession = Object.values(shortIdMap).find(s => s.phone === number);

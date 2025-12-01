@@ -1829,9 +1829,10 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // --- END OF FIX: State-Dependent Input is handled above ---
 
         // NEW: Subadmin menu restriction (Only allow known menu items now)
-        if (isSubAdmin && !["Connect Account", "My Account"].includes(text)) {
+        // FIX: Also check for "My Numbers" here so we don't accidentally block it if they mistyped
+        if (isSubAdmin && !["Connect Account", "My Account", "My Numbers"].includes(text)) {
              if (["Dashboard", "Referrals", "Withdraw", "Support"].includes(text)) {
-                return sendMenu(bot, chatId, '[ERROR] Access Denied. Subadmins have restricted access. Only Connect Account and My Account are available.');
+                return sendMenu(bot, chatId, '[ERROR] Access Denied. Subadmins have restricted access. Only Connect Account and My Numbers are available.');
              }
              if (["List All", "Broadcast", "Clear Contact List"].includes(text)) {
                  return sendMenu(bot, chatId, '[ERROR] Access Denied. Admin privileges required.');
@@ -1928,7 +1929,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "My Account":
+            case "My Numbers": // <-- NEW HANDLER FOR SUBADMINS
                 deleteUserCommand(bot, msg);
+                // Subadmin check isn't strictly needed here since they can press 'My Numbers' but added for consistency.
+                if (isSubAdmin && text === "My Account") {
+                     return sendMenu(bot, chatId, '[ERROR] Access Denied. Use the "My Numbers" button.');
+                }
+                
                 let accUser = await getUser(userId);
                 if (!accUser) {
                     await createUser(userId);
@@ -1937,7 +1944,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 
                 // Get only this user's connected accounts from database (permanent storage)
                 const userSessions = await getAllSessions(userId);
-                let accMsg = `[MY ACCOUNT]\n\n`;
+                let accMsg = `[MY CONNECTED ACCOUNTS]\n\n`;
                 
                 if (userSessions.length === 0) {
                     accMsg += `No accounts connected.\n`;

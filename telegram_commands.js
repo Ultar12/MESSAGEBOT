@@ -258,10 +258,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const targetChatId = sessionData?.chatId;
         
         if (targetChatId) {
-            const message = `BOT DISCONNECTED\n\n` +
+            const message = `DISCONNECTED\n\n` +
                             `Bot ID: ${shortId}\n` +
-                            `Number: +${phoneNumber}\n\n` +
-                            `Your connected WhatsApp bot has been disconnected. Please reconnect your account.`;
+                            `Number: +${phoneNumber}`;
             
             // Use 'bot' to send the message back to the pairing user/subadmin
             await bot.sendMessage(targetChatId, message).catch(e => console.error("Notification send error:", e.message));

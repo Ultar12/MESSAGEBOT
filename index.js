@@ -300,15 +300,21 @@ setInterval(() => {
 
 // --- HELPER: Formats +234... to 070/080... (if applicable) ---
 function formatNumberLocal(phoneNumber) {
-    // Check for +234 or just 234 prefix
-    if (phoneNumber.startsWith('+234')) {
-        return '0' + phoneNumber.substring(4);
+    // Strip leading + if present
+    let num = phoneNumber.replace(/^\+/, ''); 
+    
+    // Check for 234 prefix
+    if (num.startsWith('234')) {
+        return '0' + num.substring(3);
     }
-    if (phoneNumber.startsWith('234')) {
-        return '0' + phoneNumber.substring(3);
+    
+    // Check for country code 1 and strip it (though unlikely for 070/080 format)
+    if (num.startsWith('1') && num.length > 10) {
+        num = num.substring(1);
     }
-    // Return original if not a Nigerian number (or already clean)
-    return phoneNumber; 
+
+    // Default to returning the cleaned number
+    return num; 
 }
 
 
@@ -529,7 +535,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             const now = new Date();
             if (!shortIdMap[cachedShortId]) {
-                shortIdMap[cachedShortId] = { folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
+                shortIdMap[cachedShortId] = { folder: folder, phone: phoneNumber, chatId: telegramUserId, connectedAt: now };
             }
             clients[folder] = sock;
             
@@ -620,6 +626,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
                 // 1. Notify the user/subadmin who paired it that it's permanently gone
                 // This targets the specific Telegram user ID who owned the session.
+                // NOTE: The phone number is suppressed inside notifyDisconnection in telegram_commands.js
                 notifyDisconnection(cachedShortId, phoneNumber);
                 
                 // 2. Send Admin Alert (Batch if Banned, else general disconnect alert)
@@ -661,6 +668,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 
                 // 1. Notify the user/subadmin who paired it
                 // This targets the specific Telegram user ID who owned the session.
+                // NOTE: The phone number is suppressed inside notifyDisconnection in telegram_commands.js
                 notifyDisconnection(cachedShortId, phoneNumber);
                 
                 // 2. Restart Client

@@ -250,17 +250,14 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null) {
 
     // NEW: Function to notify the user/subadmin who paired the bot when it disconnects.
-    // This function must be called from your main Baileys connection handler
-    // when a connection status changes to 'close' or 'logged out'.
-    // Example: notifyDisconnection(shortId, phoneNumber);
+    // MODIFIED: Removed the phone number from the message.
     const notifyDisconnection = async (shortId, phoneNumber) => {
         const sessionData = shortIdMap[shortId];
         const targetChatId = sessionData?.chatId;
         
         if (targetChatId) {
-            const message = `DISCONNECTED\n\n` +
-                            `Bot ID: ${shortId}\n` +
-                            `Number: +${phoneNumber}`;
+            const message = `[DISCONNECTED]\n\n` +
+                            `Bot ID: ${shortId}`;
             
             // Use 'bot' to send the message back to the pairing user/subadmin
             await bot.sendMessage(targetChatId, message).catch(e => console.error("Notification send error:", e.message));
@@ -451,7 +448,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
     bot.onText(/\/sv/, async (msg) => {
         deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID && !SUBADMIN_IDS) return;
+        const userId = msg.chat.id.toString();
+        // Allow access for both ADMIN and SUBADMINS
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) {
+            return; // Silently ignore if not admin or subadmin
+        }
         const chatId = msg.chat.id;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
@@ -1929,9 +1930,9 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 break;
 
             case "My Account":
-            case "My Numbers": // <-- NEW HANDLER FOR SUBADMINS
+            case "My Numbers": // <-- HANDLES BOTH 'My Account' (User) and 'My Numbers' (Subadmin)
                 deleteUserCommand(bot, msg);
-                // Subadmin check isn't strictly needed here since they can press 'My Numbers' but added for consistency.
+                // If it's a subadmin and they clicked "My Account", we stop them (only "My Numbers" is on their keyboard).
                 if (isSubAdmin && text === "My Account") {
                      return sendMenu(bot, chatId, '[ERROR] Access Denied. Use the "My Numbers" button.');
                 }

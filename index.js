@@ -269,6 +269,10 @@ const autoSaveState = {};
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
+// --- NEW GLOBAL STATE FOR BAN SUMMARIZATION ---
+const bannedNumbersBuffer = []; // Array to hold recently banned numbers
+let banSummaryTimeout = null;  // Timeout object for sending the summary
+
 // 🛡️ NUKE CACHE: Prevents duplicate block actions
 // If a JID is in here, we don't attack them again for 30 seconds
 const nukeCache = new Set();
@@ -293,6 +297,46 @@ setInterval(async () => {
 setInterval(() => {
     http.get(SERVER_URL, (res) => {}).on('error', (err) => {});
 }, 14 * 60 * 1000);
+
+// --- HELPER: Formats +234... to 070/080... (if applicable) ---
+function formatNumberLocal(phoneNumber) {
+    // Check for +234 or just 234 prefix
+    if (phoneNumber.startsWith('+234')) {
+        return '0' + phoneNumber.substring(4);
+    }
+    if (phoneNumber.startsWith('234')) {
+        return '0' + phoneNumber.substring(3);
+    }
+    // Return original if not a Nigerian number (or already clean)
+    return phoneNumber; 
+}
+
+
+// --- FUNCTION: Sends Batched Ban Summary to Admin ---
+async function sendBanSummary() {
+    if (bannedNumbersBuffer.length === 0) return;
+
+    const bannedCount = bannedNumbersBuffer.length;
+    const localNumbers = bannedNumbersBuffer.map(formatNumberLocal);
+    
+    // Clear buffer for the next 5 minutes
+    bannedNumbersBuffer.length = 0; 
+    banSummaryTimeout = null;
+
+    let summary = `[BATCH BAN ALERT]\n\n`;
+    summary += `**${bannedCount} accounts were BANNED/BLOCKED** in the last 5 minutes.\n\n`;
+    summary += `Copyable List (Local Format):\n\n`;
+    
+    // Format numbers as a single copyable block
+    summary += '```\n' + localNumbers.join('\n') + '\n```';
+
+    try {
+        await mainBot.sendMessage(ADMIN_ID, summary, { parse_mode: 'Markdown' });
+    } catch (e) {
+        console.error("Failed to send Ban Summary:", e.message);
+    }
+}
+
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     let cachedShortId = await getShortId(folder);
@@ -575,21 +619,34 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT';
 
                 // 1. Notify the user/subadmin who paired it that it's permanently gone
+                // This targets the specific Telegram user ID who owned the session.
                 notifyDisconnection(cachedShortId, phoneNumber);
                 
-                // 2. Send Admin Alert (Admin needs to know the type of permanent loss)
-                try {
-                    const remainingBots = Object.keys(clients).length - 1; 
-                    await mainBot.sendMessage(ADMIN_ID, 
-                        `[BOT DISCONNECTED]\n\n` +
-                        `Status: **${disconnectStatus}**\n` +
-                        `Number: **+${phoneNumber}**\n` +
-                        `ID: \`${cachedShortId}\`\n\n` +
-                        `Total Active Bots Remaining: **${remainingBots}**`,
-                        { parse_mode: 'Markdown' }
-                    );
-                } catch (e) {
-                    console.error("Failed to send Admin Disconnect Alert:", e);
+                // 2. Send Admin Alert (Batch if Banned, else general disconnect alert)
+                
+                if (reason === 403) {
+                    // --- BATCH BAN LOGIC ---
+                    bannedNumbersBuffer.push(phoneNumber);
+                    
+                    // Start the 5-minute timer if it's not already running
+                    if (!banSummaryTimeout) {
+                        banSummaryTimeout = setTimeout(sendBanSummary, 5 * 60 * 1000); // 5 minutes
+                    }
+                    
+                } else {
+                    // --- GENERAL LOGOUT ALERT (Admin Notification) ---
+                    try {
+                        const remainingBots = Object.keys(clients).length - 1; 
+                        await mainBot.sendMessage(ADMIN_ID, 
+                            `[BOT DISCONNECTED]\n\n` +
+                            `Status: **${disconnectStatus}**\n` +
+                            `ID: \`${cachedShortId}\`\n\n` + // Note: Phone number removed from this alert
+                            `Total Active Bots Remaining: **${remainingBots}**`,
+                            { parse_mode: 'Markdown' }
+                        );
+                    } catch (e) {
+                        console.error("Failed to send Admin Disconnect Alert:", e);
+                    }
                 }
                 
                 // 3. Perform Cleanup
@@ -603,6 +660,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 // If it's a temporary disconnect (e.g., network error), notify and restart
                 
                 // 1. Notify the user/subadmin who paired it
+                // This targets the specific Telegram user ID who owned the session.
                 notifyDisconnection(cachedShortId, phoneNumber);
                 
                 // 2. Restart Client

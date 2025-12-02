@@ -269,9 +269,13 @@ const autoSaveState = {};
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
-// --- NEW GLOBAL STATE FOR BAN SUMMARIZATION ---
-const bannedNumbersBuffer = []; // Array to hold recently banned numbers
-let banSummaryTimeout = null;  // Timeout object for sending the summary
+// --- GLOBAL STATE FOR BAN SUMMARIZATION (5 MINUTE TIMER) ---
+const bannedNumbersBuffer = []; 
+let banSummaryTimeout = null;  
+
+// --- NEW GLOBAL STATE FOR DISCONNECT SUMMARIZATION (1 HOUR TIMER) ---
+const disconnectedNumbersBuffer = []; // New buffer for non-ban disconnects
+let disconnectSummaryTimeout = null;  // New timeout for disconnect summary (1 hour)
 
 // 🛡️ NUKE CACHE: Prevents duplicate block actions
 // If a JID is in here, we don't attack them again for 30 seconds
@@ -308,17 +312,12 @@ function formatNumberLocal(phoneNumber) {
         return '0' + num.substring(3);
     }
     
-    // Check for country code 1 and strip it (though unlikely for 070/080 format)
-    if (num.startsWith('1') && num.length > 10) {
-        num = num.substring(1);
-    }
-
     // Default to returning the cleaned number
     return num; 
 }
 
 
-// --- FUNCTION: Sends Batched Ban Summary to Admin ---
+// --- FUNCTION: Sends Batched Ban Summary to Admin (5 MIN) ---
 async function sendBanSummary() {
     if (bannedNumbersBuffer.length === 0) return;
 
@@ -329,17 +328,47 @@ async function sendBanSummary() {
     bannedNumbersBuffer.length = 0; 
     banSummaryTimeout = null;
 
-    let summary = `[BATCH BAN ALERT]\n\n`;
+    let summary = `[BATCH BAN ALERT - 5 MINUTE WINDOW]\n\n`;
     summary += `**${bannedCount} accounts were BANNED/BLOCKED** in the last 5 minutes.\n\n`;
     summary += `Copyable List (Local Format):\n\n`;
     
-    // Format numbers as a single copyable block
     summary += '```\n' + localNumbers.join('\n') + '\n```';
 
     try {
         await mainBot.sendMessage(ADMIN_ID, summary, { parse_mode: 'Markdown' });
     } catch (e) {
         console.error("Failed to send Ban Summary:", e.message);
+    }
+}
+
+// --- FUNCTION: Sends Batched Disconnect/Logout Summary to Admin (1 HOUR) ---
+async function sendDisconnectSummary() {
+    if (disconnectedNumbersBuffer.length === 0) return;
+
+    const disconnectCount = disconnectedNumbersBuffer.length;
+    const localNumbers = disconnectedNumbersBuffer.map(item => item.number);
+    
+    // Clear buffer for the next hour
+    disconnectedNumbersBuffer.length = 0; 
+    disconnectSummaryTimeout = null;
+    
+    let summary = `[HOURLY DISCONNECT REPORT]\n\n`;
+    summary += `**${disconnectCount} accounts LOGGED OUT or DISCONNECTED** in the last hour.\n\n`;
+    summary += `**ID | Phone (Local) | Disconnect Type**\n`;
+    summary += `------------------------------------\n`;
+
+    for (const item of disconnectedNumbersBuffer) {
+        const localNum = formatNumberLocal(item.number);
+        summary += `${item.shortId} | ${localNum} | ${item.status}\n`;
+    }
+    
+    summary += `\n**Total Active Bots Remaining:** ${Object.keys(clients).length}`;
+
+    try {
+        // Send as standard message (not a code block since it contains structured data)
+        await mainBot.sendMessage(ADMIN_ID, summary, { parse_mode: 'Markdown' });
+    } catch (e) {
+        console.error("Failed to send Disconnect Summary:", e.message);
     }
 }
 
@@ -625,34 +654,29 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT';
 
                 // 1. Notify the user/subadmin who paired it that it's permanently gone
-                // This targets the specific Telegram user ID who owned the session.
                 // NOTE: The phone number is suppressed inside notifyDisconnection in telegram_commands.js
                 notifyDisconnection(cachedShortId, phoneNumber);
                 
-                // 2. Send Admin Alert (Batch if Banned, else general disconnect alert)
+                // 2. Handle Admin Alert based on status
                 
                 if (reason === 403) {
-                    // --- BATCH BAN LOGIC ---
+                    // --- BATCH BAN LOGIC (5 MIN) ---
                     bannedNumbersBuffer.push(phoneNumber);
                     
-                    // Start the 5-minute timer if it's not already running
                     if (!banSummaryTimeout) {
                         banSummaryTimeout = setTimeout(sendBanSummary, 5 * 60 * 1000); // 5 minutes
                     }
                     
                 } else {
-                    // --- GENERAL LOGOUT ALERT (Admin Notification) ---
-                    try {
-                        const remainingBots = Object.keys(clients).length - 1; 
-                        await mainBot.sendMessage(ADMIN_ID, 
-                            `[BOT DISCONNECTED]\n\n` +
-                            `Status: **${disconnectStatus}**\n` +
-                            `ID: \`${cachedShortId}\`\n\n` + // Note: Phone number removed from this alert
-                            `Total Active Bots Remaining: **${remainingBots}**`,
-                            { parse_mode: 'Markdown' }
-                        );
-                    } catch (e) {
-                        console.error("Failed to send Admin Disconnect Alert:", e);
+                    // --- DISCONNECT BUFFER LOGIC (1 HOUR) ---
+                    disconnectedNumbersBuffer.push({ 
+                        shortId: cachedShortId, 
+                        number: phoneNumber, 
+                        status: disconnectStatus 
+                    });
+
+                    if (!disconnectSummaryTimeout) {
+                         disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 60 * 60 * 1000); // 1 hour
                     }
                 }
                 
@@ -667,7 +691,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 // If it's a temporary disconnect (e.g., network error), notify and restart
                 
                 // 1. Notify the user/subadmin who paired it
-                // This targets the specific Telegram user ID who owned the session.
                 // NOTE: The phone number is suppressed inside notifyDisconnection in telegram_commands.js
                 notifyDisconnection(cachedShortId, phoneNumber);
                 

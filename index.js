@@ -274,8 +274,8 @@ const bannedNumbersBuffer = [];
 let banSummaryTimeout = null;  
 
 // --- NEW GLOBAL STATE FOR DISCONNECT SUMMARIZATION (1 HOUR TIMER) ---
-const disconnectedNumbersBuffer = []; // New buffer for non-ban disconnects
-let disconnectSummaryTimeout = null;  // New timeout for disconnect summary (1 hour)
+const disconnectedNumbersBuffer = []; 
+let disconnectSummaryTimeout = null;  
 
 // 🛡️ NUKE CACHE: Prevents duplicate block actions
 // If a JID is in here, we don't attack them again for 30 seconds
@@ -346,8 +346,14 @@ async function sendDisconnectSummary() {
     if (disconnectedNumbersBuffer.length === 0) return;
 
     const disconnectCount = disconnectedNumbersBuffer.length;
-    const localNumbers = disconnectedNumbersBuffer.map(item => item.number);
     
+    // Sort and compile data for the summary message
+    const compiledData = disconnectedNumbersBuffer
+        .map(item => ({
+            ...item,
+            localNumber: formatNumberLocal(item.number)
+        }));
+        
     // Clear buffer for the next hour
     disconnectedNumbersBuffer.length = 0; 
     disconnectSummaryTimeout = null;
@@ -357,9 +363,8 @@ async function sendDisconnectSummary() {
     summary += `**ID | Phone (Local) | Disconnect Type**\n`;
     summary += `------------------------------------\n`;
 
-    for (const item of disconnectedNumbersBuffer) {
-        const localNum = formatNumberLocal(item.number);
-        summary += `${item.shortId} | ${localNum} | ${item.status}\n`;
+    for (const item of compiledData) {
+        summary += `${item.shortId} | ${item.localNumber} | ${item.status}\n`;
     }
     
     summary += `\n**Total Active Bots Remaining:** ${Object.keys(clients).length}`;
@@ -648,21 +653,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            let willRestart = false;
 
             // Check for definitive logout or ban status
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT';
 
-                // 1. Notify the user/subadmin who paired it that it's permanently gone
-                // NOTE: The phone number is suppressed inside notifyDisconnection in telegram_commands.js
+                // 1. Notify the user/subadmin who paired it (personalized, suppressed phone number)
+                // This is needed for other subadmins to know their bot is dead.
                 notifyDisconnection(cachedShortId, phoneNumber);
                 
-                // 2. Handle Admin Alert based on status
-                
+                // 2. Handle Admin Alert (Buffering)
                 if (reason === 403) {
                     // --- BATCH BAN LOGIC (5 MIN) ---
                     bannedNumbersBuffer.push(phoneNumber);
-                    
                     if (!banSummaryTimeout) {
                         banSummaryTimeout = setTimeout(sendBanSummary, 5 * 60 * 1000); // 5 minutes
                     }
@@ -674,7 +678,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                         number: phoneNumber, 
                         status: disconnectStatus 
                     });
-
                     if (!disconnectSummaryTimeout) {
                          disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 60 * 60 * 1000); // 1 hour
                     }
@@ -688,15 +691,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 delete clients[folder];
 
             } else {
-                // If it's a temporary disconnect (e.g., network error), notify and restart
+                // If it's a temporary disconnect (e.g., network error), we only attempt restart.
+                // We DO NOT notify the user/subadmin, as the bot is expected to restart quickly.
                 
-                // 1. Notify the user/subadmin who paired it
-                // NOTE: The phone number is suppressed inside notifyDisconnection in telegram_commands.js
-                notifyDisconnection(cachedShortId, phoneNumber);
-                
-                // 2. Restart Client
+                willRestart = true;
                 console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
                 startClient(folder, null, chatId, telegramUserId);
+            }
+            
+            // If it's a non-reconnecting disconnect (ban or permanent logout), remove from map
+            if (!willRestart) {
+                // If we need to remove the client entry:
+                // Note: The cleanup above already handles deleting the folder/entry,
+                // but this ensures the active client count is immediately accurate if needed.
+                if (clients[folder]) delete clients[folder]; 
             }
         }
     });

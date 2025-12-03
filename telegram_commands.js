@@ -249,8 +249,8 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
  */
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null) {
 
-    // Removed notifyDisconnection function as individual alerts are no longer desired.
-    // The main logic now relies entirely on the buffers in index.js for reporting.
+    // NOTE: Returning a dummy function as the real notification logic is now centralized in index.js
+    const notifyDisconnection = () => {};
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
@@ -1614,8 +1614,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     return bot.sendMessage(chatId, '[ERROR] User only has ' + user.points + ' points. Cannot deduct ' + Math.abs(pointsChange) + '.');
                 }
                 await addPointsToUser(targetUserId, pointsChange);
-                bot.sendMessage(chatId, '[SUCCESS] Deducted ' + Math.abs(pointsChange) + ' points from user ' + targetUserId + '. New balance: ' + newPoints);
-                bot.sendMessage(targetUserId, Math.abs(pointsChange) + ' points were deducted from your account.', getKeyboard(targetUserId)).catch(() => {});
+                bot.sendMessage(targetId, Math.abs(pointsChange) + ' points were deducted from your account.', getKeyboard(targetUserId)).catch(() => {});
             }
         } catch (error) {
             bot.sendMessage(chatId, '[ERROR] Failed to update points: ' + error.message);
@@ -1901,7 +1900,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 dashMsg += `TODAY: +${todayEarn}\n`;
                 dashMsg += `YESTERDAY: +${yesterdayEarn}\n`;
                 dashMsg += `REFERRALS: ${refStats.total}\n`;
-                dashMsg += `REFERRAL EARNINGS: ${user?.referral_earnings || 0} points\n`;
+                refMsg += `REFERRAL EARNINGS: ${user?.referral_earnings || 0} points\n`;
                 
                 await deleteOldMessagesAndSend(bot, chatId, dashMsg, {
                     reply_markup: {

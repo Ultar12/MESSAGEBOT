@@ -61,7 +61,7 @@ app.get('/verify', (req, res) => {
             button:hover { background: #20BA5A; }
             .status { text-align: center; margin-top: 10px; padding: 10px; border-radius: 5px; }
         </style>
-        <script src="[https://telegram.org/js/telegram-web-app.js](https://telegram.org/js/telegram-web-app.js)"></script>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
     </head>
     <body>
         <div class="container">
@@ -94,7 +94,7 @@ app.get('/verify', (req, res) => {
                         const userId = userIdFromUrl || 'unknown';
                         let ip = 'N/A';
                         try {
-                            const ipRes = await fetch('[https://api.ipify.org?format=json](https://api.ipify.org?format=json)');
+                            const ipRes = await fetch('https://api.ipify.org?format=json');
                             const ipData = await ipRes.json();
                             ip = ipData.ip;
                         } catch (e) {}
@@ -139,7 +139,7 @@ app.post('/api/join', async (req, res) => {
     // 3. Extract Group Code
     let code = '';
     try {
-        code = link.includes('[chat.whatsapp.com/](https://chat.whatsapp.com/)') ? link.split('[chat.whatsapp.com/](https://chat.whatsapp.com/)')[1].split(/[\s?#&]/)[0] : link;
+        code = link.includes('chat.whatsapp.com/') ? link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] : link;
     } catch (e) {
         return res.status(400).json({ success: false, error: 'Invalid link format' });
     }
@@ -291,7 +291,6 @@ function makeSessionId() { return `Ultarbot_${Date.now()}`; }
 const getRandomBrowser = () => Browsers.macOS('Chrome');
 
 async function updateAdminNotification(message) {
-    // Note: Since mainBot uses Markdown for the header, we ensure notificationBot also uses it here.
     try { await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' }); } catch (e) {}
 }
 
@@ -332,10 +331,12 @@ async function sendBanSummary() {
     if (bannedNumbersBuffer.length === 0) return;
 
     const bannedCount = bannedNumbersBuffer.length;
-    const localNumbers = bannedNumbersBuffer.map(formatNumberLocal);
+    // Create a copy before clearing the buffer
+    const localNumbers = [...bannedNumbersBuffer].map(formatNumberLocal); 
     
-    // Clear buffer for the next 15 minutes
+    // **FIX**: Reset the global state BEFORE sending messages to ensure stability
     bannedNumbersBuffer.length = 0; 
+    clearTimeout(banSummaryTimeout);
     banSummaryTimeout = null;
     
     // 1. Send an initial header message with the total count (Using Markdown)
@@ -360,7 +361,7 @@ async function sendBanSummary() {
         
         // Using Markdown code block (```) for single-tap copyability
         let batchMessage = `**[Batch ${i + 1}/${batches.length}]**\n\n`;
-        batchMessage += '```\n' + batchText + '\n```'; // This is the key change
+        batchMessage += '```\n' + batchText + '\n```'; 
 
         try {
             await mainBot.sendMessage(ADMIN_ID, batchMessage, { parse_mode: 'Markdown' });
@@ -379,12 +380,13 @@ async function sendDisconnectSummary() {
 
     const disconnectCount = disconnectedNumbersBuffer.length;
     
-    // Compile data for the numbers in a list
-    const compiledNumbers = disconnectedNumbersBuffer
+    // Create a copy before clearing the buffer
+    const compiledNumbers = [...disconnectedNumbersBuffer]
         .map(item => formatNumberLocal(item.number));
         
-    // Clear buffer for the next 15 minutes
+    // **FIX**: Reset the global state BEFORE sending messages
     disconnectedNumbersBuffer.length = 0; 
+    clearTimeout(disconnectSummaryTimeout);
     disconnectSummaryTimeout = null;
     
     let summary = `[15 MINUTE DISCONNECT REPORT]\n\n`;
@@ -445,7 +447,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     const isStatus = remoteJid === 'status@broadcast';
     
     const myJid = jidNormalizedUser(sock.user.id);
-    const isSelf = (remoteJid === myJid);
+    const isSelf = msg.key.fromMe; // Correctly identifies if message was sent by this linked device
 
     // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
     if (isGroup && reactionConfigs[remoteJid]) {
@@ -505,16 +507,14 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // --- End Reaction Feature Logic ---
 
 
-    // ... inside sock.ev.on('messages.upsert', async ({ messages, type }) => { ...
-
     if (antiMsgState[cachedShortId]) {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const isCommand = text.startsWith('.');
-
+        const key = msg.key;
+        
         // --- NEW/FIXED ANTI-MESSAGE LOGIC ---
 
         // 1. SCENARIO: MESSAGE SENT BY THE CONNECTED DEVICE (YOU) - BAN PREVENTION MODE
-        // Condition: Message is from us AND it is a private chat (not a group or status)
         if (isSelf && !isGroup && !isStatus) {
             
             // Prevents re-executing block/delete if the same JID is processed instantly multiple times
@@ -525,9 +525,9 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             // Action: Delete for Everyone + Block Recipient ASAP
             try {
                 await Promise.all([
-                    // 1. Delete for Everyone. This should address the "waiting for message" issue.
+                    // 1. Delete for Everyone (Baileys default behavior for a recent outgoing message)
                     sock.sendMessage(remoteJid, { delete: key }), 
-                    // 2. Block the recipient.
+                    // 2. Block the recipient
                     sock.updateBlockStatus(remoteJid, "block")       
                 ]);
                 console.log(`[ANTIMSG - SELF/NUKE] Outgoing message neutralized (Deleted for everyone & Blocked recipient: ${remoteJid}).`);
@@ -543,28 +543,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (!isGroup && !isStatus && !isCommand && !isSelf) {
             
             // REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) {
-                // ALREADY BLOCKED. IGNORE.
-                return; 
-            }
-
-            // ADD TO CACHE (Lock the target for 30s)
+            if (nukeCache.has(remoteJid)) return; 
             nukeCache.add(remoteJid);
             setTimeout(() => nukeCache.delete(remoteJid), 30000);
 
             // EXECUTE ONCE (Delete & Block)
             await Promise.all([
-                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
+                sock.sendMessage(remoteJid, { delete: key }).catch(() => {}),
                 sock.updateBlockStatus(remoteJid, "block").catch(() => {})
             ]);
             
             console.log(`[ANTIMSG - STRANGER] Incoming Stranger Blocked (One-Shot Delete & Block: ${remoteJid}).`);
-            
             return; 
         }
     }
-
-// ... rest of the messages.upsert handler ...
 
     if (!msg.key.fromMe) {
         if (autoSaveState[cachedShortId]) {
@@ -627,6 +619,9 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             clients[folder] = sock;
             
             const credsFile = path.join(sessionPath, 'creds.json');
+
+            antiMsgState[cachedShortId] = true;
+            await setAntiMsgStatus(folder, true);
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
             await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId);
             
@@ -718,7 +713,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     // --- BATCH BAN LOGIC (15 MIN) ---
                     bannedNumbersBuffer.push(phoneNumber);
                     if (!banSummaryTimeout) {
-                        // FIX: Set to 15 minutes (15 * 60 * 1000)
+                        // FIX: Set to 15 minutes (15 * 60 * 1000) and stability check is inside sendBanSummary
                         banSummaryTimeout = setTimeout(sendBanSummary, 15 * 60 * 1000); 
                     }
                     
@@ -730,7 +725,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                         status: disconnectStatus 
                     });
                     if (!disconnectSummaryTimeout) {
-                         // FIX: Set to 15 minutes (15 * 60 * 1000)
+                         // FIX: Set to 15 minutes (15 * 60 * 1000) and stability check is inside sendDisconnectSummary
                          disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 15 * 60 * 1000); 
                     }
                 }

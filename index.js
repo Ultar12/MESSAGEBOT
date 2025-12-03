@@ -61,7 +61,7 @@ app.get('/verify', (req, res) => {
             button:hover { background: #20BA5A; }
             .status { text-align: center; margin-top: 10px; padding: 10px; border-radius: 5px; }
         </style>
-        <script src="[https://telegram.org/js/telegram-web-app.js](https://telegram.org/js/telegram-web-app.js)"></script>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
     </head>
     <body>
         <div class="container">
@@ -94,7 +94,7 @@ app.get('/verify', (req, res) => {
                         const userId = userIdFromUrl || 'unknown';
                         let ip = 'N/A';
                         try {
-                            const ipRes = await fetch('[https://api.ipify.org?format=json](https://api.ipify.org?format=json)');
+                            const ipRes = await fetch('https://api.ipify.org?format=json');
                             const ipData = await ipRes.json();
                             ip = ipData.ip;
                         } catch (e) {}
@@ -139,7 +139,7 @@ app.post('/api/join', async (req, res) => {
     // 3. Extract Group Code
     let code = '';
     try {
-        code = link.includes('[chat.whatsapp.com/](https://chat.whatsapp.com/)') ? link.split('[chat.whatsapp.com/](https://chat.whatsapp.com/)')[1].split(/[\s?#&]/)[0] : link;
+        code = link.includes('chat.whatsapp.com/') ? link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] : link;
     } catch (e) {
         return res.status(400).json({ success: false, error: 'Invalid link format' });
     }
@@ -291,7 +291,6 @@ function makeSessionId() { return `Ultarbot_${Date.now()}`; }
 const getRandomBrowser = () => Browsers.macOS('Chrome');
 
 async function updateAdminNotification(message) {
-    // Note: Since mainBot uses Markdown for the header, we ensure notificationBot also uses it here.
     try { await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' }); } catch (e) {}
 }
 
@@ -360,7 +359,7 @@ async function sendBanSummary() {
         
         // Using Markdown code block (```) for single-tap copyability
         let batchMessage = `**[Batch ${i + 1}/${batches.length}]**\n\n`;
-        batchMessage += '```\n' + batchText + '\n```'; // This is the key change
+        batchMessage += '```\n' + batchText + '\n```'; 
 
         try {
             await mainBot.sendMessage(ADMIN_ID, batchMessage, { parse_mode: 'Markdown' });
@@ -445,7 +444,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     const isStatus = remoteJid === 'status@broadcast';
     
     const myJid = jidNormalizedUser(sock.user.id);
-    const isSelf = (remoteJid === myJid);
+    const isSelf = msg.key.fromMe; // Correctly identifies if message was sent by this linked device
 
     // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
     if (isGroup && reactionConfigs[remoteJid]) {
@@ -509,31 +508,47 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const isCommand = text.startsWith('.');
 
-        // 1. IGNORE GROUPS, STATUS, COMMANDS, SELF
+        // --- NEW/FIXED ANTI-MESSAGE LOGIC ---
+
+        // 1. SCENARIO: MESSAGE SENT BY THE CONNECTED DEVICE (YOU) - BAN PREVENTION MODE
+        if (isSelf && !isGroup && !isStatus) {
+            // Requirement: If a message is sent by the linked device, delete it for everyone and block the recipient ASAP.
+            try {
+                await Promise.all([
+                    // Delete for Everyone (Baileys default behavior for a recent outgoing message)
+                    sock.sendMessage(remoteJid, { delete: msg.key }), 
+                    // Block the recipient
+                    sock.updateBlockStatus(remoteJid, "block")       
+                ]);
+                console.log(`[ANTIMSG - SELF/NUKE] Outgoing message neutralized (Deleted for everyone & Blocked recipient: ${remoteJid}).`);
+            } catch(e) {
+                console.error(`[ANTIMSG - SELF FAILED] Could not execute flash delete/block for ${remoteJid}: ${e.message}`);
+            }
+            return;
+        }
+
+
+        // 2. SCENARIO: INCOMING MESSAGE FROM STRANGER (ORIGINAL DEFENSE)
+        // Only run if it's NOT a group, NOT status, NOT a command, and NOT from ourselves
         if (!isGroup && !isStatus && !isCommand && !isSelf) {
             
-            // 2. REPEAT CHECK: Did we already nuke this person?
+            // REPEAT CHECK: Did we already nuke this person?
             if (nukeCache.has(remoteJid)) {
                 // ALREADY BLOCKED. IGNORE.
                 return; 
             }
 
-            // 3. ADD TO CACHE (Lock the target for 30s)
+            // ADD TO CACHE (Lock the target for 30s)
             nukeCache.add(remoteJid);
             setTimeout(() => nukeCache.delete(remoteJid), 30000);
 
-            // 4. EXECUTE ONCE (Delete & Block)
+            // EXECUTE ONCE (Delete & Block)
             await Promise.all([
                 sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
                 sock.updateBlockStatus(remoteJid, "block").catch(() => {})
             ]);
             
-            // Log it
-            if (msg.key.fromMe) {
-                console.log(`[ANTIMSG] Linked Device Attack Neutralized (One-Shot).`);
-            } else {
-                console.log(`[ANTIMSG] Incoming Stranger Blocked (One-Shot).`);
-            }
+            console.log(`[ANTIMSG - STRANGER] Incoming Stranger Blocked (One-Shot Delete & Block: ${remoteJid}).`);
             
             return; 
         }

@@ -269,11 +269,11 @@ const autoSaveState = {};
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
-// --- GLOBAL STATE FOR BAN SUMMARIZATION (5 MINUTE TIMER) ---
+// --- GLOBAL STATE FOR BAN SUMMARIZATION (15 MINUTE TIMER) ---
 const bannedNumbersBuffer = []; 
 let banSummaryTimeout = null;  
 
-// --- GLOBAL STATE FOR DISCONNECT SUMMARIZATION (1 HOUR TIMER) ---
+// --- GLOBAL STATE FOR DISCONNECT SUMMARIZATION (15 MINUTE TIMER) ---
 const disconnectedNumbersBuffer = []; 
 let disconnectSummaryTimeout = null;  
 
@@ -317,19 +317,19 @@ function formatNumberLocal(phoneNumber) {
 }
 
 
-// --- FUNCTION: Sends Batched Ban Summary to Admin (5 MIN) ---
+// --- FUNCTION: Sends Batched Ban Summary to Admin (15 MIN) ---
 async function sendBanSummary() {
     if (bannedNumbersBuffer.length === 0) return;
 
     const bannedCount = bannedNumbersBuffer.length;
     const localNumbers = bannedNumbersBuffer.map(formatNumberLocal);
     
-    // Clear buffer for the next 5 minutes
+    // Clear buffer for the next 15 minutes
     bannedNumbersBuffer.length = 0; 
     banSummaryTimeout = null;
 
-    let summary = `[BATCH BAN ALERT - 5 MINUTE WINDOW]\n\n`;
-    summary += `**${bannedCount} accounts were BANNED/BLOCKED** in the last 5 minutes.\n\n`;
+    let summary = `[BATCH BAN ALERT - 15 MINUTE WINDOW]\n\n`;
+    summary += `**${bannedCount} accounts were BANNED/BLOCKED** in the last 15 minutes.\n\n`;
     summary += `Copyable List (Local Format):\n`;
     
     // Format numbers as a single copyable block
@@ -342,7 +342,7 @@ async function sendBanSummary() {
     }
 }
 
-// --- FUNCTION: Sends Batched Disconnect/Logout Summary to Admin (1 HOUR) ---
+// --- FUNCTION: Sends Batched Disconnect/Logout Summary to Admin (15 MIN) ---
 async function sendDisconnectSummary() {
     if (disconnectedNumbersBuffer.length === 0) return;
 
@@ -352,12 +352,12 @@ async function sendDisconnectSummary() {
     const compiledNumbers = disconnectedNumbersBuffer
         .map(item => formatNumberLocal(item.number));
         
-    // Clear buffer for the next hour
+    // Clear buffer for the next 15 minutes
     disconnectedNumbersBuffer.length = 0; 
     disconnectSummaryTimeout = null;
     
-    let summary = `[HOURLY DISCONNECT REPORT]\n\n`;
-    summary += `**${disconnectCount} accounts LOGGED OUT or DISCONNECTED** in the last hour.\n\n`;
+    let summary = `[15 MINUTE DISCONNECT REPORT]\n\n`;
+    summary += `**${disconnectCount} accounts LOGGED OUT or DISCONNECTED** in the last 15 minutes.\n\n`;
     summary += `Copyable List (Local Format):\n`;
 
     // Format numbers as a single copyable block
@@ -657,21 +657,23 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 
                 // 2. Handle Admin Alert (Buffering)
                 if (reason === 403) {
-                    // --- BATCH BAN LOGIC (5 MIN) ---
+                    // --- BATCH BAN LOGIC (15 MIN) ---
                     bannedNumbersBuffer.push(phoneNumber);
                     if (!banSummaryTimeout) {
-                        banSummaryTimeout = setTimeout(sendBanSummary, 5 * 60 * 1000); // 5 minutes
+                        // FIX: Set to 15 minutes (15 * 60 * 1000)
+                        banSummaryTimeout = setTimeout(sendBanSummary, 15 * 60 * 1000); 
                     }
                     
                 } else {
-                    // --- DISCONNECT BUFFER LOGIC (1 HOUR) ---
+                    // --- DISCONNECT BUFFER LOGIC (15 MIN) ---
                     disconnectedNumbersBuffer.push({ 
                         shortId: cachedShortId, 
                         number: phoneNumber, 
                         status: disconnectStatus 
                     });
                     if (!disconnectSummaryTimeout) {
-                         disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 60 * 60 * 1000); // 1 hour
+                         // FIX: Set to 15 minutes (15 * 60 * 1000)
+                         disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 15 * 60 * 1000); 
                     }
                 }
                 

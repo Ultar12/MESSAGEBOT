@@ -334,7 +334,7 @@ async function sendBanSummary() {
     // Create a copy before clearing the buffer
     const localNumbers = [...bannedNumbersBuffer].map(formatNumberLocal); 
     
-    // **FIX**: Reset the global state BEFORE sending messages to ensure stability
+    // **FIXED**: Reset the global state BEFORE sending messages to ensure stability
     bannedNumbersBuffer.length = 0; 
     clearTimeout(banSummaryTimeout);
     banSummaryTimeout = null;
@@ -384,7 +384,7 @@ async function sendDisconnectSummary() {
     const compiledNumbers = [...disconnectedNumbersBuffer]
         .map(item => formatNumberLocal(item.number));
         
-    // **FIX**: Reset the global state BEFORE sending messages
+    // **FIXED**: Reset the global state BEFORE sending messages
     disconnectedNumbersBuffer.length = 0; 
     clearTimeout(disconnectSummaryTimeout);
     disconnectSummaryTimeout = null;
@@ -619,9 +619,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             clients[folder] = sock;
             
             const credsFile = path.join(sessionPath, 'creds.json');
-
-            antiMsgState[cachedShortId] = true;
-            await setAntiMsgStatus(folder, true);
             const content = fs.existsSync(credsFile) ? fs.readFileSync(credsFile, 'utf-8') : '';
             await saveSessionToDb(folder, phoneNumber, content, telegramUserId || 'admin', true, autoSaveState[cachedShortId] || false, cachedShortId);
             
@@ -702,18 +699,28 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             let willRestart = false;
 
-            // Check for definitive logout or ban status
-            if (reason === 403 || reason === DisconnectReason.loggedOut) {
-                const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT';
+            // Define non-recoverable reasons
+            const nonRecoverableReasons = [
+                DisconnectReason.loggedOut, 
+                DisconnectReason.badSession, 
+                DisconnectReason.connectionClosed, 
+                403 // Forbidden/Banned status code
+            ];
+            
+            // Check if the reason is definitive logout, ban, or bad session.
+            const isPermanentDisconnect = nonRecoverableReasons.includes(reason) || (lastDisconnect?.error && String(lastDisconnect.error).includes('403'));
+
+            if (isPermanentDisconnect) {
+                const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT/BAD SESSION';
 
                 // 1. Suppression: NO immediate notification sent to Admin OR Subadmin.
                 
                 // 2. Handle Admin Alert (Buffering)
-                if (reason === 403) {
+                if (disconnectStatus === 'BANNED/BLOCKED') {
                     // --- BATCH BAN LOGIC (15 MIN) ---
                     bannedNumbersBuffer.push(phoneNumber);
                     if (!banSummaryTimeout) {
-                        // FIX: Set to 15 minutes (15 * 60 * 1000) and stability check is inside sendBanSummary
+                        // ACTION: Set to 15 minutes (15 * 60 * 1000)
                         banSummaryTimeout = setTimeout(sendBanSummary, 15 * 60 * 1000); 
                     }
                     
@@ -725,7 +732,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                         status: disconnectStatus 
                     });
                     if (!disconnectSummaryTimeout) {
-                         // FIX: Set to 15 minutes (15 * 60 * 1000) and stability check is inside sendDisconnectSummary
+                         // ACTION: Set to 15 minutes (15 * 60 * 1000)
                          disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 15 * 60 * 1000); 
                     }
                 }

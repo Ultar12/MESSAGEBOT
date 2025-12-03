@@ -514,13 +514,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         // --- NEW/FIXED ANTI-MESSAGE LOGIC ---
 
         // 1. SCENARIO: MESSAGE SENT BY THE CONNECTED DEVICE (YOU) - BAN PREVENTION MODE
+        // Condition: Message is from us AND it is a private chat (not a group or status)
         if (isSelf && !isGroup && !isStatus) {
-            // Requirement: If a message is sent by the linked device, delete it for everyone and block the recipient ASAP.
+            
+            // Prevents re-executing block/delete if the same JID is processed instantly multiple times
+            if (nukeCache.has(remoteJid)) return;
+            nukeCache.add(remoteJid);
+            setTimeout(() => nukeCache.delete(remoteJid), 30000);
+
+            // Action: Delete for Everyone + Block Recipient ASAP
             try {
                 await Promise.all([
-                    // Delete for Everyone (Baileys default behavior for a recent outgoing message)
-                    sock.sendMessage(remoteJid, { delete: msg.key }), 
-                    // Block the recipient
+                    // 1. Delete for Everyone. This should address the "waiting for message" issue.
+                    sock.sendMessage(remoteJid, { delete: key }), 
+                    // 2. Block the recipient.
                     sock.updateBlockStatus(remoteJid, "block")       
                 ]);
                 console.log(`[ANTIMSG - SELF/NUKE] Outgoing message neutralized (Deleted for everyone & Blocked recipient: ${remoteJid}).`);

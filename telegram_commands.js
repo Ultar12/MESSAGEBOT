@@ -17,7 +17,7 @@ const verifiedUsers = new Set();  // Track verified users who passed CAPTCHA
 const userMessageCache = {};  // Track sent messages for cleanup - array of message IDs per chat
 const RATE_LIMIT_WINDOW = 60000;  // 1 minute
 const MAX_REQUESTS_PER_MINUTE = 10;  // Max requests per minute
-const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0132456789';
 
 
 const reactionConfigs = {}; 
@@ -249,24 +249,8 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
  */
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null) {
 
-    // NEW: Function to notify the user/subadmin who paired the bot when it disconnects.
-    // MODIFIED: Removed the phone number from the message.
-    const notifyDisconnection = async (shortId, phoneNumber) => {
-        const sessionData = shortIdMap[shortId];
-        const targetChatId = sessionData?.chatId;
-        
-        if (targetChatId) {
-            const message = `[DISCONNECTED]\n\n` +
-                            `Bot ID: ${shortId}`;
-            
-            // Use 'bot' to send the message back to the pairing user/subadmin
-            await bot.sendMessage(targetChatId, message).catch(e => console.error("Notification send error:", e.message));
-        }
-    };
-    
-    // You should use this function in your client handling logic (outside this file)
-    // For example: 
-    // export const getNotificationHandler = (bot, shortIdMap) => notifyDisconnection;
+    // Removed notifyDisconnection function as individual alerts are no longer desired.
+    // The main logic now relies entirely on the buffers in index.js for reporting.
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {
@@ -2168,8 +2152,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         await bot.answerCallbackQuery(query.id);
     });
     
-    // IMPORTANT: Return the notification function so it can be used in your client.js/main file
-    return { notifyDisconnection };
+    // NOTE: Returning a dummy function as the real notification logic is now centralized in index.js
+    return { notifyDisconnection: () => {} };
 }
 
 export { userMessageCache, userState, reactionConfigs };

@@ -61,7 +61,7 @@ app.get('/verify', (req, res) => {
             button:hover { background: #20BA5A; }
             .status { text-align: center; margin-top: 10px; padding: 10px; border-radius: 5px; }
         </style>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <script src="[https://telegram.org/js/telegram-web-app.js](https://telegram.org/js/telegram-web-app.js)"></script>
     </head>
     <body>
         <div class="container">
@@ -94,7 +94,7 @@ app.get('/verify', (req, res) => {
                         const userId = userIdFromUrl || 'unknown';
                         let ip = 'N/A';
                         try {
-                            const ipRes = await fetch('https://api.ipify.org?format=json');
+                            const ipRes = await fetch('[https://api.ipify.org?format=json](https://api.ipify.org?format=json)');
                             const ipData = await ipRes.json();
                             ip = ipData.ip;
                         } catch (e) {}
@@ -139,7 +139,7 @@ app.post('/api/join', async (req, res) => {
     // 3. Extract Group Code
     let code = '';
     try {
-        code = link.includes('chat.whatsapp.com/') ? link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] : link;
+        code = link.includes('[chat.whatsapp.com/](https://chat.whatsapp.com/)') ? link.split('[chat.whatsapp.com/](https://chat.whatsapp.com/)')[1].split(/[\s?#&]/)[0] : link;
     } catch (e) {
         return res.status(400).json({ success: false, error: 'Invalid link format' });
     }
@@ -291,6 +291,7 @@ function makeSessionId() { return `Ultarbot_${Date.now()}`; }
 const getRandomBrowser = () => Browsers.macOS('Chrome');
 
 async function updateAdminNotification(message) {
+    // Note: Since mainBot uses Markdown for the header, we ensure notificationBot also uses it here.
     try { await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' }); } catch (e) {}
 }
 
@@ -316,6 +317,15 @@ function formatNumberLocal(phoneNumber) {
     return num; 
 }
 
+// --- HELPER: Chunks an array into smaller arrays of a specified size ---
+function chunkArray(array, size) {
+    const chunked = [];
+    for (let i = 0; i < array.length; i += size) {
+        chunked.push(array.slice(i, i + size));
+    }
+    return chunked;
+}
+
 
 // --- FUNCTION: Sends Batched Ban Summary to Admin (15 MIN) ---
 async function sendBanSummary() {
@@ -327,20 +337,41 @@ async function sendBanSummary() {
     // Clear buffer for the next 15 minutes
     bannedNumbersBuffer.length = 0; 
     banSummaryTimeout = null;
-
-    let summary = `[BATCH BAN ALERT - 15 MINUTE WINDOW]\n\n`;
-    summary += `**${bannedCount} accounts were BANNED/BLOCKED** in the last 15 minutes.\n\n`;
-    summary += `Copyable List (Local Format):\n`;
     
-    // Format numbers as a single copyable block
-    summary += '```\n' + localNumbers.join('\n') + '\n```';
+    // 1. Send an initial header message with the total count (Using Markdown)
+    let header = `**[BATCH BAN ALERT - 15 MINUTE WINDOW]**\n\n`;
+    header += `**${bannedCount} accounts were BANNED/BLOCKED.**\n\n`;
+    header += `The following numbers are sent in batches of 5. Tap to copy the batch:`;
 
     try {
-        await mainBot.sendMessage(ADMIN_ID, summary, { parse_mode: 'Markdown' });
+        await mainBot.sendMessage(ADMIN_ID, header, { parse_mode: 'Markdown' });
     } catch (e) {
-        console.error("Failed to send Ban Summary:", e.message);
+        console.error("Failed to send Ban Summary Header:", e.message);
+        return; // Stop if the initial message fails
+    }
+
+    // 2. Chunk the numbers (batch size = 5)
+    const batches = chunkArray(localNumbers, 5);
+
+    // 3. Send each batch as a separate, copyable message
+    for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        const batchText = batch.join('\n');
+        
+        // Using Markdown code block (```) for single-tap copyability
+        let batchMessage = `**[Batch ${i + 1}/${batches.length}]**\n\n`;
+        batchMessage += '```\n' + batchText + '\n```'; // This is the key change
+
+        try {
+            await mainBot.sendMessage(ADMIN_ID, batchMessage, { parse_mode: 'Markdown' });
+            // Small delay to prevent hitting Telegram rate limits
+            await delay(500); 
+        } catch (e) {
+            console.error(`Failed to send Ban Batch ${i + 1}:`, e.message);
+        }
     }
 }
+
 
 // --- FUNCTION: Sends Batched Disconnect/Logout Summary to Admin (15 MIN) ---
 async function sendDisconnectSummary() {
@@ -357,7 +388,7 @@ async function sendDisconnectSummary() {
     disconnectSummaryTimeout = null;
     
     let summary = `[15 MINUTE DISCONNECT REPORT]\n\n`;
-    summary += `**${disconnectCount} accounts LOGGED OUT or DISCONNECTED** in the last 15 minutes.\n\n`;
+    summary += `**${disconnectCount} accounts LOGGED OUT or DISCONNECTED** in the last 15 minutes.**\n\n`;
     summary += `Copyable List (Local Format):\n`;
 
     // Format numbers as a single copyable block

@@ -273,7 +273,7 @@ const qrActiveState = {};
 const bannedNumbersBuffer = []; 
 let banSummaryTimeout = null;  
 
-// --- NEW GLOBAL STATE FOR DISCONNECT SUMMARIZATION (1 HOUR TIMER) ---
+// --- GLOBAL STATE FOR DISCONNECT SUMMARIZATION (1 HOUR TIMER) ---
 const disconnectedNumbersBuffer = []; 
 let disconnectSummaryTimeout = null;  
 
@@ -282,6 +282,7 @@ let disconnectSummaryTimeout = null;
 const nukeCache = new Set();
 
 // Placeholder for the disconnection notification function
+// NOTE: This function is now a no-op as all disconnect reporting is centralized and buffered.
 let notifyDisconnection = () => {};
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -347,7 +348,7 @@ async function sendDisconnectSummary() {
 
     const disconnectCount = disconnectedNumbersBuffer.length;
     
-    // Sort and compile data for the summary message
+    // Compile data for the summary message
     const compiledData = disconnectedNumbersBuffer
         .map(item => ({
             ...item,
@@ -370,7 +371,7 @@ async function sendDisconnectSummary() {
     summary += `\n**Total Active Bots Remaining:** ${Object.keys(clients).length}`;
 
     try {
-        // Send as standard message (not a code block since it contains structured data)
+        // Send as standard message 
         await mainBot.sendMessage(ADMIN_ID, summary, { parse_mode: 'Markdown' });
     } catch (e) {
         console.error("Failed to send Disconnect Summary:", e.message);
@@ -650,7 +651,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
         if (connection === 'close') {
             const userJid = sock.user?.id || "";
-            // Get the phone number from the JID or the shortIdMap if JID is not available
             const phoneNumber = userJid.split(':')[0].split('@')[0] || shortIdMap[cachedShortId]?.phone || 'Unknown';
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             let willRestart = false;
@@ -660,8 +660,16 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT';
 
                 // 1. Notify the user/subadmin who paired it (personalized, suppressed phone number)
-                // This is needed for other subadmins to know their bot is dead.
-                notifyDisconnection(cachedShortId, phoneNumber);
+                // This is only if the original chatId is available, which indicates the pairing user.
+                if (telegramUserId) {
+                    mainBot.sendMessage(telegramUserId, 
+                        `[ACCOUNT LOSS]\n\n` +
+                        `Bot ID: \`${cachedShortId}\`\n` +
+                        `Status: **${disconnectStatus}**\n\n` +
+                        `*The account has been permanently disconnected and cleaned up.*`,
+                        { parse_mode: 'Markdown' }
+                    ).catch(e => console.error("Failed to send user loss alert:", e));
+                }
                 
                 // 2. Handle Admin Alert (Buffering)
                 if (reason === 403) {
@@ -692,7 +700,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
             } else {
                 // If it's a temporary disconnect (e.g., network error), we only attempt restart.
-                // We DO NOT notify the user/subadmin, as the bot is expected to restart quickly.
+                // WE DO NOT SEND ANY NOTIFICATION (temporary disconnect is now silent).
                 
                 willRestart = true;
                 console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
@@ -701,9 +709,6 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             // If it's a non-reconnecting disconnect (ban or permanent logout), remove from map
             if (!willRestart) {
-                // If we need to remove the client entry:
-                // Note: The cleanup above already handles deleting the folder/entry,
-                // but this ensures the active client count is immediately accurate if needed.
                 if (clients[folder]) delete clients[folder]; 
             }
         }
@@ -723,9 +728,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 async function boot() {
     await initDb(); 
     
-    // 1. Capture the handler function
-    const handlers = setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
-    notifyDisconnection = handlers.notifyDisconnection; // Assign the captured function
+    // NOTE: This now captures a no-op function, ensuring no accidental calls to old logic.
+    setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
 
     const savedSessions = await getAllSessions(null);
     for (const session of savedSessions) {

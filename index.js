@@ -282,7 +282,6 @@ let disconnectSummaryTimeout = null;
 const nukeCache = new Set();
 
 // Placeholder for the disconnection notification function
-// NOTE: This function is now a no-op as all disconnect reporting is centralized and buffered.
 let notifyDisconnection = () => {};
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -331,8 +330,9 @@ async function sendBanSummary() {
 
     let summary = `[BATCH BAN ALERT - 5 MINUTE WINDOW]\n\n`;
     summary += `**${bannedCount} accounts were BANNED/BLOCKED** in the last 5 minutes.\n\n`;
-    summary += `Copyable List (Local Format):\n\n`;
+    summary += `Copyable List (Local Format):\n`;
     
+    // Format numbers as a single copyable block
     summary += '```\n' + localNumbers.join('\n') + '\n```';
 
     try {
@@ -348,12 +348,9 @@ async function sendDisconnectSummary() {
 
     const disconnectCount = disconnectedNumbersBuffer.length;
     
-    // Compile data for the summary message
-    const compiledData = disconnectedNumbersBuffer
-        .map(item => ({
-            ...item,
-            localNumber: formatNumberLocal(item.number)
-        }));
+    // Compile data for the numbers in a list
+    const compiledNumbers = disconnectedNumbersBuffer
+        .map(item => formatNumberLocal(item.number));
         
     // Clear buffer for the next hour
     disconnectedNumbersBuffer.length = 0; 
@@ -361,17 +358,14 @@ async function sendDisconnectSummary() {
     
     let summary = `[HOURLY DISCONNECT REPORT]\n\n`;
     summary += `**${disconnectCount} accounts LOGGED OUT or DISCONNECTED** in the last hour.\n\n`;
-    summary += `**ID | Phone (Local) | Disconnect Type**\n`;
-    summary += `------------------------------------\n`;
+    summary += `Copyable List (Local Format):\n`;
 
-    for (const item of compiledData) {
-        summary += `${item.shortId} | ${item.localNumber} | ${item.status}\n`;
-    }
-    
+    // Format numbers as a single copyable block
+    summary += '```\n' + compiledNumbers.join('\n') + '\n```';
+
     summary += `\n**Total Active Bots Remaining:** ${Object.keys(clients).length}`;
 
     try {
-        // Send as standard message 
         await mainBot.sendMessage(ADMIN_ID, summary, { parse_mode: 'Markdown' });
     } catch (e) {
         console.error("Failed to send Disconnect Summary:", e.message);
@@ -659,17 +653,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (reason === 403 || reason === DisconnectReason.loggedOut) {
                 const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT';
 
-                // 1. Notify the user/subadmin who paired it (personalized, suppressed phone number)
-                // This is only if the original chatId is available, which indicates the pairing user.
-                if (telegramUserId) {
-                    mainBot.sendMessage(telegramUserId, 
-                        `[ACCOUNT LOSS]\n\n` +
-                        `Bot ID: \`${cachedShortId}\`\n` +
-                        `Status: **${disconnectStatus}**\n\n` +
-                        `*The account has been permanently disconnected and cleaned up.*`,
-                        { parse_mode: 'Markdown' }
-                    ).catch(e => console.error("Failed to send user loss alert:", e));
-                }
+                // 1. Suppression: NO immediate notification sent to Admin OR Subadmin.
                 
                 // 2. Handle Admin Alert (Buffering)
                 if (reason === 403) {

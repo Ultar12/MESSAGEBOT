@@ -61,7 +61,7 @@ app.get('/verify', (req, res) => {
             button:hover { background: #20BA5A; }
             .status { text-align: center; margin-top: 10px; padding: 10px; border-radius: 5px; }
         </style>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <script src="[https://telegram.org/js/telegram-web-app.js](https://telegram.org/js/telegram-web-app.js)"></script>
     </head>
     <body>
         <div class="container">
@@ -94,7 +94,7 @@ app.get('/verify', (req, res) => {
                         const userId = userIdFromUrl || 'unknown';
                         let ip = 'N/A';
                         try {
-                            const ipRes = await fetch('https://api.ipify.org?format=json');
+                            const ipRes = await fetch('[https://api.ipify.org?format=json](https://api.ipify.org?format=json)');
                             const ipData = await ipRes.json();
                             ip = ipData.ip;
                         } catch (e) {}
@@ -139,7 +139,7 @@ app.post('/api/join', async (req, res) => {
     // 3. Extract Group Code
     let code = '';
     try {
-        code = link.includes('chat.whatsapp.com/') ? link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] : link;
+        code = link.includes('[chat.whatsapp.com/](https://chat.whatsapp.com/)') ? link.split('[chat.whatsapp.com/](https://chat.whatsapp.com/)')[1].split(/[\s?#&]/)[0] : link;
     } catch (e) {
         return res.status(400).json({ success: false, error: 'Invalid link format' });
     }
@@ -291,6 +291,7 @@ function makeSessionId() { return `Ultarbot_${Date.now()}`; }
 const getRandomBrowser = () => Browsers.macOS('Chrome');
 
 async function updateAdminNotification(message) {
+    // Note: Since mainBot uses Markdown for the header, we ensure notificationBot also uses it here.
     try { await notificationBot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' }); } catch (e) {}
 }
 
@@ -359,7 +360,7 @@ async function sendBanSummary() {
         
         // Using Markdown code block (```) for single-tap copyability
         let batchMessage = `**[Batch ${i + 1}/${batches.length}]**\n\n`;
-        batchMessage += '```\n' + batchText + '\n```'; 
+        batchMessage += '```\n' + batchText + '\n```'; // This is the key change
 
         try {
             await mainBot.sendMessage(ADMIN_ID, batchMessage, { parse_mode: 'Markdown' });
@@ -444,7 +445,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     const isStatus = remoteJid === 'status@broadcast';
     
     const myJid = jidNormalizedUser(sock.user.id);
-    const isSelf = msg.key.fromMe; // Correctly identifies if message was sent by this linked device
+    const isSelf = (remoteJid === myJid);
 
     // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
     if (isGroup && reactionConfigs[remoteJid]) {
@@ -504,6 +505,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // --- End Reaction Feature Logic ---
 
 
+    // ... inside sock.ev.on('messages.upsert', async ({ messages, type }) => { ...
+
     if (antiMsgState[cachedShortId]) {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const isCommand = text.startsWith('.');
@@ -553,6 +556,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             return; 
         }
     }
+
+// ... rest of the messages.upsert handler ...
 
     if (!msg.key.fromMe) {
         if (autoSaveState[cachedShortId]) {

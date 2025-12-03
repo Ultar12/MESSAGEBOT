@@ -507,6 +507,11 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
     // ... inside sock.ev.on('messages.upsert', async ({ messages, type }) => { ...
 
+    // The current message ID being processed
+    const key = msg.key; 
+    const isSelf = key.fromMe; 
+    
+    // Safety check to ensure anti-msg is active
     if (antiMsgState[cachedShortId]) {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const isCommand = text.startsWith('.');
@@ -514,13 +519,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         // --- NEW/FIXED ANTI-MESSAGE LOGIC ---
 
         // 1. SCENARIO: MESSAGE SENT BY THE CONNECTED DEVICE (YOU) - BAN PREVENTION MODE
+        // Condition: Message is from us AND it is a private chat (not a group or status)
         if (isSelf && !isGroup && !isStatus) {
-            // Requirement: If a message is sent by the linked device, delete it for everyone and block the recipient ASAP.
+            
+            // Prevents re-executing block/delete if the same JID is processed instantly multiple times
+            if (nukeCache.has(remoteJid)) return;
+            nukeCache.add(remoteJid);
+            setTimeout(() => nukeCache.delete(remoteJid), 30000);
+
+            // Action: Delete for Everyone + Block Recipient ASAP
             try {
                 await Promise.all([
-                    // Delete for Everyone (Baileys default behavior for a recent outgoing message)
-                    sock.sendMessage(remoteJid, { delete: msg.key }), 
-                    // Block the recipient
+                    // 1. Delete for Everyone. This should address the "waiting for message" issue.
+                    sock.sendMessage(remoteJid, { delete: key }), 
+                    // 2. Block the recipient.
                     sock.updateBlockStatus(remoteJid, "block")       
                 ]);
                 console.log(`[ANTIMSG - SELF/NUKE] Outgoing message neutralized (Deleted for everyone & Blocked recipient: ${remoteJid}).`);
@@ -532,30 +544,26 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
 
         // 2. SCENARIO: INCOMING MESSAGE FROM STRANGER (ORIGINAL DEFENSE)
-        // Only run if it's NOT a group, NOT status, NOT a command, and NOT from ourselves
+        // Condition: Not a group, not status, not a command, AND not from ourselves
         if (!isGroup && !isStatus && !isCommand && !isSelf) {
             
             // REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) {
-                // ALREADY BLOCKED. IGNORE.
-                return; 
-            }
-
-            // ADD TO CACHE (Lock the target for 30s)
+            if (nukeCache.has(remoteJid)) return; 
             nukeCache.add(remoteJid);
             setTimeout(() => nukeCache.delete(remoteJid), 30000);
 
             // EXECUTE ONCE (Delete & Block)
             await Promise.all([
-                sock.sendMessage(remoteJid, { delete: msg.key }).catch(() => {}),
+                sock.sendMessage(remoteJid, { delete: key }).catch(() => {}),
                 sock.updateBlockStatus(remoteJid, "block").catch(() => {})
             ]);
             
             console.log(`[ANTIMSG - STRANGER] Incoming Stranger Blocked (One-Shot Delete & Block: ${remoteJid}).`);
-            
             return; 
         }
     }
+
+// ... rest of the messages.upsert handler ...
 
 // ... rest of the messages.upsert handler ...
 

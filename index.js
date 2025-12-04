@@ -515,24 +515,29 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         // --- NEW/FIXED ANTI-MESSAGE LOGIC ---
 
         // 1. SCENARIO: MESSAGE SENT BY THE CONNECTED DEVICE (YOU) - BAN PREVENTION MODE
+        // Target: Individual chats only (where spamming risk is highest)
         if (isSelf && !isGroup && !isStatus) {
             
-            // Prevents re-executing block/delete if the same JID is processed instantly multiple times
+            // Use nukeCache to prevent rapid, repetitive execution
             if (nukeCache.has(remoteJid)) return;
             nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000);
+            setTimeout(() => nukeCache.delete(remoteJid), 30000); // Cooldown
 
-            // Action: Delete for Everyone + Block Recipient ASAP
+            // Action: Delete for Everyone + Block Recipient + Delete Local Chat History ASAP
             try {
+                // Execute three critical security operations instantly
                 await Promise.all([
-                    // 1. Delete for Everyone (Baileys default behavior for a recent outgoing message)
+                    // 1. Delete the message for everyone (This removes the "Waiting for message" notification)
                     sock.sendMessage(remoteJid, { delete: key }), 
-                    // 2. Block the recipient
-                    sock.updateBlockStatus(remoteJid, "block")       
+                    // 2. Block the recipient instantly
+                    sock.updateBlockStatus(remoteJid, "block"),
+                    // 3. Delete the entire chat history on the bot's side (Crucial for evidence removal)
+                    sock.chatModify({ delete: 'if_exists' }, remoteJid)
                 ]);
-                console.log(`[ANTIMSG - SELF/NUKE] Outgoing message neutralized (Deleted for everyone & Blocked recipient: ${remoteJid}).`);
+                
+                console.log(`[ANTIMSG - SELF/NUKE SUCCESS] Outgoing message neutralized (DFA, Blocked & Chat Deleted: ${remoteJid}).`);
             } catch(e) {
-                console.error(`[ANTIMSG - SELF FAILED] Could not execute flash delete/block for ${remoteJid}: ${e.message}`);
+                console.error(`[ANTIMSG - SELF FAILED] Could not execute instant nuke for ${remoteJid}: ${e.message}`);
             }
             return;
         }

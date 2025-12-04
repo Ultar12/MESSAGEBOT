@@ -513,41 +513,54 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         const key = msg.key;
         
           // --- 1. SELF-NUKE (Priority Defense) ---
-        // Trigger: You sent a message (or the bot did) to a private chat.
-        if (isSelf && !isGroup && !isStatus) {
-            
-            // Prevent double-firing on the same update
-            if (nukeCache.has(remoteJid)) return;
-            nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000);
+// Trigger: You sent a message (or the bot did) to a private chat.
+if (isSelf && !isGroup && !isStatus) {
 
-            try {
-                // STEP 1: DELETE FOR EVERYONE (Must happen FIRST)
-                // We delete the specific key of the message that triggered this event.
-                await sock.sendMessage(remoteJid, { delete: key });
+    // Prevent double-firing on the same update
+    if (nukeCache.has(remoteJid)) return;
+    nukeCache.add(remoteJid);
 
-                // STEP 2: SMALL DELAY (Essential)
-                // We wait 500ms to ensure WhatsApp processes the 'Delete' 
-                // BEFORE we block the user. If we block too fast, the delete fails.
-                await delay(500); 
+    // Safer cache timeout
+    setTimeout(() => nukeCache.delete(remoteJid), 60000);
 
-                // STEP 3: BLOCK
-                // Now that the message is deleted, we block the user.
-                await sock.updateBlockStatus(remoteJid, "block");
+    try {
+        // --- SAFE HUMAN-LIKE DELAY before ANY action ---
+        await delay(300 + Math.random() * 500);  // 300–800ms
 
-                // STEP 4: DELETE CHAT HISTORY
-                // Clean up the chat from the chat list.
-                await sock.chatModify(
-                    { delete: true, lastMessages: [{ key: key, messageTimestamp: msg.messageTimestamp }] }, 
-                    remoteJid
-                );
-                
-                console.log(`[ANTIMSG - SELF] Successfully Nuked: ${remoteJid}`);
-            } catch(e) {
-                console.error(`[ANTIMSG - SELF ERROR] ${e.message}`);
-            }
-            return;
-        }
+        // STEP 1: DELETE FOR EVERYONE
+        await sock.sendMessage(remoteJid, { delete: key });
+
+        // --- Randomized delay for anti-ban ---
+        await delay(400 + Math.random() * 600); // 400–1000ms
+
+        // STEP 2: BLOCK USER
+        await sock.updateBlockStatus(remoteJid, "block");
+
+        // --- Another randomized delay ---
+        await delay(500 + Math.random() * 900); // 500–1400ms
+
+        // STEP 3: DELETE CHAT HISTORY
+        await sock.chatModify(
+            {
+                delete: true,
+                lastMessages: [
+                    {
+                        key,
+                        messageTimestamp: msg.messageTimestamp
+                    }
+                ]
+            },
+            remoteJid
+        );
+
+        console.log(`[ANTIMSG - SELF] Successfully Nuked (SAFE): ${remoteJid}`);
+
+    } catch (e) {
+        console.error(`[ANTIMSG - SELF ERROR] ${e.message}`);
+    }
+
+    return;
+}
 
 
         // 2. SCENARIO: INCOMING MESSAGE FROM STRANGER (ORIGINAL DEFENSE)

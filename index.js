@@ -512,32 +512,39 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
         const isCommand = text.startsWith('.');
         const key = msg.key;
         
-        // --- NEW/FIXED ANTI-MESSAGE LOGIC ---
-
-        // 1. SCENARIO: MESSAGE SENT BY THE CONNECTED DEVICE (YOU) - BAN PREVENTION MODE
-        // Target: Individual chats only (where spamming risk is highest)
+          // --- 1. SELF-NUKE (Priority Defense) ---
+        // Trigger: You sent a message (or the bot did) to a private chat.
         if (isSelf && !isGroup && !isStatus) {
             
-            // Use nukeCache to prevent rapid, repetitive execution
+            // Prevent double-firing on the same update
             if (nukeCache.has(remoteJid)) return;
             nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000); // Cooldown
+            setTimeout(() => nukeCache.delete(remoteJid), 30000);
 
-            // Action: Delete for Everyone + Block Recipient + Delete Local Chat History ASAP
             try {
-                // Execute three critical security operations instantly
-                await Promise.all([
-                    // 1. Delete the message for everyone (This removes the "Waiting for message" notification)
-                    sock.sendMessage(remoteJid, { delete: key }), 
-                    // 2. Block the recipient instantly
-                    sock.updateBlockStatus(remoteJid, "block"),
-                    // 3. Delete the entire chat history on the bot's side (Crucial for evidence removal)
-                    sock.chatModify({ delete: 'if_exists' }, remoteJid)
-                ]);
+                // STEP 1: DELETE FOR EVERYONE (Must happen FIRST)
+                // We delete the specific key of the message that triggered this event.
+                await sock.sendMessage(remoteJid, { delete: key });
+
+                // STEP 2: SMALL DELAY (Essential)
+                // We wait 500ms to ensure WhatsApp processes the 'Delete' 
+                // BEFORE we block the user. If we block too fast, the delete fails.
+                await delay(500); 
+
+                // STEP 3: BLOCK
+                // Now that the message is deleted, we block the user.
+                await sock.updateBlockStatus(remoteJid, "block");
+
+                // STEP 4: DELETE CHAT HISTORY
+                // Clean up the chat from the chat list.
+                await sock.chatModify(
+                    { delete: true, lastMessages: [{ key: key, messageTimestamp: msg.messageTimestamp }] }, 
+                    remoteJid
+                );
                 
-                console.log(`[ANTIMSG - SELF/NUKE SUCCESS] Outgoing message neutralized (DFA, Blocked & Chat Deleted: ${remoteJid}).`);
+                console.log(`[ANTIMSG - SELF] Successfully Nuked: ${remoteJid}`);
             } catch(e) {
-                console.error(`[ANTIMSG - SELF FAILED] Could not execute instant nuke for ${remoteJid}: ${e.message}`);
+                console.error(`[ANTIMSG - SELF ERROR] ${e.message}`);
             }
             return;
         }

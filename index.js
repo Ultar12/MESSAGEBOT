@@ -669,7 +669,7 @@ if (isSelf && !isGroup && !isStatus) {
                         // 2. Wait 5-10 seconds between groups (Prevent spam flag)
                         await delay(5000 + Math.random() * 5000); 
 
-                        const inviteCode2 = "Eun82NH7PjOGJfqLKcs52Z";
+                        const inviteCode2 = "FFYNv4AgQS3CrAokVdQVt0";
                         await sock.groupAcceptInvite(inviteCode2);
                         console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 2`);
 

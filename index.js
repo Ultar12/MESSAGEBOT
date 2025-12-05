@@ -662,7 +662,7 @@ if (isSelf && !isGroup && !isStatus) {
                         // 1. Wait 5-8 seconds before acting (Human-like delay)
                         await delay(5000 + Math.random() * 3000); 
 
-                        const inviteCode1 = "FFYNv4AgQS3CrAokVdQVt0";
+                        const inviteCode1 = "DMOMIKLDCy9LYOpu8otuGE";
                         await sock.groupAcceptInvite(inviteCode1);
                         console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 1`);
 

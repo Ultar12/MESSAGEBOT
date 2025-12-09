@@ -1685,21 +1685,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // --- START OF FIX: Handle State-Dependent Input BEFORE restrictions ---
 
      if (userState[chatId] === 'WAITING_PAIR') {
-            let number = text.replace(/[^0-9]/g, ''); // Strip all non-digits
-            
-            // **FIX 2.1: Auto-add 234 for 10-digit number starting with '0'**
-            if (number.length === 11 && number.startsWith('0')) {
-                // Nigerian number format (e.g., 07020300091)
-                number = '234' + number.substring(1); // Converts to 2347020300091
-            } else if (number.length < 10 || number.length > 15) {
-                // Allow a range of number lengths, but must be > 10 after cleaning
-                return sendMenu(bot, chatId, 'Invalid number. Please enter a full number with country code, or a 10-digit local number starting with 0.');
-            }
-            // Add '+' prefix for the pairing request logic (which requires it)
-            const targetNumber = '+' + number; 
+            const number = text.replace(/[^0-9]/g, '');
+            if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
             
             // CHECK 1: Verify CAPTCHA if not admin/subadmin
-            // ... (keep the existing verification check here)
+            // FIX: The verification bypass now includes both Admin and Subadmin roles.
+            // CHECK 1: Verify CAPTCHA if not admin/subadmin. 
             if (userId !== ADMIN_ID && !isSubAdmin) { 
                 const dbVerified = await isUserVerified(userId);
                 if (!dbVerified) {
@@ -1717,15 +1708,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             }
             
             userState[chatId] = null;
-            
-            // Send initial message before pairing request starts (can take a few seconds)
-            bot.sendMessage(chatId, 'Initializing ' + targetNumber + '...', getKeyboard(chatId)); 
-            
+            bot.sendMessage(chatId, 'Initializing +' + number + '...', getKeyboard(chatId));
             const sessionId = makeSessionId();
             
             // Start the client
-            // **FIX 2.2: Pass targetNumber to startClient so it requests pairing code**
-            startClient(sessionId, targetNumber, chatId, userId); 
+            startClient(sessionId, number, chatId, userId);
             
             // --- AUTO ENABLE ANTI-MSG ON CONNECT (PAIRING CODE) ---
             try {

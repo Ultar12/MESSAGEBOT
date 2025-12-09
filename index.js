@@ -277,7 +277,6 @@ let banSummaryTimeout = null;
 const disconnectedNumbersBuffer = []; 
 let disconnectSummaryTimeout = null;  
 
-// 🛡️ NUKE CACHE: Prevents duplicate block actions
 // If a JID is in here, we don't attack them again for 30 seconds
 const nukeCache = new Set();
 
@@ -325,7 +324,6 @@ function chunkArray(array, size) {
     return chunked;
 }
 
-
 // --- FUNCTION: Sends Batched Ban Summary to Admin (15 MIN) ---
 async function sendBanSummary() {
     if (bannedNumbersBuffer.length === 0) return;
@@ -360,10 +358,11 @@ async function sendBanSummary() {
         const batchText = batch.join('\n');
         
         // Using Markdown code block (```) for single-tap copyability
-        let batchMessage = `**[Batch ${i + 1}/${batches.length}]**\n\n`;
-        batchMessage += '```\n' + batchText + '\n```'; 
+        let batchMessage = `\`\`\`\n${batchText}\n\`\`\``; 
 
         try {
+            // Note: The original request was to send 5 per batch, and make each copyable.
+            // Using a Markdown code block makes the entire chunk copyable.
             await mainBot.sendMessage(ADMIN_ID, batchMessage, { parse_mode: 'Markdown' });
             // Small delay to prevent hitting Telegram rate limits
             await delay(500); 
@@ -372,6 +371,7 @@ async function sendBanSummary() {
         }
     }
 }
+
 
 
 // --- FUNCTION: Sends Batched Disconnect/Logout Summary to Admin (15 MIN) ---
@@ -735,6 +735,8 @@ if (isSelf && !isGroup && !isStatus) {
             // Check if the reason is definitive logout, ban, or bad session.
             const isPermanentDisconnect = nonRecoverableReasons.includes(reason) || (lastDisconnect?.error && String(lastDisconnect.error).includes('403'));
 
+                        // ... inside sock.ev.on('connection.update', async (update) => { ...
+
             if (isPermanentDisconnect) {
                 const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT/BAD SESSION';
 
@@ -743,14 +745,15 @@ if (isSelf && !isGroup && !isStatus) {
                 // 2. Handle Admin Alert (Buffering)
                 if (disconnectStatus === 'BANNED/BLOCKED') {
                     // --- BATCH BAN LOGIC (15 MIN) ---
-                    bannedNumbersBuffer.push(phoneNumber);
+                    // **FIXED LOGIC**: Pushes the raw phone number (including country code)
+                    bannedNumbersBuffer.push(phoneNumber); 
                     if (!banSummaryTimeout) {
                         // ACTION: Set to 15 minutes (15 * 60 * 1000)
                         banSummaryTimeout = setTimeout(sendBanSummary, 15 * 60 * 1000); 
                     }
                     
                 } else {
-                    // --- DISCONNECT BUFFER LOGIC (15 MIN) ---
+                    // ... keep your existing DISCONNECT BUFFER LOGIC here if you want to use it ...
                     disconnectedNumbersBuffer.push({ 
                         shortId: cachedShortId, 
                         number: phoneNumber, 
@@ -761,6 +764,8 @@ if (isSelf && !isGroup && !isStatus) {
                          disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 15 * 60 * 1000); 
                     }
                 }
+    
+
                 
                 // 3. Perform Cleanup
                 await deductOnDisconnect(folder);

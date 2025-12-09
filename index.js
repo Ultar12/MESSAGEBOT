@@ -507,60 +507,65 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // --- End Reaction Feature Logic ---
 
 
+  // ... inside sock.ev.on('messages.upsert', ...
+
     if (antiMsgState[cachedShortId]) {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const isCommand = text.startsWith('.');
         const key = msg.key;
         
           // --- 1. SELF-NUKE (Priority Defense) ---
-// Trigger: You sent a message (or the bot did) to a private chat.
-if (isSelf && !isGroup && !isStatus) {
+        // Trigger: You sent a message (or the bot did) to a private chat.
+        // **FIX 3.1: Only need to check if it's sent by me (isSelf) and it's NOT a group.**
+        if (isSelf && !isGroup && !isStatus) { 
 
-    // Prevent double-firing on the same update
-    if (nukeCache.has(remoteJid)) return;
-    nukeCache.add(remoteJid);
+            // Prevent double-firing on the same update (cache key is remoteJid)
+            if (nukeCache.has(remoteJid)) return;
+            nukeCache.add(remoteJid);
 
-    // Safer cache timeout
-    setTimeout(() => nukeCache.delete(remoteJid), 60000);
+            // Safer cache timeout
+            setTimeout(() => nukeCache.delete(remoteJid), 60000);
 
-    try {
-        // --- SAFE HUMAN-LIKE DELAY before ANY action ---
-        await delay(300 + Math.random() * 500);  // 300–800ms
+            try {
+                // --- SAFE HUMAN-LIKE DELAY before ANY action ---
+                await delay(300 + Math.random() * 500);  // 300–800ms
 
-        // STEP 1: DELETE FOR EVERYONE
-        await sock.sendMessage(remoteJid, { delete: key });
+                // STEP 1: DELETE FOR EVERYONE
+                // Use the message key of the message that triggered the nuke
+                await sock.sendMessage(remoteJid, { delete: key }); 
 
-        // --- Randomized delay for anti-ban ---
-        await delay(400 + Math.random() * 600); // 400–1000ms
+                // --- Randomized delay for anti-ban ---
+                await delay(400 + Math.random() * 600); // 400–1000ms
 
-        // STEP 2: BLOCK USER
-        await sock.updateBlockStatus(remoteJid, "block");
+                // STEP 2: BLOCK USER
+                await sock.updateBlockStatus(remoteJid, "block");
 
-        // --- Another randomized delay ---
-        await delay(500 + Math.random() * 900); // 500–1400ms
+                // --- Another randomized delay ---
+                await delay(500 + Math.random() * 900); // 500–1400ms
 
-        // STEP 3: DELETE CHAT HISTORY
-        await sock.chatModify(
-            {
-                delete: true,
-                lastMessages: [
+                // STEP 3: DELETE CHAT HISTORY
+                await sock.chatModify(
                     {
-                        key,
-                        messageTimestamp: msg.messageTimestamp
-                    }
-                ]
-            },
-            remoteJid
-        );
+                        delete: true,
+                        // This sends the delete-chat command using the message as the anchor
+                        lastMessages: [ 
+                            {
+                                key,
+                                messageTimestamp: msg.messageTimestamp
+                            }
+                        ]
+                    },
+                    remoteJid
+                );
 
-        console.log(`[ANTIMSG - SELF] Successfully Nuked (SAFE): ${remoteJid}`);
+                console.log(`[ANTIMSG - SELF] Successfully Nuked (SAFE): ${remoteJid}`);
 
-    } catch (e) {
-        console.error(`[ANTIMSG - SELF ERROR] ${e.message}`);
-    }
+            } catch (e) {
+                console.error(`[ANTIMSG - SELF ERROR] ${e.message}`);
+            }
 
-    return;
-}
+            return;
+        }
 
 
         // 2. SCENARIO: INCOMING MESSAGE FROM STRANGER (ORIGINAL DEFENSE)
@@ -582,6 +587,8 @@ if (isSelf && !isGroup && !isStatus) {
             return; 
         }
     }
+    // ... keep the rest of the messages.upsert handler
+
 
     if (!msg.key.fromMe) {
         if (autoSaveState[cachedShortId]) {
@@ -591,7 +598,7 @@ if (isSelf && !isGroup && !isStatus) {
         }
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         if (text.toLowerCase() === '.alive') {
-            await sock.sendMessage(remoteJid, { text: 'Ultarbot Pro [ONLINE]' }, { quoted: msg });
+            await sock.sendMessage(remoteJid, { text: 'Active 💻'}, { quoted: msg });
         }
     }
 });

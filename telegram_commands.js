@@ -1103,8 +1103,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
-        // --- /dv Command: Download Direct File Link and Force TXT Output ---
-    // Usage: /dv <direct_file_link> (MUST be a direct, publicly accessible download URL)
+            // --- /dv Command: Download Telegram File Link and Send as TXT Document ---
+    // Usage: /dv <telegram_file_link> (Converts content to TXT)
     bot.onText(/\/dv\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
@@ -1112,67 +1112,68 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         // Authorization Check
         if (userId !== ADMIN_ID && !SUBADMINS.includes(userId)) {
-            return; 
+            return; // Silently ignore if not admin or subadmin
         }
         
         const fileLink = match[1]; 
         
         if (!fileLink || (!fileLink.startsWith('http://') && !fileLink.startsWith('https://'))) {
-            return bot.sendMessage(chatId, '[ERROR] Usage: /dv <direct_file_link>. The link must start with http:// or https://');
+            return bot.sendMessage(chatId, '[ERROR] Usage: /dv <telegram_file_link>. The link must start with http:// or https://');
         }
 
         try {
-            bot.sendMessage(chatId, '[DOWNLOADING] Fetching file directly from link...');
+            bot.sendMessage(chatId, '[DOWNLOADING] Fetching file from link...');
 
-            // 1. Fetch the file content robustly using buffer (simple direct download logic)
+            // 1. Fetch the file content robustly using buffer
             const response = await fetch(fileLink);
 
             if (!response.ok) {
                 return bot.sendMessage(chatId, `[ERROR] Failed to download file. HTTP Status: ${response.status}`);
             }
-            
+
             const fileBuffer = await response.buffer();
             
-            // 2. Convert the buffer to a clean text string
-            // This is the critical step to ensure the content is treated as text.
+            // --- FIX START: Convert Buffer to Text and Force TXT Output ---
+            
+            // 2. Convert the raw buffer to a clean text string (handles VCF, HTML, or raw text)
             const rawTextContent = fileBuffer.toString('utf-8');
             
             // 3. Import necessary modules (fs and path)
             const fs = await import('fs');
             const path = await import('path');
             
-            // 4. Save the content to a temporary .txt file
+            // 4. Force a .txt filename and create the temporary file path
+            const fileName = `downloaded_content_${Date.now()}.txt`;
             const tempDir = '/tmp';
             if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-            
-            // Force the filename to be a .txt file
-            const fileName = `downloaded_content_${Date.now()}.txt`;
             const filePath = path.join(tempDir, fileName);
 
-            // Write the text content (not the raw buffer) to the new file
+            // Write the text content (not the raw buffer) to the new .txt file
             fs.writeFileSync(filePath, rawTextContent);
-
+            
+            // --- FIX END ---
+            
             // 5. Send the file back to the user
             await bot.sendDocument(chatId, filePath, {
-                caption: `[DOWNLOAD COMPLETE]\nFile: **${fileName}** (${(rawTextContent.length / 1024).toFixed(2)} KB)`,
+                // Use the length of the new text content for size reporting
+                caption: `[DOWNLOAD COMPLETE]\nFile: **${fileName}** (${(rawTextContent.length / 1024).toFixed(2)} KB)\n**Format Forced to TXT.**`,
                 parse_mode: 'Markdown',
-                filename: fileName,
-                // Explicitly set MIME type to force TXT display
+                // Explicitly set the filename and MIME type to ensure TXT display
+                filename: fileName, 
                 contentType: 'text/plain' 
             });
 
-            // 6. Clean up
+            // 6. Clean up the temporary file
             fs.unlinkSync(filePath);
 
-            sendMenu(bot, chatId, '[SUCCESS] Document sent as TXT.');
+            sendMenu(bot, chatId, '[SUCCESS] Document sent.');
 
         } catch (e) {
             console.error('[DV_ERROR]', e.message);
             
             let userError = `[ERROR] Could not complete download: ${e.message}.`;
-            // Add a specific hint for why direct fetch failed (e.g., firewall, bad link, or private content)
             if (fileLink.includes('t.me')) {
-                 userError += `\n**HINT:** Telegram preview links (t.me) often download HTML, not the file itself. Use a direct file link.`;
+                 userError += `\n**HINT:** Direct links (e.g., from bot.getFileLink) work best. Public preview pages (t.me) often download HTML.`;
             }
             
             bot.sendMessage(chatId, userError, { parse_mode: 'Markdown' });

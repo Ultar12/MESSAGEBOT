@@ -1896,7 +1896,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 dashMsg += `TODAY: +${todayEarn}\n`;
                 dashMsg += `YESTERDAY: +${yesterdayEarn}\n`;
                 dashMsg += `REFERRALS: ${refStats.total}\n`;
-                refMsg += `REFERRAL EARNINGS: ${user?.referral_earnings || 0} points\n`;
+                dashMsg += `REFERRAL EARNINGS: ${user?.referral_earnings || 0} points\n`;
                 
                 await deleteOldMessagesAndSend(bot, chatId, dashMsg, {
                     reply_markup: {

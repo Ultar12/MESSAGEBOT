@@ -429,11 +429,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-        // --- /sv Command: Smart Filter (Any Country + DB Format Fix)
-
-        // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
-    // Usage: /sv [file_link] OR Reply to a document with /sv
-    bot.onText(/\/sv(?:\s+(\S+))?/, async (msg, match) => {
+    // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
+    bot.onText(/\/sv/, async (msg) => {
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
         // Allow access for both ADMIN and SUBADMINS
@@ -441,29 +438,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return; // Silently ignore if not admin or subadmin
         }
         const chatId = msg.chat.id;
-        
-        // --- 1. DETERMINE FILE SOURCE ---
-        let fileLink = null;
-        let fileSource = 'reply'; // Default assumption
 
-        // Check for link argument (match[1])
-        const linkArgument = match[1];
-        if (linkArgument && (linkArgument.startsWith('http://') || linkArgument.startsWith('https://'))) {
-            fileLink = linkArgument;
-            fileSource = 'link';
-        } 
-        
-        // Check for replied document
-        else if (msg.reply_to_message && msg.reply_to_message.document) {
-            const fileId = msg.reply_to_message.document.file_id;
-            fileLink = await bot.getFileLink(fileId);
-            fileSource = 'reply';
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sv');
         }
 
-        if (!fileLink) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sv OR use /sv <telegram_file_link>');
-        }
-        
         // Sorted by length (Longest first) to ensure +1242 (Bahamas) isn't mistaken for +1 (USA)
         const countryCodes = [
             '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
@@ -506,32 +485,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         };
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Comparing with connected accounts...');
+            bot.sendMessage(chatId, '[PROCESSING] comparing with connected accounts...');
 
             // --- STEP 1: Build List of Connected Numbers (Normalized) ---
             const connectedSet = new Set();
             
+            // Check currently connected sessions
             Object.values(shortIdMap).forEach(session => {
-                const norm = normalize(session.phone);
+                const norm = normalize(session.phone); // Handles +234, 234, etc.
                 if (norm) connectedSet.add(norm);
             });
 
-            // --- STEP 2: Read File (FIXED: Robust Buffer Download) ---
-            let rawText = "";
-            
-            bot.sendMessage(chatId, `[DOWNLOADING] File via ${fileSource}...`);
+            // --- STEP 2: Read File ---
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
+            const rawText = await response.text();
 
-            if (!response.ok) {
-                return bot.sendMessage(chatId, `[ERROR] Failed to download file from link. HTTP Status: ${response.status}`);
-            }
-
-            // Read the entire file content as a buffer
-            const fileBuffer = await response.buffer();
-            
-            // Convert the buffer to a string using UTF-8 encoding
-            rawText = fileBuffer.toString('utf-8');
-            
             // --- STEP 3: Process & Filter ---
             const newNumbers = new Set();
             const lines = rawText.split(/\r?\n/);
@@ -555,43 +525,32 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const total = uniqueList.length;
             
             if (total === 0) {
-                return bot.sendMessage(chatId, `[DONE] No new numbers.\nSkipped **${skippedCount}** duplicates/connected numbers.`, { parse_mode: 'Markdown' });
+                return bot.sendMessage(chatId, '[DONE] No new numbers.\nSkipped ' + skippedCount + ' duplicates/connected numbers.');
             }
 
             // --- STEP 4: Send Batch (5 per msg + Tap to Copy) ---
             const batchSize = 5;
             const totalBatches = Math.ceil(total / batchSize);
             
-            bot.sendMessage(chatId, 
-                `**[FILTER REPORT]**\n` +
-                `Input Found: ${lines.length}\n` +
-                `Already Connected: ${skippedCount}\n` +
-                `**New Numbers:** ${total}\n\n` +
-                `[SENDING] ${totalBatches} batches...`, 
-                { parse_mode: 'Markdown' }
-            );
+            bot.sendMessage(chatId, '[FILTER REPORT]\nInput Found: ' + lines.length + '\nAlready Connected: ' + skippedCount + '\nNew Numbers: ' + total + '\n\n[SENDING] ' + totalBatches + ' batches...');
 
             for (let i = 0; i < total; i += batchSize) {
                 const chunk = uniqueList.slice(i, i + batchSize);
                 if (chunk.length === 0) continue;
 
-                // Format with Markdown code block (```) for one-tap copy
-                const msgText = chunk.map(n => n).join('\n');
+                // Format with backticks ` ` for copy
+                const msgText = chunk.map(n => '`' + n + '`').join('\n');
 
-                let batchMessage = `\`\`\`\n${msgText}\n\`\`\``; 
-
-                await bot.sendMessage(chatId, batchMessage, { parse_mode: 'Markdown' });
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
                 await delay(1200); // 1.2s delay to be safe
             }
             
-            bot.sendMessage(chatId, '**[DONE]** Batch sending complete.', { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, '[DONE] Batch sending complete.');
 
         } catch (e) {
-            bot.sendMessage(chatId, `[ERROR] Processing failed: ${e.message}`);
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
-
-
 
     // --- /sendgroup [message] | [bot_count] | [group_link] ---
     // Executes a message send job across X bots with a 3-second delay between each bot.

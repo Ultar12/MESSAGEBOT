@@ -429,8 +429,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-    // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
-    bot.onText(/\/sv/, async (msg) => {
+        // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
+    bot.onText(/\/sv(?:\s+(\S+))?/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
         // Allow access for both ADMIN and SUBADMINS
@@ -438,10 +438,32 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return; // Silently ignore if not admin or subadmin
         }
         const chatId = msg.chat.id;
+        
+        // **FIX START** - New logic to handle file link or replied document
 
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sv');
+        let fileLink = null;
+        let fileSource = null;
+
+        // 1. Check for link argument (match[1])
+        const linkArgument = match[1];
+        if (linkArgument && (linkArgument.startsWith('http://') || linkArgument.startsWith('https://'))) {
+            fileLink = linkArgument;
+            fileSource = 'link';
+        } 
+        
+        // 2. Check for replied document (existing logic)
+        else if (msg.reply_to_message && msg.reply_to_message.document) {
+            bot.sendMessage(chatId, '[PROCESSING] Downloading replied file...');
+            const fileId = msg.reply_to_message.document.file_id;
+            fileLink = await bot.getFileLink(fileId);
+            fileSource = 'reply';
         }
+
+        if (!fileLink) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sv OR use /sv <telegram_file_link>');
+        }
+        
+        // **FIX END** - Execution continues with fileLink now defined.
 
         // Sorted by length (Longest first) to ensure +1242 (Bahamas) isn't mistaken for +1 (USA)
         const countryCodes = [
@@ -497,8 +519,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             });
 
             // --- STEP 2: Read File ---
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileLink = await bot.getFileLink(fileId);
+            // Use the determined fileLink
             const response = await fetch(fileLink);
             const rawText = await response.text();
 
@@ -551,6 +572,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
+
 
     // --- /sendgroup [message] | [bot_count] | [group_link] ---
     // Executes a message send job across X bots with a 3-second delay between each bot.

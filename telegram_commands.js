@@ -1103,6 +1103,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+    // --- /dv Command: Download Document Attached to Telegram Message ---
+    // Usage: /dv <telegram_message_link> (e.g., https://t.me/c/ID/MSG_ID)
     bot.onText(/\/dv\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
@@ -1113,60 +1115,95 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return; 
         }
         
-        const fileLink = match[1]; 
+        const link = match[1];
+        let targetChatId = null;
+        let targetMessageId = null;
+        let forwardedMessageId = null;
         
-        if (!fileLink || (!fileLink.startsWith('http://') && !fileLink.startsWith('https://'))) {
-            return bot.sendMessage(chatId, '[ERROR] Usage: /dv <telegram_file_link>. The link must start with http:// or https://');
-        }
-
         try {
-            bot.sendMessage(chatId, '[DOWNLOADING] Fetching file from link...');
+            // 1. EXTRACT CHAT ID and MESSAGE ID from Link
+            const cMatch = link.match(/\/c\/(\d+)\/(\d+)/); 
 
-            // 1. Fetch the file content robustly using buffer
+            if (cMatch) {
+                // Private Channel: Prepend -100 to the Channel ID
+                targetChatId = '-100' + cMatch[1];
+                targetMessageId = parseInt(cMatch[2]);
+            } else {
+                 return bot.sendMessage(chatId, '[ERROR] Invalid Telegram link. Please use the private channel link format: /c/ID/MSG_ID.');
+            }
+
+            bot.sendMessage(chatId, '[FETCHING] Accessing file via Telegram API...');
+
+            // 2. FORWARD MESSAGE to get the file object (Requires bot to be a member)
+            const forwardedMsg = await bot.forwardMessage(chatId, targetChatId, targetMessageId);
+            forwardedMessageId = forwardedMsg.message_id;
+
+            const document = forwardedMsg.document;
+
+            if (!document) {
+                // Clean up the forwarded message
+                if (forwardedMessageId) await bot.deleteMessage(chatId, forwardedMessageId);
+                return bot.sendMessage(chatId, '[ERROR] The linked message does not contain a document (file).');
+            }
+
+            // 3. GET ACTUAL DOWNLOAD LINK
+            const fileId = document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+
+            // 4. DOWNLOAD RAW FILE CONTENT
+            bot.sendMessage(chatId, '[DOWNLOADING] Raw file content from Telegram server...');
             const response = await fetch(fileLink);
 
             if (!response.ok) {
+                if (forwardedMessageId) await bot.deleteMessage(chatId, forwardedMessageId);
                 return bot.sendMessage(chatId, `[ERROR] Failed to download file. HTTP Status: ${response.status}`);
             }
             
-            // Read the entire file content as a buffer
             const fileBuffer = await response.buffer();
             
-            // 2. Import necessary modules (fs and path) for local file saving
+            // 5. PREPARE AND SEND DOCUMENT
             const fs = await import('fs');
             const path = await import('path');
             
-            // 3. Save the buffer to a temporary file
+            // Use the original filename provided by Telegram (document.file_name)
+            const fileName = document.file_name || `downloaded_file_${Date.now()}.txt`;
             const tempDir = '/tmp';
-            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-            
-            // --- FIX: Force Filename and Extension to .txt ---
-            const fileName = `downloaded_file_${Date.now()}.txt`;
             const filePath = path.join(tempDir, fileName);
 
-            // Assuming the content is meant to be text, we save the raw buffer
             fs.writeFileSync(filePath, fileBuffer);
 
-            // 4. Send the file back to the user
             await bot.sendDocument(chatId, filePath, {
                 caption: `[DOWNLOAD COMPLETE]\nFile: **${fileName}** (${(fileBuffer.length / 1024).toFixed(2)} KB)`,
                 parse_mode: 'Markdown',
-                // --- FIX: Explicitly set MIME type to force TXT ---
-                filename: fileName, // Use filename option for the display name
-                contentType: 'text/plain' 
+                filename: fileName,
+                // Preserve original MIME type if possible, or default to text
+                contentType: document.mime_type || 'text/plain' 
             });
 
-            // 5. Clean up the temporary file
+            // 6. CLEAN UP
             fs.unlinkSync(filePath);
-
+            if (forwardedMessageId) await bot.deleteMessage(chatId, forwardedMessageId);
+            
             sendMenu(bot, chatId, '[SUCCESS] Document sent.');
 
         } catch (e) {
             console.error('[DV_ERROR]', e.message);
-            // Catch errors during fetch or file write/send
-            bot.sendMessage(chatId, `[ERROR] Could not complete download: ${e.message}`);
+            // Attempt to clean up even if an error occurred during processing
+            if (forwardedMessageId) {
+                try { await bot.deleteMessage(chatId, forwardedMessageId); } catch(err) {}
+            }
+            
+            let userError = `[ERROR] Could not complete download.`;
+            if (e.message.includes('400') || e.message.includes('MEMBER_INVALID')) {
+                 userError += `\n**HINT:** Is your bot a member of that private channel?`;
+            } else {
+                 userError += `\nDetails: ${e.message}`;
+            }
+
+            bot.sendMessage(chatId, userError, { parse_mode: 'Markdown' });
         }
     });
+
 
     
 

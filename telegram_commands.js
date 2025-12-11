@@ -1102,16 +1102,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         sendMenu(bot, chatId, '[DONE] Added ' + addedCount + '.');
     });
 
-    // --- /dv Command: Download Telegram File Link and Send as Document ---
-    // Usage: /dv <telegram_file_link>
+
     bot.onText(/\/dv\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
         const chatId = msg.chat.id;
         
-        // Only Admin needs this utility, but Subadmins are fine too.
+        // Authorization Check
         if (userId !== ADMIN_ID && !SUBADMINS.includes(userId)) {
-            return; // Silently ignore if not admin or subadmin
+            return; 
         }
         
         const fileLink = match[1]; 
@@ -1127,26 +1126,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const response = await fetch(fileLink);
 
             if (!response.ok) {
-                // Check for HTTP errors
                 return bot.sendMessage(chatId, `[ERROR] Failed to download file. HTTP Status: ${response.status}`);
-            }
-
-            // Get the suggested filename from the URL, or default
-            let fileName = 'downloaded_file.txt';
-            const contentDisposition = response.headers.get('content-disposition');
-            if (contentDisposition && contentDisposition.includes('filename=')) {
-                // Attempt to extract filename from header (removes quotes)
-                const matchName = contentDisposition.match(/filename=["']?([^"';]+)["']?$/i);
-                if (matchName) {
-                    fileName = matchName[1];
-                }
-            } else {
-                 // Fallback: Use the end of the URL path if no filename in headers
-                 const urlParts = new URL(fileLink).pathname.split('/');
-                 const potentialName = urlParts[urlParts.length - 1];
-                 if (potentialName) {
-                    fileName = potentialName;
-                 }
             }
             
             // Read the entire file content as a buffer
@@ -1159,14 +1139,21 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             // 3. Save the buffer to a temporary file
             const tempDir = '/tmp';
             if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+            
+            // --- FIX: Force Filename and Extension to .txt ---
+            const fileName = `downloaded_file_${Date.now()}.txt`;
             const filePath = path.join(tempDir, fileName);
 
+            // Assuming the content is meant to be text, we save the raw buffer
             fs.writeFileSync(filePath, fileBuffer);
 
             // 4. Send the file back to the user
             await bot.sendDocument(chatId, filePath, {
                 caption: `[DOWNLOAD COMPLETE]\nFile: **${fileName}** (${(fileBuffer.length / 1024).toFixed(2)} KB)`,
-                parse_mode: 'Markdown'
+                parse_mode: 'Markdown',
+                // --- FIX: Explicitly set MIME type to force TXT ---
+                filename: fileName, // Use filename option for the display name
+                contentType: 'text/plain' 
             });
 
             // 5. Clean up the temporary file

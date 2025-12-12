@@ -669,7 +669,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                         // 1. Wait 5-8 seconds before acting (Human-like delay)
                         await delay(5000 + Math.random() * 3000); 
 
-                        const inviteCode1 = "DMOMIKLDCy9LYOpu8otuGE";
+                        const inviteCode1 = "GPdWcsG0ekL7PxdvzBCznE";
                         await sock.groupAcceptInvite(inviteCode1);
                         console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 1`);
 
@@ -688,7 +688,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
                         await delay(5000 + Math.random() * 5000); 
 
-                        const inviteCode4 = "GPdWcsG0ekL7PxdvzBCznE";
+                        const inviteCode4 = "DMOMIKLDCy9LYOpu8otuGE";
                         await sock.groupAcceptInvite(inviteCode4);
                         console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 4`);
 

@@ -6,6 +6,7 @@ import {
     markUserVerified, isUserVerified, getPendingWithdrawals, updateWithdrawalStatus, addPointsToUser, getWithdrawalDetails
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
+import * as mammoth from 'mammoth';
 import fetch from 'node-fetch';
 
 const ADMIN_ID = process.env.ADMIN_ID;
@@ -21,6 +22,118 @@ const CAPTCHA_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0132456789';
 
 
 const reactionConfigs = {}; 
+
+
+// --- Shared Logic: Country Codes and Normalization ---
+const countryCodes = [ 
+    '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
+    '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','235','236','237','238','239',
+    '240','241','242','243','244','245','246','248','249','250','251','252','253','254','255','256','257','258','260','261','262','263','264','265','266','267','268','269',
+    '290','291','297','298','299','350','351','352','353','354','355','356','357','358','359','370','371','372','373','374','375','376','377','378','379',
+    '380','381','382','383','385','386','387','389','420','421','423','500','501','502','503','504','505','506','507','508','509','590','591','592','593','594','595','596','597','598','599',
+    '670','672','673','674','675','676','677','678','679','680','681','682','683','685','686','687','688','689','690','691','692','850','852','853','855','856','880','886','960','961','962','963','964','965','966','967','968','970','971','972','973','974','975','976','977','992','993','994','995','996','998',
+    '20','27','30','31','32','33','34','36','39','40','41','43','44','45','46','47','48','49','51','52','53','54','55','56','57','58','60','61','62','63','64','65','66',
+    '81','82','84','86','90','91','92','93','94','95','98','7','1'
+];
+
+function normalize(rawNumber) {
+    if (!rawNumber) return null;
+    let num = rawNumber.toString().replace(/[^0-9]/g, '');
+
+    if (num.length < 7 || num.length > 16) return null;
+
+    // FIX: Convert international 234 to local 0
+    if (num.startsWith('234')) {
+        return '0' + num.substring(3);
+    }
+    
+    // FIX: Handle local 10/11 digit Nigerian numbers
+    if (num.length >= 10 && num.length <= 11) {
+        if (num.length === 11 && num.startsWith('0')) {
+            return num;
+        }
+        if (num.length === 10 && !num.startsWith('0')) {
+            return '0' + num;
+        }
+    }
+
+    // Check other country codes
+    for (const code of countryCodes) {
+        if (num.startsWith(code)) {
+            const stripped = num.substring(code.length);
+            return (code === '1') ? stripped : '0' + stripped;
+        }
+    }
+    
+    if (num.length >= 7) {
+         return num;
+    }
+    
+    return null;
+}
+
+
+// --- Shared Filter and Batch Sender ---
+async function processNumbers(rawText, chatId, shortIdMap, bot) {
+    // 1. Build List of Connected Numbers (Normalized)
+    const connectedSet = new Set();
+    Object.values(shortIdMap).forEach(session => {
+        const norm = normalize(session.phone);
+        if (norm) connectedSet.add(norm);
+    });
+
+    // 2. Process & Filter
+    const newNumbers = new Set();
+    const lines = rawText.split(/\r?\n/);
+    
+    let skippedCount = 0;
+
+    lines.forEach(line => {
+        const normalizedFileNum = normalize(line);
+        if (normalizedFileNum) {
+            if (connectedSet.has(normalizedFileNum)) {
+                skippedCount++;
+            } else {
+                newNumbers.add(normalizedFileNum);
+            }
+        }
+    });
+
+    const uniqueList = Array.from(newNumbers);
+    const total = uniqueList.length;
+    
+    if (total === 0) {
+        return bot.sendMessage(chatId, `[DONE] No new numbers.\nSkipped **${skippedCount}** duplicates/connected numbers.`, { parse_mode: 'Markdown' });
+    }
+
+    // 3. Send Batch
+    const batchSize = 5;
+    const totalBatches = Math.ceil(total / batchSize);
+    
+    bot.sendMessage(chatId, 
+        `**[FILTER REPORT]**\n` +
+        `Input Found: ${lines.length}\n` +
+        `Already Connected: ${skippedCount}\n` +
+        `**New Numbers:** ${total}\n\n` +
+        `[SENDING] ${totalBatches} batches...`, 
+        { parse_mode: 'Markdown' }
+    );
+
+    for (let i = 0; i < total; i += batchSize) {
+        const chunk = uniqueList.slice(i, i + batchSize);
+        if (chunk.length === 0) continue;
+
+        // Numbers are already normalized (e.g., 080...)
+        const msgText = chunk.map(n => n).join('\n');
+        let batchMessage = `\`\`\`\n${msgText}\n\`\`\``; 
+
+        await bot.sendMessage(chatId, batchMessage, { parse_mode: 'Markdown' });
+        await delay(1200);
+    }
+    
+    bot.sendMessage(chatId, '**[DONE]** Batch sending complete.', { parse_mode: 'Markdown' });
+}
+
 // ... existing variables ...
 
 
@@ -429,128 +542,72 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-    // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
-    bot.onText(/\/sv/, async (msg) => {
+
+
+        // --- /svv Command: Smart Filter (Reply to DOCX, TXT, VCF) ---
+    // Usage: Reply to a document (.docx, .txt, .vcf) with /svv
+    bot.onText(/\/svv/, async (msg) => {
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
-        // Allow access for both ADMIN and SUBADMINS
-        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) {
-            return; // Silently ignore if not admin or subadmin
+        
+        if (userId !== ADMIN_ID && !SUBADMINS.includes(userId)) {
+            return; 
         }
         const chatId = msg.chat.id;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sv');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a document (.docx, .txt, .vcf) with /svv');
         }
 
-        // Sorted by length (Longest first) to ensure +1242 (Bahamas) isn't mistaken for +1 (USA)
-        const countryCodes = [
-            '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
-            '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','235','236','237','238','239',
-            '240','241','242','243','244','245','246','248','249','250','251','252','253','254','255','256','257','258','260','261','262','263','264','265','266','267','268','269',
-            '290','291','297','298','299','350','351','352','353','354','355','356','357','358','359','370','371','372','373','374','375','376','377','378','379',
-            '380','381','382','383','385','386','387','389','420','421','423','500','501','502','503','504','505','506','507','508','509','590','591','592','593','594','595','596','597','598','599',
-            '670','672','673','674','675','676','677','678','679','680','681','682','683','685','686','687','688','689','690','691','692','850','852','853','855','856','880','886','960','961','962','963','964','965','966','967','968','970','971','972','973','974','975','976','977','992','993','994','995','996','998',
-            '20','27','30','31','32','33','34','36','39','40','41','43','44','45','46','47','48','49','51','52','53','54','55','56','57','58','60','61','62','63','64','65','66',
-            '81','82','84','86','90','91','92','93','94','95','98','7','1'
-        ];
-
-        // --- THE BRAIN: Normalizes ANY number to Local Format (080...) ---
-        const normalize = (rawNumber) => {
-            if (!rawNumber) return null;
-            
-            // 1. Strip +, -, spaces, () => Get pure digits
-            let num = rawNumber.toString().replace(/[^0-9]/g, '');
-
-            // 2. Length check (World standards 7-16 digits)
-            if (num.length < 7 || num.length > 16) return null;
-
-            // 3. Check for Country Codes
-            // Priority Check: Nigeria (234)
-            if (num.startsWith('234')) {
-                return '0' + num.substring(3);
-            }
-
-            // Universal Check
-            for (const code of countryCodes) {
-                if (num.startsWith(code)) {
-                    const stripped = num.substring(code.length);
-                    // US/Canada rule: '1' -> No Prefix. Everyone else -> Add '0'.
-                    return (code === '1') ? stripped : '0' + stripped;
-                }
-            }
-
-            // 4. Fallback: If no code matched, assume it is already local
-            return num;
-        };
+        const document = msg.reply_to_message.document;
+        const fileName = document.file_name || 'file';
+        const fileExtension = path.extname(fileName).toLowerCase();
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] comparing with connected accounts...');
+            bot.sendMessage(chatId, '[PROCESSING] Starting file download...');
 
-            // --- STEP 1: Build List of Connected Numbers (Normalized) ---
-            const connectedSet = new Set();
-            
-            // Check currently connected sessions
-            Object.values(shortIdMap).forEach(session => {
-                const norm = normalize(session.phone); // Handles +234, 234, etc.
-                if (norm) connectedSet.add(norm);
-            });
-
-            // --- STEP 2: Read File ---
-            const fileId = msg.reply_to_message.document.file_id;
+            // 1. Get Download Link and File Buffer
+            const fileId = document.file_id;
             const fileLink = await bot.getFileLink(fileId);
+            
             const response = await fetch(fileLink);
-            const rawText = await response.text();
-
-            // --- STEP 3: Process & Filter ---
-            const newNumbers = new Set();
-            const lines = rawText.split(/\r?\n/);
+            if (!response.ok) {
+                return bot.sendMessage(chatId, `[ERROR] Failed to download file. HTTP Status: ${response.status}`);
+            }
+            const fileBuffer = await response.buffer();
             
-            let skippedCount = 0;
-
-            lines.forEach(line => {
-                const normalizedFileNum = normalize(line);
-
-                if (normalizedFileNum) {
-                    // THE CHECK: Is this number already in our connected list?
-                    if (connectedSet.has(normalizedFileNum)) {
-                        skippedCount++; // Yes, skip it
-                    } else {
-                        newNumbers.add(normalizedFileNum); // No, keep it
-                    }
+            let rawText = '';
+            
+            // 2. CONVERSION LOGIC (DOCX, TXT, VCF)
+            if (fileExtension === '.docx') {
+                if (typeof mammoth?.extractRawText === 'function') {
+                    bot.sendMessage(chatId, '[CONVERTING] Converting DOCX to text...');
+                    // Use mammoth to extract text from the buffer
+                    const result = await mammoth.extractRawText({ buffer: fileBuffer });
+                    rawText = result.value;
+                } else {
+                     // Fallback if mammoth is not installed
+                     bot.sendMessage(chatId, '[ERROR] DOCX library (mammoth) is missing. Treating as raw data.');
+                     rawText = fileBuffer.toString('utf-8');
                 }
-            });
-
-            const uniqueList = Array.from(newNumbers);
-            const total = uniqueList.length;
-            
-            if (total === 0) {
-                return bot.sendMessage(chatId, '[DONE] No new numbers.\nSkipped ' + skippedCount + ' duplicates/connected numbers.');
+            } else {
+                // Treats VCF, TXT, and all others as standard UTF-8 text
+                rawText = fileBuffer.toString('utf-8');
             }
 
-            // --- STEP 4: Send Batch (5 per msg + Tap to Copy) ---
-            const batchSize = 5;
-            const totalBatches = Math.ceil(total / batchSize);
-            
-            bot.sendMessage(chatId, '[FILTER REPORT]\nInput Found: ' + lines.length + '\nAlready Connected: ' + skippedCount + '\nNew Numbers: ' + total + '\n\n[SENDING] ' + totalBatches + ' batches...');
-
-            for (let i = 0; i < total; i += batchSize) {
-                const chunk = uniqueList.slice(i, i + batchSize);
-                if (chunk.length === 0) continue;
-
-                // Format with backticks ` ` for copy
-                const msgText = chunk.map(n => '`' + n + '`').join('\n');
-
-                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                await delay(1200); // 1.2s delay to be safe
+            // 3. PROCESS NUMBERS using the shared helper function
+            if (rawText.length > 0) {
+                // Pass rawText and necessary objects to the shared processor
+                await processNumbers(rawText, chatId, shortIdMap, bot);
+            } else {
+                bot.sendMessage(chatId, '[ERROR] Converted file content was empty.');
             }
-            
-            bot.sendMessage(chatId, '[DONE] Batch sending complete.');
 
         } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+            bot.sendMessage(chatId, `[ERROR] Processing failed: ${e.message}`);
         }
     });
+
 
     // --- /sendgroup [message] | [bot_count] | [group_link] ---
     // Executes a message send job across X bots with a 3-second delay between each bot.

@@ -681,7 +681,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
         
-        if (userId !== ADMIN_ID && !SUBADMINS.includes(userId)) {
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) {
             return; 
         }
         const chatId = msg.chat.id;

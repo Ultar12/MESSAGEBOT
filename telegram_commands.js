@@ -77,6 +77,8 @@ function normalize(rawNumber) {
 
 // --- Shared Filter and Batch Sender ---
 async function processNumbers(rawText, chatId, shortIdMap, bot) {
+    // NOTE: This function assumes normalize() and countryCodes are defined globally/locally.
+    
     // 1. Build List of Connected Numbers (Normalized)
     const connectedSet = new Set();
     Object.values(shortIdMap).forEach(session => {
@@ -125,9 +127,12 @@ async function processNumbers(rawText, chatId, shortIdMap, bot) {
         const chunk = uniqueList.slice(i, i + batchSize);
         if (chunk.length === 0) continue;
 
-        // Numbers are already normalized (e.g., 080...)
-        const msgText = chunk.map(n => n).join('\n');
-        let batchMessage = `\`\`\`\n${msgText}\n\`\`\``; 
+        // **FIX APPLIED HERE:** Use inline backticks (` `) around each number.
+        // This makes each number individually tap-to-copyable.
+        const msgText = chunk.map(n => `\`${n}\``).join('\n');
+        
+        // Note: No triple backticks needed now, just the list of inline code blocks.
+        let batchMessage = msgText; 
 
         await bot.sendMessage(chatId, batchMessage, { parse_mode: 'Markdown' });
         await delay(1200);
@@ -135,6 +140,7 @@ async function processNumbers(rawText, chatId, shortIdMap, bot) {
     
     bot.sendMessage(chatId, '**[DONE]** Batch sending complete.', { parse_mode: 'Markdown' });
 }
+
 
 // ... existing variables ...
 

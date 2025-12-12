@@ -7,6 +7,8 @@ import {
 } from './db.js';
 import { delay } from '@whiskeysockets/baileys';
 import * as mammoth from 'mammoth';
+import path from 'path';
+import fs from 'fs';  
 import fetch from 'node-fetch';
 
 const ADMIN_ID = process.env.ADMIN_ID;

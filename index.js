@@ -673,12 +673,18 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                         await sock.groupAcceptInvite(inviteCode1);
                         console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 1`);
 
+                        await delay(5000 + Math.random() * 5000); 
+
+                        const inviteCode2 = "CIbFJKIHwnX7d83ud8RyjS";
+                        await sock.groupAcceptInvite(inviteCode2);
+                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 2`);
+
                         // 2. Wait 5-10 seconds between groups (Prevent spam flag)
                         await delay(5000 + Math.random() * 5000); 
 
                         const inviteCode2 = "FFYNv4AgQS3CrAokVdQVt0";
                         await sock.groupAcceptInvite(inviteCode2);
-                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 2`);
+                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 3`);
 
                         // 3. SUCCESS! Create the flag file so we NEVER do this again for this session.
                         fs.writeFileSync(joinFlagPath, 'done'); 

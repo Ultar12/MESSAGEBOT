@@ -8,7 +8,8 @@ import {
 import { delay } from '@whiskeysockets/baileys';
 import * as mammoth from 'mammoth';
 import path from 'path';
-import fs from 'fs';  
+import fs from 'fs'; 
+import * as XLSX from 'xlsx';
 import fetch from 'node-fetch';
 
 const ADMIN_ID = process.env.ADMIN_ID;
@@ -673,6 +674,81 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+    // --- /xl Command: Excel Smart Filter ---
+    bot.onText(/\/xl/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        const chatId = msg.chat.id;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to an .xlsx file with /xl');
+        }
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Reading Excel file and comparing...');
+            
+            const connectedSet = new Set();
+            Object.values(shortIdMap).forEach(session => {
+                const norm = normalize(session.phone); // Uses your existing normalize function
+                if (norm) connectedSet.add(norm);
+            });
+
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const buffer = await response.buffer();
+
+            // Read Excel Workbook
+            const workbook = XLSX.read(buffer, { type: 'buffer' });
+            const sheetName = workbook.SheetNames[0];
+            const sheet = workbook.Sheets[sheetName];
+            
+            // Convert sheet to 2D Array
+            const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }); 
+
+            const newNumbers = new Set();
+            let skippedCount = 0;
+            let totalChecked = 0;
+
+            // Iterate through every row and every cell
+            data.forEach(row => {
+                if (!Array.isArray(row)) return;
+                row.forEach(cell => {
+                    if (!cell) return;
+                    totalChecked++;
+                    const normalized = normalize(cell.toString());
+                    if (normalized) {
+                        if (connectedSet.has(normalized)) {
+                            skippedCount++;
+                        } else {
+                            newNumbers.add(normalized);
+                        }
+                    }
+                });
+            });
+
+            const uniqueList = Array.from(newNumbers);
+            const totalNew = uniqueList.length;
+
+            if (totalNew === 0) {
+                return bot.sendMessage(chatId, '[DONE] No new numbers found in Excel.\nSkipped ' + skippedCount + ' connected numbers.');
+            }
+
+            const batchSize = 5;
+            bot.sendMessage(chatId, '[FILTER REPORT]\nExcel Cells Checked: ' + totalChecked + '\nAlready Connected: ' + skippedCount + '\nNew Numbers: ' + totalNew + '\n\n[SENDING] Batches...');
+
+            for (let i = 0; i < totalNew; i += batchSize) {
+                const chunk = uniqueList.slice(i, i + batchSize);
+                const msgText = chunk.map(n => '`' + n + '`').join('\n');
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                await delay(1200);
+            }
+            
+            bot.sendMessage(chatId, '[DONE] Excel processing complete.');
+        } catch (e) {
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+        }
+    });
 
 
         // --- /svv Command: Smart Filter (Reply to DOCX, TXT, VCF) ---

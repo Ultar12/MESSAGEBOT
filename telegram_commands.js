@@ -674,11 +674,17 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-    // --- /xl Command: Excel Smart Filter ---
+        // --- /xl Command: Excel Smart Filter (Admin & Subadmin) ---
     bot.onText(/\/xl/, async (msg) => {
         deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
         const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // CHECK: Allow both Main Admin and Subadmins
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+
+        if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(chatId, '[ERROR] Reply to an .xlsx file with /xl');
@@ -689,7 +695,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             
             const connectedSet = new Set();
             Object.values(shortIdMap).forEach(session => {
-                const norm = normalize(session.phone); // Uses your existing normalize function
+                // Ensure this matches the name of your normalization function (normalize or normalizeNumber)
+                const norm = normalize(session.phone); 
                 if (norm) connectedSet.add(norm);
             });
 
@@ -698,19 +705,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const response = await fetch(fileLink);
             const buffer = await response.buffer();
 
-            // Read Excel Workbook
             const workbook = XLSX.read(buffer, { type: 'buffer' });
             const sheetName = workbook.SheetNames[0];
             const sheet = workbook.Sheets[sheetName];
-            
-            // Convert sheet to 2D Array
             const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }); 
 
             const newNumbers = new Set();
             let skippedCount = 0;
             let totalChecked = 0;
 
-            // Iterate through every row and every cell
             data.forEach(row => {
                 if (!Array.isArray(row)) return;
                 row.forEach(cell => {
@@ -731,11 +734,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const totalNew = uniqueList.length;
 
             if (totalNew === 0) {
-                return bot.sendMessage(chatId, '[DONE] No new numbers found in Excel.\nSkipped ' + skippedCount + ' connected numbers.');
+                return bot.sendMessage(chatId, '[DONE] No new numbers found.\nSkipped ' + skippedCount + ' connected numbers.');
             }
 
             const batchSize = 5;
-            bot.sendMessage(chatId, '[FILTER REPORT]\nExcel Cells Checked: ' + totalChecked + '\nAlready Connected: ' + skippedCount + '\nNew Numbers: ' + totalNew + '\n\n[SENDING] Batches...');
+            bot.sendMessage(chatId, '[FILTER REPORT]\nCells Checked: ' + totalChecked + '\nAlready Connected: ' + skippedCount + '\nNew Numbers: ' + totalNew + '\n\n[SENDING] Batches...');
 
             for (let i = 0; i < totalNew; i += batchSize) {
                 const chunk = uniqueList.slice(i, i + batchSize);

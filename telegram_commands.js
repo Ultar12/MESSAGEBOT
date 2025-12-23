@@ -28,35 +28,77 @@ const reactionConfigs = {};
 
 
 // --- Shared Logic: Country Codes and Normalization ---
-const countryCodes = [ 
-    '1242','1246','1264','1268','1284','1340','1345','1441','1473','1649','1664','1670','1671','1684','1721','1758','1767','1784','1809','1829','1849','1868','1869','1876',
-    '211','212','213','216','218','220','221','222','223','224','225','226','227','228','229','230','231','232','233','235','236','237','238','239',
-    '240','241','242','243','244','245','246','248','249','250','251','252','253','254','255','256','257','258','260','261','262','263','264','265','266','267','268','269',
-    '290','291','297','298','299','350','351','352','353','354','355','356','357','358','359','370','371','372','373','374','375','376','377','378','379',
-    '380','381','382','383','385','386','387','389','420','421','423','500','501','502','503','504','505','506','507','508','509','590','591','592','593','594','595','596','597','598','599',
-    '670','672','673','674','675','676','677','678','679','680','681','682','683','685','686','687','688','689','690','691','692','850','852','853','855','856','880','886','960','961','962','963','964','965','966','967','968','970','971','972','973','974','975','976','977','992','993','994','995','996','998',
-    '20','27','30','31','32','33','34','36','39','40','41','43','44','45','46','47','48','49','51','52','53','54','55','56','57','58','60','61','62','63','64','65','66',
-    '81','82','84','86','90','91','92','93','94','95','98','7','1'
-];
 
-function normalize(rawNumber) {
+const countryDataMap = {
+    '1': 'USA/Canada', '7': 'Russia/Kazakhstan', '20': 'Egypt', '27': 'South Africa', '30': 'Greece',
+    '31': 'Netherlands', '32': 'Belgium', '33': 'France', '34': 'Spain', '36': 'Hungary',
+    '39': 'Italy', '40': 'Romania', '41': 'Switzerland', '43': 'Austria', '44': 'United Kingdom',
+    '45': 'Denmark', '46': 'Sweden', '47': 'Norway', '48': 'Poland', '49': 'Germany',
+    '51': 'Peru', '52': 'Mexico', '53': 'Cuba', '54': 'Argentina', '55': 'Brazil',
+    '56': 'Chile', '57': 'Colombia', '58': 'Venezuela', '60': 'Malaysia', '61': 'Australia',
+    '62': 'Indonesia', '63': 'Philippines', '64': 'New Zealand', '65': 'Singapore', '66': 'Thailand',
+    '81': 'Japan', '82': 'South Korea', '84': 'Vietnam', '86': 'China', '90': 'Turkey',
+    '91': 'India', '92': 'Pakistan', '93': 'Afghanistan', '94': 'Sri Lanka', '95': 'Myanmar',
+    '98': 'Iran', '211': 'South Sudan', '212': 'Morocco', '213': 'Algeria', '216': 'Tunisia',
+    '218': 'Libya', '220': 'Gambia', '221': 'Senegal', '222': 'Mauritania', '223': 'Mali',
+    '224': 'Guinea', '225': 'Ivory Coast', '226': 'Burkina Faso', '227': 'Niger', '228': 'Togo',
+    '229': 'Benin', '230': 'Mauritius', '231': 'Liberia', '232': 'Sierra Leone', '233': 'Ghana',
+    '234': 'Nigeria', '235': 'Chad', '236': 'Central African Republic', '237': 'Cameroon', '238': 'Cape Verde',
+    '239': 'Sao Tome and Principe', '240': 'Equatorial Guinea', '241': 'Gabon', '242': 'Congo', '243': 'DR Congo',
+    '244': 'Angola', '245': 'Guinea-Bissau', '248': 'Seychelles', '249': 'Sudan', '250': 'Rwanda',
+    '251': 'Ethiopia', '252': 'Somalia', '253': 'Djibouti', '254': 'Kenya', '255': 'Tanzania',
+    '256': 'Uganda', '257': 'Burundi', '258': 'Mozambique', '260': 'Zambia', '261': 'Madagascar',
+    '262': 'Reunion', '263': 'Zimbabwe', '264': 'Namibia', '265': 'Malawi', '266': 'Lesotho',
+    '267': 'Botswana', '268': 'Eswatini', '269': 'Comoros', '290': 'Saint Helena', '291': 'Eritrea',
+    '297': 'Aruba', '298': 'Faroe Islands', '299': 'Greenland', '350': 'Gibraltar', '351': 'Portugal',
+    '352': 'Luxembourg', '353': 'Ireland', '354': 'Iceland', '355': 'Albania', '356': 'Malta',
+    '357': 'Cyprus', '358': 'Finland', '359': 'Bulgaria', '370': 'Lithuania', '371': 'Latvia',
+    '372': 'Estonia', '373': 'Moldova', '374': 'Armenia', '375': 'Belarus', '376': 'Andorra',
+    '377': 'Monaco', '378': 'San Marino', '380': 'Ukraine', '381': 'Serbia', '382': 'Montenegro',
+    '383': 'Kosovo', '385': 'Croatia', '386': 'Slovenia', '387': 'Bosnia and Herzegovina', '389': 'North Macedonia',
+    '420': 'Czech Republic', '421': 'Slovakia', '423': 'Liechtenstein', '501': 'Belize', '502': 'Guatemala',
+    '503': 'El Salvador', '504': 'Honduras', '505': 'Nicaragua', '506': 'Costa Rica', '507': 'Panama',
+    '509': 'Haiti', '591': 'Bolivia', '592': 'Guyana', '593': 'Ecuador', '595': 'Paraguay',
+    '597': 'Suriname', '598': 'Uruguay', '673': 'Brunei', '674': 'Nauru', '675': 'Papua New Guinea',
+    '676': 'Tonga', '677': 'Solomon Islands', '678': 'Vanuatu', '679': 'Fiji', '680': 'Palau',
+    '685': 'Samoa', '850': 'North Korea', '852': 'Hong Kong', '853': 'Macau', '855': 'Cambodia',
+    '856': 'Laos', '880': 'Bangladesh', '886': 'Taiwan', '960': 'Maldives', '961': 'Lebanon',
+    '962': 'Jordan', '963': 'Syria', '964': 'Iraq', '965': 'Kuwait', '966': 'Saudi Arabia',
+    '967': 'Yemen', '968': 'Oman', '970': 'Palestine', '971': 'UAE', '972': 'Israel',
+    '973': 'Bahrain', '974': 'Qatar', '975': 'Bhutan', '976': 'Mongolia', '977': 'Nepal',
+    '992': 'Tajikistan', '993': 'Turkmenistan', '994': 'Azerbaijan', '995': 'Georgia', '996': 'Kyrgyzstan',
+    '998': 'Uzbekistan',
+    // Nanp specific sub-codes
+    '1242': 'Bahamas', '1246': 'Barbados', '1264': 'Anguilla', '1268': 'Antigua and Barbuda', 
+    '1284': 'British Virgin Islands', '1340': 'US Virgin Islands', '1345': 'Cayman Islands', 
+    '1441': 'Bermuda', '1473': 'Grenada', '1649': 'Turks and Caicos Islands', 
+    '1664': 'Montserrat', '1670': 'Northern Mariana Islands', '1671': 'Guam', 
+    '1684': 'American Samoa', '1721': 'Sint Maarten', '1758': 'Saint Lucia', 
+    '1767': 'Dominica', '1784': 'Saint Vincent and the Grenadines', '1809': 'Dominican Republic', 
+    '1829': 'Dominican Republic', '1849': 'Dominican Republic', '1868': 'Trinidad and Tobago', 
+    '1869': 'Saint Kitts and Nevis', '1876': 'Jamaica'
+};
+
+const countryCodes = Object.keys(countryDataMap).sort((a, b) => b.length - a.length);
+
+function normalizeWithCountry(rawNumber) {
     if (!rawNumber) return null;
     let num = rawNumber.toString().replace(/[^0-9]/g, '');
 
     if (num.length < 7 || num.length > 16) return null;
 
-    // FIX: Convert international 234 to local 0
+    // Handle Nigeria specifically (234 prefix)
     if (num.startsWith('234')) {
-        return '0' + num.substring(3);
+        return { num: '0' + num.substring(3), name: 'Nigeria', code: '234' };
     }
     
-    // FIX: Handle local 10/11 digit Nigerian numbers
+    // Handle local 10/11 digit Nigerian numbers
     if (num.length >= 10 && num.length <= 11) {
         if (num.length === 11 && num.startsWith('0')) {
-            return num;
+            return { num: num, name: 'Nigeria', code: '234' };
         }
         if (num.length === 10 && !num.startsWith('0')) {
-            return '0' + num;
+            return { num: '0' + num, name: 'Nigeria', code: '234' };
         }
     }
 
@@ -64,12 +106,17 @@ function normalize(rawNumber) {
     for (const code of countryCodes) {
         if (num.startsWith(code)) {
             const stripped = num.substring(code.length);
-            return (code === '1') ? stripped : '0' + stripped;
+            const formatted = (code === '1') ? stripped : '0' + stripped;
+            return { 
+                num: formatted, 
+                name: countryDataMap[code] || 'International', 
+                code: code 
+            };
         }
     }
     
     if (num.length >= 7) {
-         return num;
+         return { num: num, name: 'Local/Unknown', code: 'N/A' };
     }
     
     return null;
@@ -497,7 +544,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
      // --- /sv Command: Smart Filter (Any Country + DB Format Fix) ---
-    bot.onText(/\/sv/, async (msg) => {
+    bot.onText(/\/txt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const userId = msg.chat.id.toString();
         // Allow access for both ADMIN and SUBADMINS
@@ -675,12 +722,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
         // --- /xl Command: Excel Smart Filter (Admin & Subadmin) ---
+        // --- /xl Command: Excel Smart Filter (Admin & Subadmin) ---
     bot.onText(/\/xl/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
-        
-        // CHECK: Allow both Main Admin and Subadmins
         const isUserAdmin = (userId === ADMIN_ID);
         const isSubAdmin = SUBADMIN_IDS.includes(userId);
 
@@ -691,13 +737,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Reading Excel file and comparing...');
+            bot.sendMessage(chatId, '[PROCESSING] Reading Excel file...');
             
             const connectedSet = new Set();
             Object.values(shortIdMap).forEach(session => {
-                // Ensure this matches the name of your normalization function (normalize or normalizeNumber)
-                const norm = normalize(session.phone); 
-                if (norm) connectedSet.add(norm);
+                const norm = normalizeWithCountry(session.phone);
+                if (norm) connectedSet.add(norm.num);
             });
 
             const fileId = msg.reply_to_message.document.file_id;
@@ -706,25 +751,32 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const buffer = await response.buffer();
 
             const workbook = XLSX.read(buffer, { type: 'buffer' });
-            const sheetName = workbook.SheetNames[0];
-            const sheet = workbook.Sheets[sheetName];
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
             const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }); 
 
             const newNumbers = new Set();
             let skippedCount = 0;
             let totalChecked = 0;
+            let detectedCountry = "Unknown";
+            let detectedCode = "N/A";
 
             data.forEach(row => {
                 if (!Array.isArray(row)) return;
                 row.forEach(cell => {
                     if (!cell) return;
                     totalChecked++;
-                    const normalized = normalize(cell.toString());
-                    if (normalized) {
-                        if (connectedSet.has(normalized)) {
+                    const result = normalizeWithCountry(cell.toString());
+                    if (result && result.num) {
+                        // Capture country info from the first valid number found
+                        if (detectedCountry === "Unknown" && result.name !== "Unknown") {
+                            detectedCountry = result.name;
+                            detectedCode = result.code;
+                        }
+
+                        if (connectedSet.has(result.num)) {
                             skippedCount++;
                         } else {
-                            newNumbers.add(normalized);
+                            newNumbers.add(result.num);
                         }
                     }
                 });
@@ -738,7 +790,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             }
 
             const batchSize = 5;
-            bot.sendMessage(chatId, '[FILTER REPORT]\nCells Checked: ' + totalChecked + '\nAlready Connected: ' + skippedCount + '\nNew Numbers: ' + totalNew + '\n\n[SENDING] Batches...');
+            const totalBatches = Math.ceil(totalNew / batchSize);
+
+            bot.sendMessage(chatId, 
+                '[FILTER REPORT]\n' +
+                'Country: ' + detectedCountry + ' (+' + detectedCode + ')\n' +
+                'Input Found: ' + totalChecked + '\n' +
+                'Already Connected: ' + skippedCount + '\n' +
+                'New Numbers: ' + totalNew + '\n\n' +
+                '[SENDING] ' + totalBatches + ' batches...'
+            );
 
             for (let i = 0; i < totalNew; i += batchSize) {
                 const chunk = uniqueList.slice(i, i + batchSize);

@@ -1397,53 +1397,77 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
-    // --- /tcheck : Identifies Active, Temporarily Flagged, and Dead leads (Admin & Subadmin) ---
+        // --- /tcheck : Identifies Active, Temporarily Flagged, and Dead leads (Admin & Subadmin) ---
     bot.onText(/\/tcheck/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
+        
+        // Authorization check for Admin and Subadmins
         const isUserAdmin = (userId === ADMIN_ID);
         const isSubAdmin = SUBADMIN_IDS.includes(userId);
-
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(chatId, '[ERROR] Reply to a file with /tcheck');
         }
 
+        // Use the first available bot for checking
         const activeIds = Object.keys(shortIdMap).filter(id => clients[shortIdMap[id].folder]);
         if (activeIds.length === 0) return bot.sendMessage(chatId, '[ERROR] No active bots available.');
         
         const sock = clients[shortIdMap[activeIds[0]].folder];
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Deep scanning for temporary bans and restrictions...');
+            bot.sendMessage(chatId, '[PROCESSING] Deep scanning file for status and temporary bans...');
             
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
-            const text = await response.text();
-            const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+            const fileName = msg.reply_to_message.document.file_name || '';
             
+            let rawNumbers = [];
+
+            // 1. Handle File Reading (TXT or XLSX)
+            if (fileName.endsWith('.xlsx')) {
+                const arrayBuffer = await response.arrayBuffer();
+                const buffer = Buffer.from(arrayBuffer);
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                data.forEach(row => {
+                    if (Array.isArray(row)) {
+                        row.forEach(cell => { if (cell) rawNumbers.push(cell.toString().trim()); });
+                    }
+                });
+            } else {
+                const text = await response.text();
+                rawNumbers = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+            }
+
             const activeList = [];
-            const flaggedList = []; // Potential Temporary Ban / Restricted
+            const flaggedList = []; // Restricted/Temporary Ban
             const deadList = [];
             let processed = 0;
 
-            for (const line of lines) {
-                const res = normalizeWithCountry(line.trim());
+            // 2. Deep Audit Loop
+            for (const numStr of rawNumbers) {
+                const res = normalizeWithCountry(numStr);
                 if (!res || !res.num) continue;
 
+                const jid = res.num.includes('@') ? res.num : `${res.num}@s.whatsapp.net`;
+
                 try {
-                    const [exists] = await sock.onWhatsApp(res.num);
+                    const [waCheck] = await sock.onWhatsApp(jid);
                     
-                    if (exists && exists.exists) {
+                    if (waCheck && waCheck.exists) {
                         try {
-                            // Try to fetch status to check for restrictions
-                            await sock.fetchStatus(res.num);
+                            // Logic: Try to fetch status. If account is flagged/temp-ban, 
+                            // metadata fetching usually throws a 401/403 error.
+                            await sock.fetchStatus(jid);
                             activeList.push(res.num);
                         } catch (err) {
-                            // If it exists but we can't see status, it is often temporarily restricted
+                            // Exists but metadata is restricted = Flagged
                             flaggedList.push(res.num);
                         }
                     } else {
@@ -1455,31 +1479,39 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
                 processed++;
                 if (processed % 20 === 0) {
-                    bot.sendMessage(chatId, '[PROGRESS] Analyzed ' + processed + '/' + lines.length).catch(() => {});
+                    bot.sendMessage(chatId, '[PROGRESS] Checked ' + processed + '/' + rawNumbers.length).catch(() => {});
                 }
                 
-                // 1.5s delay to keep the checking bot safe
+                // 1.5s delay to prevent the checking bot from being banned
                 await delay(1500); 
             }
 
-            bot.sendMessage(chatId, '[T-CHECK COMPLETE] Categorizing results...');
+            bot.sendMessage(chatId, '[T-CHECK COMPLETE] Sending categorized results...');
 
+            // 3. Send Files (FIXED: Added filename and contentType to fourth argument)
+            
             if (activeList.length > 0) {
-                await bot.sendDocument(chatId, Buffer.from(activeList.join('\n')), {
-                    caption: `[STATUS: ACTIVE]\nTotal: ${activeList.length}\nSafe to message.`
-                }, { filename: 'active_leads.txt' });
+                const buffer = Buffer.from(activeList.join('\n'), 'utf-8');
+                await bot.sendDocument(chatId, buffer, 
+                    { caption: '[STATUS: ACTIVE]\nTotal: ' + activeList.length + '\nSafe leads.' }, 
+                    { filename: 'active_leads.txt', contentType: 'text/plain' }
+                );
             }
 
             if (flaggedList.length > 0) {
-                await bot.sendDocument(chatId, Buffer.from(flaggedList.join('\n')), {
-                    caption: `[STATUS: FLAGGED/TEMP-BAN]\nTotal: ${flaggedList.length}\nThese accounts exist but are restricted or private.`
-                }, { filename: 'flagged_leads.txt' });
+                const buffer = Buffer.from(flaggedList.join('\n'), 'utf-8');
+                await bot.sendDocument(chatId, buffer, 
+                    { caption: '[STATUS: FLAGGED]\nTotal: ' + flaggedList.length + '\nLikely temporary ban or restriction.' }, 
+                    { filename: 'flagged_leads.txt', contentType: 'text/plain' }
+                );
             }
 
             if (deadList.length > 0) {
-                await bot.sendDocument(chatId, Buffer.from(deadList.join('\n')), {
-                    caption: `[STATUS: DEAD/PERM-BAN]\nTotal: ${deadList.length}\nNot registered or permanently banned.`
-                }, { filename: 'dead_leads.txt' });
+                const buffer = Buffer.from(deadList.join('\n'), 'utf-8');
+                await bot.sendDocument(chatId, buffer, 
+                    { caption: '[STATUS: DEAD]\nTotal: ' + deadList.length + '\nNot on WhatsApp.' }, 
+                    { filename: 'dead_leads.txt', contentType: 'text/plain' }
+                );
             }
 
         } catch (e) {

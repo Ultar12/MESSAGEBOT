@@ -1269,6 +1269,51 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
 
+    // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
+    bot.onText(/\/convert/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /convert');
+        }
+
+        try {
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const fileName = msg.reply_to_message.document.file_name || '';
+
+            if (fileName.endsWith('.xlsx')) {
+                // Convert Excel to Text
+                bot.sendMessage(chatId, '[SYSTEM] Converting XLSX to TXT...');
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                let textResult = [];
+                data.forEach(row => row.forEach(cell => { if(cell) textResult.push(cell.toString()); }));
+                
+                await bot.sendDocument(chatId, Buffer.from(textResult.join('\n')), { caption: '[CONVERT] XLSX to TXT complete' }, { filename: 'converted.txt' });
+            } else {
+                // Convert Text to Excel
+                bot.sendMessage(chatId, '[SYSTEM] Converting TXT to XLSX...');
+                const text = await response.text();
+                const lines = text.split(/\r?\n/).filter(l => l.trim()).map(l => [l.trim()]);
+                
+                const worksheet = XLSX.utils.aoa_to_sheet(lines);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Numbers");
+                const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+                
+                await bot.sendDocument(chatId, buffer, { caption: '[CONVERT] TXT to XLSX complete' }, { filename: 'converted.xlsx' });
+            }
+        } catch (e) {
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+        }
+    });
 
 
     // 1. /set_react [group link] [emoji1] [emoji2]...

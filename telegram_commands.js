@@ -1628,6 +1628,98 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+        // --- /sort : Group numbers by country and send as messages (Admin & Subadmin) ---
+    bot.onText(/\/sort/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // Authorization check
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sort');
+        }
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Sorting numbers and preparing messages...');
+            
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const fileName = msg.reply_to_message.document.file_name || '';
+            
+            let rawNumbers = [];
+
+            // Handle Excel or Text/VCF
+            if (fileName.endsWith('.xlsx')) {
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                data.forEach(row => {
+                    if (Array.isArray(row)) {
+                        row.forEach(cell => { if (cell) rawNumbers.push(cell.toString()); });
+                    }
+                });
+            } else {
+                const text = await response.text();
+                rawNumbers = text.split(/\r?\n/);
+            }
+
+            const countryGroups = {}; // { 'Nigeria': { code: '234', nums: Set() } }
+
+            rawNumbers.forEach(line => {
+                const result = normalizeWithCountry(line.trim());
+                if (result && result.num) {
+                    const cName = result.name || 'Unknown';
+                    if (!countryGroups[cName]) {
+                        countryGroups[cName] = { code: result.code, nums: new Set() };
+                    }
+                    countryGroups[cName].nums.add(result.num);
+                }
+            });
+
+            const countriesFound = Object.keys(countryGroups);
+            if (countriesFound.length === 0) return bot.sendMessage(chatId, '[DONE] No valid numbers found.');
+
+            bot.sendMessage(chatId, '[INFO] Found ' + countriesFound.length + ' countries. Sending lists...');
+
+            for (const country of countriesFound) {
+                const group = countryGroups[country];
+                const uniqueList = Array.from(group.nums);
+                const batchSize = 5;
+                const totalBatches = Math.ceil(uniqueList.length / batchSize);
+
+                // Send Country Header
+                await bot.sendMessage(chatId, 
+                    '[COUNTRY: ' + country.toUpperCase() + ']\n' +
+                    'Code: +' + group.code + '\n' +
+                    'Total Unique: ' + uniqueList.length + '\n' +
+                    'Batches: ' + totalBatches,
+                    { parse_mode: 'Markdown' }
+                );
+
+                // Send Numbers in Batches
+                for (let i = 0; i < uniqueList.length; i += batchSize) {
+                    const chunk = uniqueList.slice(i, i + batchSize);
+                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
+                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                    await delay(1200); // 1.2s delay to prevent flooding
+                }
+                
+                await delay(2000); // Extra delay between different countries
+            }
+
+            bot.sendMessage(chatId, '[DONE] Sorting and sending complete.');
+
+        } catch (e) {
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+        }
+    });
+
     // --- /scrape command: Join group link and extract members as VCF ---
     bot.onText(/\/scrape\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);

@@ -1268,6 +1268,106 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         return { error: 'Failed to fetch group info after trying ' + activeFolders.length + ' bots: ' + errorMessage + '.' };
     }
 
+        // --- /search [number] : Searches for a number in a replied file (Admin & Subadmin) ---
+    bot.onText(/\/search\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // Authorization check
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        const inputNumber = match[1].trim();
+
+        // Check if replying to a document
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /search [number]');
+        }
+
+        try {
+            // Normalize the search target first
+            const searchResult = normalizeWithCountry(inputNumber);
+            if (!searchResult || !searchResult.num) {
+                return bot.sendMessage(chatId, '[ERROR] Invalid search number provided.');
+            }
+            const targetNum = searchResult.num;
+
+            bot.sendMessage(chatId, '[PROCESSING] Searching for ' + targetNum + ' in file...');
+            
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const fileName = msg.reply_to_message.document.file_name || '';
+            
+            let found = false;
+            let totalChecked = 0;
+            let matchDetails = "";
+
+            if (fileName.endsWith('.xlsx')) {
+                // Parse Excel
+                const arrayBuffer = await response.arrayBuffer();
+                const buffer = Buffer.from(arrayBuffer);
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+                for (let r = 0; r < data.length; r++) {
+                    const row = data[r];
+                    if (!Array.isArray(row)) continue;
+                    for (let c = 0; c < row.length; c++) {
+                        const cell = row[c];
+                        if (!cell) continue;
+                        totalChecked++;
+                        const check = normalizeWithCountry(cell.toString().trim());
+                        if (check && check.num === targetNum) {
+                            found = true;
+                            matchDetails = 'Found in Excel at Row: ' + (r + 1) + ', Column: ' + (c + 1);
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+            } else {
+                // Parse Text/VCF
+                const text = await response.text();
+                const lines = text.split(/\r?\n/);
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (!line) continue;
+                    totalChecked++;
+                    const check = normalizeWithCountry(line);
+                    if (check && check.num === targetNum) {
+                        found = true;
+                        matchDetails = 'Found in Text file at Line: ' + (i + 1);
+                        break;
+                    }
+                }
+            }
+
+            if (found) {
+                bot.sendMessage(chatId, 
+                    '[SEARCH RESULT: FOUND]\n' +
+                    'Target: ' + targetNum + '\n' +
+                    'Country: ' + searchResult.name + '\n' +
+                    'Location: ' + matchDetails + '\n' +
+                    'Total cells/lines checked: ' + totalChecked
+                );
+            } else {
+                bot.sendMessage(chatId, 
+                    '[SEARCH RESULT: NOT FOUND]\n' +
+                    'Target: ' + targetNum + '\n' +
+                    'Status: Number does not exist in this file.\n' +
+                    'Total cells/lines checked: ' + totalChecked
+                );
+            }
+
+        } catch (e) {
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+        }
+    });
+
 
     // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
     bot.onText(/\/convert/, async (msg) => {

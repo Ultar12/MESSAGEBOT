@@ -1268,45 +1268,59 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         return { error: 'Failed to fetch group info after trying ' + activeFolders.length + ' bots: ' + errorMessage + '.' };
     }
 
-        // --- /search [number] : Searches for a number in a replied file (Admin & Subadmin) ---
+    // --- /search [number] : Searches for a number or pattern (e.g. 49XXXXXXXX82) in a file ---
     bot.onText(/\/search\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
-        // Authorization check
         const isUserAdmin = (userId === ADMIN_ID);
         const isSubAdmin = SUBADMIN_IDS.includes(userId);
         if (!isUserAdmin && !isSubAdmin) return;
 
-        const inputNumber = match[1].trim();
+        let inputNumber = match[1].trim();
 
-        // Check if replying to a document
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(chatId, '[ERROR] Reply to a file with /search [number]');
         }
 
         try {
-            // Normalize the search target first
-            const searchResult = normalizeWithCountry(inputNumber);
-            if (!searchResult || !searchResult.num) {
-                return bot.sendMessage(chatId, '[ERROR] Invalid search number provided.');
-            }
-            const targetNum = searchResult.num;
+            // Support for wildcards: replace mathematical bold '𝗫' with standard 'X'
+            // and remove any other non-digit/non-X characters
+            const cleanInput = inputNumber.replace(/𝗫/g, 'X').replace(/[^\dX]/gi, '');
+            
+            // Create a regex pattern: 'X' becomes '\d' (any digit)
+            const regexSource = cleanInput.replace(/X/gi, '\\d');
+            const searchRegex = new RegExp('^' + regexSource + '$');
 
-            bot.sendMessage(chatId, '[PROCESSING] Searching for ' + targetNum + ' in file...');
+            bot.sendMessage(chatId, '[PROCESSING] Searching for pattern ' + cleanInput + ' in file...');
             
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const fileName = msg.reply_to_message.document.file_name || '';
             
-            let found = false;
+            let foundCount = 0;
             let totalChecked = 0;
-            let matchDetails = "";
+            let matches = [];
+
+            const processLine = (content, locationLabel) => {
+                totalChecked++;
+                const check = normalizeWithCountry(content.toString().trim());
+                if (check && check.num) {
+                    // Test the normalized number against the pattern
+                    if (searchRegex.test(check.num)) {
+                        foundCount++;
+                        if (matches.length < 5) {
+                            matches.push(check.num + ' (' + locationLabel + ')');
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            };
 
             if (fileName.endsWith('.xlsx')) {
-                // Parse Excel
                 const arrayBuffer = await response.arrayBuffer();
                 const buffer = Buffer.from(arrayBuffer);
                 const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -1317,49 +1331,36 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     const row = data[r];
                     if (!Array.isArray(row)) continue;
                     for (let c = 0; c < row.length; c++) {
-                        const cell = row[c];
-                        if (!cell) continue;
-                        totalChecked++;
-                        const check = normalizeWithCountry(cell.toString().trim());
-                        if (check && check.num === targetNum) {
-                            found = true;
-                            matchDetails = 'Found in Excel at Row: ' + (r + 1) + ', Column: ' + (c + 1);
-                            break;
+                        if (row[c]) {
+                            processLine(row[c], 'Row: ' + (r + 1) + ', Col: ' + (c + 1));
                         }
                     }
-                    if (found) break;
                 }
             } else {
-                // Parse Text/VCF
                 const text = await response.text();
                 const lines = text.split(/\r?\n/);
                 for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i].trim();
-                    if (!line) continue;
-                    totalChecked++;
-                    const check = normalizeWithCountry(line);
-                    if (check && check.num === targetNum) {
-                        found = true;
-                        matchDetails = 'Found in Text file at Line: ' + (i + 1);
-                        break;
+                    if (lines[i].trim()) {
+                        processLine(lines[i], 'Line: ' + (i + 1));
                     }
                 }
             }
 
-            if (found) {
-                bot.sendMessage(chatId, 
-                    '[SEARCH RESULT: FOUND]\n' +
-                    'Target: ' + targetNum + '\n' +
-                    'Country: ' + searchResult.name + '\n' +
-                    'Location: ' + matchDetails + '\n' +
-                    'Total cells/lines checked: ' + totalChecked
-                );
+            if (foundCount > 0) {
+                let report = '[SEARCH RESULT: FOUND]\n' +
+                             'Pattern: ' + cleanInput + '\n' +
+                             'Matches Found: ' + foundCount + '\n\n' +
+                             'Samples:\n' + matches.join('\n');
+                
+                if (foundCount > 5) report += '\n...and ' + (foundCount - 5) + ' more';
+                
+                bot.sendMessage(chatId, report + '\n\nTotal checked: ' + totalChecked);
             } else {
                 bot.sendMessage(chatId, 
                     '[SEARCH RESULT: NOT FOUND]\n' +
-                    'Target: ' + targetNum + '\n' +
-                    'Status: Number does not exist in this file.\n' +
-                    'Total cells/lines checked: ' + totalChecked
+                    'Pattern: ' + cleanInput + '\n' +
+                    'Status: No matches found.\n' +
+                    'Total checked: ' + totalChecked
                 );
             }
 
@@ -1367,7 +1368,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
-
+    
 
     // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
     bot.onText(/\/convert/, async (msg) => {

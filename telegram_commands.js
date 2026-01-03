@@ -1894,6 +1894,39 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+        const alarmTimers = {}; // To handle the 15-minute auto-exit
+
+    // --- /al : Enters Alarm Mode for scheduled number reminders (Admin & Subadmin) ---
+    bot.onText(/\/al/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        userState[chatId] = 'WAITING_ALARM_DATA';
+        
+        bot.sendMessage(chatId, 
+            '[ALARM MODE: ACTIVE]\n\n' +
+            'Send numbers followed by hours to schedule a reminder.\n' +
+            'Example: 237620883595 12\n\n' +
+            'The bot will send the number back to you after the duration.\n' +
+            'Mode will exit automatically after 15 minutes of inactivity.'
+        );
+
+        // Set the 15-minute auto-exit timer
+        if (alarmTimers[chatId]) clearTimeout(alarmTimers[chatId]);
+        alarmTimers[chatId] = setTimeout(() => {
+            if (userState[chatId] === 'WAITING_ALARM_DATA') {
+                userState[chatId] = null;
+                bot.sendMessage(chatId, '[ALARM MODE: EXITED]\nReason: Inactivity for 15 minutes.');
+            }
+        }, 15 * 60 * 1000);
+    });
+
+
         // --- /sort : Group numbers by country and send as messages (Admin & Subadmin) ---
     bot.onText(/\/sort/, async (msg) => {
         deleteUserCommand(bot, msg);

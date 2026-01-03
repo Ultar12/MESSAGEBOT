@@ -22,26 +22,35 @@ const stringSession = new StringSession(process.env.TELEGRAM_SESSION || "");
 const userBot = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
 
 // Initialize UserBot (Call this once in your index.js or startup)
-export async function initUserBot() {
+const userBot = new TelegramClient(stringSession, apiId, apiHash, { 
+    connectionRetries: 10, // Increased retries for stability
+    useWSS: true // Force secure sockets for Heroku
+});
+
+// 🔄 Helper function to guarantee connection before any action
+async function ensureConnected() {
+    if (!userBot.connected) {
+        console.log("[USERBOT] 🔌 Reconnecting...");
+        await userBot.connect();
+    }
+    // Double check authorization status
     try {
-        console.log("[USERBOT] Establishing connection...");
-        // Explicitly connect first
-        await userBot.connect(); 
-        
-        // Then start (uses the session string)
-        await userBot.start({
-            phoneNumber: async () => "", 
-            password: async () => "",
-            phoneCode: async () => "",
-            onError: (err) => console.log("[USERBOT ERROR]", err),
-        });
-        
-        console.log("[USERBOT] Successfully connected and authorized.");
+        await userBot.getMe(); 
     } catch (e) {
-        console.error("[USERBOT INIT FAIL]", e.message);
+        console.log("[USERBOT] 🔑 Session might be invalid or disconnected. Re-authorizing...");
+        await userBot.connect();
     }
 }
 
+export async function initUserBot() {
+    try {
+        console.log("[USERBOT] 🚀 Starting initialization...");
+        await userBot.connect();
+        console.log("[USERBOT] ✅ Connection established.");
+    } catch (e) {
+        console.error("[USERBOT INIT FAIL] ❌", e.message);
+    }
+}
 
 
 const ADMIN_ID = process.env.ADMIN_ID;
@@ -1039,30 +1048,35 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-
-
-    // --- /getnum [count] : Automation for @NokosxBot ---
-    bot.onText(/\/getnum\s+(\d+)/, async (msg, match) => {
+       bot.onText(/\/getnum\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
         if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-        const count = parseInt(match[1]);
-        if (count > 20) return bot.sendMessage(chatId, '[ERROR] Maximum 20 numbers per request.');
+        // 🛡️ Ensure we are connected BEFORE doing anything
+        try {
+            await ensureConnected();
+        } catch (err) {
+            return bot.sendMessage(chatId, "❌ [ERROR] UserBot failed to connect: " + err.message);
+        }
 
-        bot.sendMessage(chatId, `[SYSTEM] UserBot starting task: Fetching ${count} numbers from @NokosxBot...`);
+        const count = parseInt(match[1]);
+        if (count > 20) return bot.sendMessage(chatId, '❌ [ERROR] Max 20 numbers.');
+
+        bot.sendMessage(chatId, `🤖 [SYSTEM] Fetching ${count} numbers...`);
 
         const targetBot = "NokosxBot";
 
         try {
             for (let i = 0; i < count; i++) {
-                // 1. Send /start to the bot
-                await userBot.sendMessage(targetBot, { message: "/start" });
-                await delay(2500);
+                // Ensure connection stays alive for each loop iteration
+                await ensureConnected();
 
-                // 2. Get last message and look for "Change Number"
+                await userBot.sendMessage(targetBot, { message: "/start" });
+                await delay(3000);
+
                 const messages = await userBot.getMessages(targetBot, { limit: 1 });
                 const lastMsg = messages[0];
 
@@ -1075,20 +1089,17 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     });
 
                     if (btnToClick) {
-                        // 3. Click the button
                         await lastMsg.click({ button: btnToClick });
-                        await delay(3500); // Wait for bot to generate number
+                        await delay(4000); // Slightly longer delay for server response
 
-                        // 4. Get the result
                         const resultMsgs = await userBot.getMessages(targetBot, { limit: 1 });
                         const text = resultMsgs[0].message;
 
-                        // 5. Extract number and normalize (separating country code)
                         const phoneMatch = text.match(/\d{9,15}/);
                         if (phoneMatch) {
                             const res = normalizeWithCountry(phoneMatch[0]);
                             if (res) {
-                                const output = `[FETCHED ${i + 1}/${count}]\n` +
+                                const output = `✅ [FETCHED ${i + 1}/${count}]\n` +
                                                `Country: ${res.name}\n` +
                                                `Code: \`${res.code}\`\n` +
                                                `Number: \`${res.num.startsWith('0') ? res.num.substring(1) : res.num}\`\n` +
@@ -1097,21 +1108,19 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                                 await bot.sendMessage(chatId, output, { parse_mode: 'Markdown' });
                             }
                         } else {
-                            await bot.sendMessage(chatId, `[ERROR ${i + 1}] Number not found in bot response.`);
+                            await bot.sendMessage(chatId, `❌ [ERROR ${i + 1}] Number not found in response.`);
                         }
-                    } else {
-                        await bot.sendMessage(chatId, `[ERROR ${i + 1}] Change Number button not found.`);
                     }
                 }
-                
-                if (i < count - 1) await delay(3000); // Protection against flood
+                if (i < count - 1) await delay(4000);
             }
-            bot.sendMessage(chatId, '[DONE] Automation task complete.');
+            bot.sendMessage(chatId, '🏁 [DONE] Automation task complete.');
         } catch (e) {
-            bot.sendMessage(chatId, '[USERBOT ERROR] ' + e.message);
+            console.error(e);
+            bot.sendMessage(chatId, '❌ [USERBOT ERROR] ' + e.message);
         }
     });
-
+ 
  
 
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {

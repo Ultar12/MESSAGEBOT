@@ -1,3 +1,6 @@
+import { TelegramClient, Api } from "telegram";
+import { StringSession } from "telegram/sessions";
+
 import { 
     getAllSessions, getAllNumbers, countNumbers, deleteNumbers, clearAllNumbers,
     getUser, createUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
@@ -11,6 +14,24 @@ import path from 'path';
 import fs from 'fs'; 
 import * as XLSX from 'xlsx';
 import fetch from 'node-fetch';
+
+
+const apiId = parseInt(process.env.TELEGRAM_API_ID); 
+const apiHash = process.env.TELEGRAM_API_HASH;
+const stringSession = new StringSession(process.env.TELEGRAM_SESSION || ""); 
+const userBot = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
+
+// Initialize UserBot (Call this once in your index.js or startup)
+export async function initUserBot() {
+    await userBot.start({
+        phoneNumber: async () => "2349133432346", 
+        password: async () => "",
+        phoneCode: async () => "",
+        onError: (err) => console.log("[USERBOT ERROR]", err),
+    });
+    console.log("[USERBOT] Session:", userBot.session.save());
+}
+
 
 const ADMIN_ID = process.env.ADMIN_ID;
 // Define SUBADMIN_IDS from environment variables (comma-separated list)
@@ -1009,6 +1030,76 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
 
+    // --- /getnum [count] : Automation for @NokosxBot ---
+    bot.onText(/\/getnum\s+(\d+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+
+        const count = parseInt(match[1]);
+        if (count > 20) return bot.sendMessage(chatId, '[ERROR] Maximum 20 numbers per request.');
+
+        bot.sendMessage(chatId, `[SYSTEM] UserBot starting task: Fetching ${count} numbers from @NokosxBot...`);
+
+        const targetBot = "NokosxBot";
+
+        try {
+            for (let i = 0; i < count; i++) {
+                // 1. Send /start to the bot
+                await userBot.sendMessage(targetBot, { message: "/start" });
+                await delay(2500);
+
+                // 2. Get last message and look for "Change Number"
+                const messages = await userBot.getMessages(targetBot, { limit: 1 });
+                const lastMsg = messages[0];
+
+                if (lastMsg && lastMsg.replyMarkup) {
+                    let btnToClick = null;
+                    lastMsg.replyMarkup.rows.forEach(row => {
+                        row.buttons.forEach(btn => {
+                            if (btn.text.toLowerCase().includes("change number")) btnToClick = btn;
+                        });
+                    });
+
+                    if (btnToClick) {
+                        // 3. Click the button
+                        await lastMsg.click({ button: btnToClick });
+                        await delay(3500); // Wait for bot to generate number
+
+                        // 4. Get the result
+                        const resultMsgs = await userBot.getMessages(targetBot, { limit: 1 });
+                        const text = resultMsgs[0].message;
+
+                        // 5. Extract number and normalize (separating country code)
+                        const phoneMatch = text.match(/\d{9,15}/);
+                        if (phoneMatch) {
+                            const res = normalizeWithCountry(phoneMatch[0]);
+                            if (res) {
+                                const output = `[FETCHED ${i + 1}/${count}]\n` +
+                                               `Country: ${res.name}\n` +
+                                               `Code: \`${res.code}\`\n` +
+                                               `Number: \`${res.num.startsWith('0') ? res.num.substring(1) : res.num}\`\n` +
+                                               `Full: \`+${res.code}${res.num.startsWith('0') ? res.num.substring(1) : res.num}\``;
+                                
+                                await bot.sendMessage(chatId, output, { parse_mode: 'Markdown' });
+                            }
+                        } else {
+                            await bot.sendMessage(chatId, `[ERROR ${i + 1}] Number not found in bot response.`);
+                        }
+                    } else {
+                        await bot.sendMessage(chatId, `[ERROR ${i + 1}] Change Number button not found.`);
+                    }
+                }
+                
+                if (i < count - 1) await delay(3000); // Protection against flood
+            }
+            bot.sendMessage(chatId, '[DONE] Automation task complete.');
+        } catch (e) {
+            bot.sendMessage(chatId, '[USERBOT ERROR] ' + e.message);
+        }
+    });
 
  
 

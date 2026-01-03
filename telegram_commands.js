@@ -19,8 +19,6 @@ import fetch from 'node-fetch';
 const apiId = parseInt(process.env.TELEGRAM_API_ID); 
 const apiHash = process.env.TELEGRAM_API_HASH;
 const stringSession = new StringSession(process.env.TELEGRAM_SESSION || ""); 
-const userBot = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
-
 // Initialize UserBot (Call this once in your index.js or startup)
 const userBot = new TelegramClient(stringSession, apiId, apiHash, { 
     connectionRetries: 10, // Increased retries for stability

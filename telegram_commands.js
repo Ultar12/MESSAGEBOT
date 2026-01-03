@@ -1894,40 +1894,36 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
-        const alarmTimers = {}; // To handle the 15-minute auto-exit
+    const alarmTimers = {}; 
 
-    // --- /al : Enters Alarm Mode for scheduled number reminders (Admin & Subadmin) ---
+    // --- /al : Enters Alarm Mode ---
     bot.onText(/\/al/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
-        const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = SUBADMIN_IDS.includes(userId);
-        if (!isUserAdmin && !isSubAdmin) return;
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
         userState[chatId] = 'WAITING_ALARM_DATA';
         
         bot.sendMessage(chatId, 
             '[ALARM MODE: ACTIVE]\n\n' +
-            'Send numbers followed by hours to schedule a reminder.\n' +
+            'Format: [number] [hours]\n' +
             'Example: 237620883595 12\n\n' +
-            'The bot will send the number back to you after the duration.\n' +
-            'Mode will exit automatically after 15 minutes of inactivity.'
+            'I will exit automatically if you are silent for 15 minutes.'
         );
 
-        // Set the 15-minute auto-exit timer
+        // Initial 15-minute auto-exit timer
         if (alarmTimers[chatId]) clearTimeout(alarmTimers[chatId]);
         alarmTimers[chatId] = setTimeout(() => {
             if (userState[chatId] === 'WAITING_ALARM_DATA') {
                 userState[chatId] = null;
-                bot.sendMessage(chatId, '[ALARM MODE: EXITED]\nReason: Inactivity for 15 minutes.');
+                bot.sendMessage(chatId, '[ALARM MODE: EXITED]\nReason: Inactivity.');
             }
         }, 15 * 60 * 1000);
     });
 
-
-        // --- /sort : Group numbers by country and send as messages (Admin & Subadmin) ---
+    
     bot.onText(/\/sort/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2597,6 +2593,63 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
                 return bot.sendMessage(chatId, '[ERROR] Wrong digits. Try again. (' + (3 - userState[chatId].attempts) + ' attempts left)');
             }
+        }
+
+
+        // CHECK: Is the user in Alarm Mode?
+        if (userState[chatId] === 'WAITING_ALARM_DATA') {
+            
+            // Reset inactivity timer on any input
+            if (alarmTimers[chatId]) {
+                clearTimeout(alarmTimers[chatId]);
+                alarmTimers[chatId] = setTimeout(() => {
+                    if (userState[chatId] === 'WAITING_ALARM_DATA') {
+                        userState[chatId] = null;
+                        bot.sendMessage(chatId, '[ALARM MODE: EXITED]\nReason: Inactivity.');
+                    }
+                }, 15 * 60 * 1000);
+            }
+
+            // HEARTBEAT CHECK: Just to see if it's still on
+            if (text.toLowerCase() === 'status') {
+                return bot.sendMessage(chatId, '[ALARM MODE] Still active. Send: [number] [hours]');
+            }
+
+            // PARSE DATA
+            const parts = text.split(/\s+/);
+            
+            // ERROR: Not enough parts
+            if (parts.length < 2) {
+                return bot.sendMessage(chatId, '[ERROR] Invalid format.\nSend: [number] [hours]\nExample: 23481234567 5');
+            }
+
+            const rawNum = parts[0];
+            const hours = parseFloat(parts[1]);
+
+            // ERROR: Invalid hours
+            if (isNaN(hours) || hours <= 0) {
+                return bot.sendMessage(chatId, '[ERROR] Duration must be a positive number of hours.');
+            }
+
+            // SUCCESS: Setup reminder
+            const normRes = normalizeWithCountry(rawNum);
+            const targetNum = normRes ? normRes.num : rawNum;
+            const ms = hours * 60 * 60 * 1000;
+
+            // Feedback 1: Immediate confirmation
+            bot.sendMessage(chatId, '[ALARM SET]\nTarget: ' + targetNum + '\nReminder in: ' + hours + ' hours');
+
+            // Feedback 2: The actual reminder when time is up
+            setTimeout(() => {
+                bot.sendMessage(chatId, 
+                    '[ALARM REACHED]\n\n' +
+                    'The duration for this number is complete:\n' +
+                    '`' + targetNum + '`',
+                    { parse_mode: 'Markdown' }
+                );
+            }, ms);
+
+            return; // Exit here so this message isn't processed as a regular command
         }
 
         // --- START OF FIX: Handle State-Dependent Input BEFORE restrictions ---

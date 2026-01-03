@@ -23,14 +23,25 @@ const userBot = new TelegramClient(stringSession, apiId, apiHash, { connectionRe
 
 // Initialize UserBot (Call this once in your index.js or startup)
 export async function initUserBot() {
-    await userBot.start({
-        phoneNumber: async () => "2349133432346", 
-        password: async () => "",
-        phoneCode: async () => "",
-        onError: (err) => console.log("[USERBOT ERROR]", err),
-    });
-    console.log("[USERBOT] Session:", userBot.session.save());
+    try {
+        console.log("[USERBOT] Establishing connection...");
+        // Explicitly connect first
+        await userBot.connect(); 
+        
+        // Then start (uses the session string)
+        await userBot.start({
+            phoneNumber: async () => "", 
+            password: async () => "",
+            phoneCode: async () => "",
+            onError: (err) => console.log("[USERBOT ERROR]", err),
+        });
+        
+        console.log("[USERBOT] Successfully connected and authorized.");
+    } catch (e) {
+        console.error("[USERBOT INIT FAIL]", e.message);
+    }
 }
+
 
 
 const ADMIN_ID = process.env.ADMIN_ID;

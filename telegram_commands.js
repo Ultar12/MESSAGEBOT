@@ -257,41 +257,6 @@ const subadminKeyboard = {
     resize_keyboard: true
 };
 
-   /**
- * OTP MONITOR
- * Background listener for NokosxBot messages.
- * Saves OTP numbers to DB and deletes the message after 15 seconds.
- */
-function setupOtpMonitor() {
-    userBot.addEventHandler(async (event) => {
-        const message = event.message;
-        if (!message || !message.peerId) return;
-        
-        const sender = await message.getSender();
-        if (sender && sender.username === "NokosxBot") {
-            const text = message.message || "";
-            
-            if (text.includes("OTP Received") || text.includes("OTP:")) {
-                const phoneMatch = text.match(/Number:\s*(\d+)/i) || text.match(/Number:\s*(\d+)/i);
-                
-                if (phoneMatch) {
-                    const otpNumber = phoneMatch[1];
-                    // Save to database so it shows in /nums
-                    await addNumbersToDb([otpNumber]); 
-
-                    // Delete after 15 seconds
-                    setTimeout(async () => {
-                        try {
-                            await userBot.deleteMessages(message.peerId, [message.id], { revoke: true });
-                        } catch (err) {
-                            // Message might already be gone
-                        }
-                    }, 15000);
-                }
-            }
-        }
-    });
-}
 
 function getKeyboard(chatId) {
     const userId = chatId.toString();
@@ -1082,8 +1047,129 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-           
 
+    /**
+ * DATABASE HELPERS (Ensure these match your db.js logic)
+ * We track 'last_otp_at' to handle the 72-hour deletion rule.
+ */
+
+async function saveOtpNumber(phoneNumber) {
+    const timestamp = Date.now();
+    // Save or update the number with the current timestamp
+    await addNumbersToDb([{
+        number: phoneNumber,
+        last_otp_at: timestamp,
+        has_otp: true
+    }]);
+}
+
+function startCleanupTask() {
+    setInterval(async () => {
+        try {
+            const all = await getAllNumbers();
+            const seventyTwoHoursAgo = Date.now() - (72 * 60 * 60 * 1000);
+            const expired = all.filter(n => n.last_otp_at < seventyTwoHoursAgo);
+            
+            if (expired.length > 0) {
+                for (const n of expired) {
+                    await deleteNumbers([n.number]); // Use your existing DB delete function
+                }
+                console.log("[CLEANUP] Deleted " + expired.length + " expired numbers.");
+            }
+        } catch (e) {
+            console.error("Cleanup Error:", e.message);
+        }
+    }, 3600000); // Every 1 hour
+}
+
+
+async function getValidOtpNumbers() {
+    const all = await getAllNumbers(); // Fetch all from DB
+    const seventyTwoHoursAgo = Date.now() - (72 * 60 * 60 * 1000);
+    
+    // Filter: Only numbers with OTP and received within the last 72 hours
+    return all.filter(n => n.has_otp === true && n.last_otp_at > seventyTwoHoursAgo);
+}
+
+/**
+ * OTP MONITOR
+ * Detects OTP, saves timestamp to DB, and deletes message after 15s.
+ */
+function setupOtpMonitor() {
+    userBot.addEventHandler(async (event) => {
+        const message = event.message;
+        if (!message || !message.peerId) return;
+        
+        try {
+            const sender = await message.getSender();
+            if (sender && sender.username === "NokosxBot") {
+                const text = message.message || "";
+                
+                if (text.includes("OTP Received") || text.includes("OTP:")) {
+                    const phoneMatch = text.match(/Number:\s*(\d+)/i);
+                    
+                    if (phoneMatch) {
+                        const otpNumber = phoneMatch[1];
+                        
+                        // Save to DB with 72hr tracking
+                        await saveOtpNumber(otpNumber);
+
+                        // Delete OTP message after 15 seconds
+                        setTimeout(async () => {
+                            try {
+                                await userBot.deleteMessages(message.peerId, [message.id], { revoke: true });
+                            } catch (err) {}
+                        }, 15000);
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Monitor Error:", e.message);
+        }
+    });
+}
+
+/**
+ * --- /nums COMMAND ---
+ * Only displays numbers that received an OTP in the last 72 hours.
+ */
+bot.onText(/\/nums/, async (msg) => {
+    deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+
+    if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+
+    try {
+        bot.sendMessage(chatId, "[SYSTEM] Fetching active OTP numbers...");
+
+        const validNumbers = await getValidOtpNumbers();
+
+        if (validNumbers.length === 0) {
+            return bot.sendMessage(chatId, "[EMPTY] No numbers have received an OTP in the last 72 hours.");
+        }
+
+        const list = validNumbers.map((n, i) => {
+            const timeLeft = Math.round((n.last_otp_at + (72 * 60 * 60 * 1000) - Date.now()) / (60 * 60 * 1000));
+            return (i + 1) + ". `" + n.number + "` (Expires in " + timeLeft + "h)";
+        }).join('\n');
+
+        // Handle Telegram message length limits
+        if (list.length > 4000) {
+            const chunks = list.match(/[\s\S]{1,4000}/g) || [];
+            for (const chunk of chunks) {
+                await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+            }
+        } else {
+            await bot.sendMessage(chatId, "[ACTIVE OTP NUMBERS]\n\n" + list, { parse_mode: 'Markdown' });
+        }
+
+    } catch (e) {
+        bot.sendMessage(chatId, "[ERROR] " + e.message);
+    }
+});
+
+    
 // --- /getnum Command ---
 bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     deleteUserCommand(bot, msg);

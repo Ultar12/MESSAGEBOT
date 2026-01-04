@@ -1048,7 +1048,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
            
                     
-    // --- /getnum [Country] [Year(Optional)] [Count] ---
+        // --- /getnum [Country] [Year(Optional)] [Count] ---
     bot.onText(/\/getnum\s+(.+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1081,52 +1081,51 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         const displayTarget = yearQuery ? `${countryQuery} ${yearQuery}` : countryQuery;
-        bot.sendMessage(chatId, `[SYSTEM] Searching specifically for: ${displayTarget}...`);
+        bot.sendMessage(chatId, `[SYSTEM] Starting task for: ${displayTarget}`);
 
         const targetBot = "NokosxBot";
         let currentBatch = [];
         let totalFetched = 0;
 
         try {
-            // 2. Clear state and get fresh menu
+            // 2. Get fresh menu
             await userBot.sendMessage(targetBot, { message: "/start" });
             await delay(4000);
 
-            // 3. STRICT BUTTON SEARCH
+            // 3. FIND EXACT BUTTON INDEX
             const messages = await userBot.getMessages(targetBot, { limit: 5 });
-            // Find the message that actually has a reply markup (the menu)
             let menuMsg = messages.find(m => m.replyMarkup && m.replyMarkup.rows.length > 0);
 
-            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] Could not find the bot menu. Try again.");
+            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] Menu not found. Try sending /start to the bot manually first.");
 
-            let targetButton = null;
-            let found = false;
+            let targetButtonIndex = -1;
+            let currentIndex = 0;
+            let buttonLabel = "";
 
+            // Calculate the flat index of the button (GramJS click(n) uses flat indexing)
             for (const row of menuMsg.replyMarkup.rows) {
                 for (const btn of row.buttons) {
                     const btnText = btn.text.toLowerCase();
-                    
-                    // STRICT CHECK: The button must contain the country name
                     const hasCountry = btnText.includes(countryQuery);
-                    // AND it must contain the year if one was specified
                     const hasYear = yearQuery ? btnText.includes(yearQuery) : true;
 
                     if (hasCountry && hasYear) {
-                        targetButton = btn;
-                        found = true;
-                        break; 
+                        targetButtonIndex = currentIndex;
+                        buttonLabel = btn.text;
+                        break;
                     }
+                    currentIndex++;
                 }
-                if (found) break;
+                if (targetButtonIndex !== -1) break;
             }
 
-            if (!targetButton) {
-                return bot.sendMessage(chatId, `[ERROR] No button found matching "${displayTarget}". Please verify the name.`);
+            if (targetButtonIndex === -1) {
+                return bot.sendMessage(chatId, `[ERROR] No button matches "${displayTarget}".`);
             }
 
-            // 4. Execute Click
-            await menuMsg.click({ button: targetButton });
-            bot.sendMessage(chatId, `[SUCCESS] Clicked button: ${targetButton.text}. Starting extraction...`);
+            // 4. Execute Click using the exact flat index
+            bot.sendMessage(chatId, `[ACTION] Clicking button index ${targetButtonIndex} (${buttonLabel})`);
+            await menuMsg.click(targetButtonIndex);
             await delay(5000); 
 
             // 5. Extraction Loop
@@ -1147,43 +1146,46 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     totalFetched++;
                 }
 
+                // Send Batch (5 per batch)
                 if (currentBatch.length === 5) {
                     await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                     currentBatch = []; 
                     await delay(1000);
                 }
 
-                // 6. Click Change Number
+                // 6. Click "Change Number" via index
                 if (i < countLimit - 1) {
-                    let changeBtn = null;
+                    let changeIndex = -1;
+                    let flatIdx = 0;
                     if (lastMsg.replyMarkup) {
                         for (const row of lastMsg.replyMarkup.rows) {
                             for (const btn of row.buttons) {
                                 if (btn.text.toLowerCase().includes("change number")) {
-                                    changeBtn = btn;
+                                    changeIndex = flatIdx;
                                     break;
                                 }
+                                flatIdx++;
                             }
-                            if (changeBtn) break;
+                            if (changeIndex !== -1) break;
                         }
                     }
 
-                    if (changeBtn) {
-                        await lastMsg.click({ button: changeBtn });
+                    if (changeIndex !== -1) {
+                        await lastMsg.click(changeIndex);
                         await delay(5000);
                     } else {
-                        // If logic breaks, stop and report
-                        bot.sendMessage(chatId, "[INFO] Change Number button disappeared. Ending session.");
+                        bot.sendMessage(chatId, "[INFO] Change button missing. Ending loop.");
                         break;
                     }
                 }
             }
 
+            // Final batch
             if (currentBatch.length > 0) {
                 await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
             }
 
-            bot.sendMessage(chatId, `[COMPLETED] Total: ${totalFetched} for ${displayTarget}.`);
+            bot.sendMessage(chatId, `[COMPLETED] Total: ${totalFetched} for ${displayTarget}`);
 
         } catch (e) {
             console.error(e);

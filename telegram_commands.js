@@ -1048,8 +1048,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
            
                     
-     // --- /getnum [Country] [Year(Optional)] [Count] ---
-    // Example: /getnum Cameroon 50  OR  /getnum Cameroon 2026 50
+    // --- /getnum [Country] [Year(Optional)] [Count] ---
     bot.onText(/\/getnum\s+(.+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1057,102 +1056,104 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-        // 1. Parse Input
-        const input = match[1].trim().split(/\s+/);
+        // 1. Precise Input Parsing
+        const inputParts = match[1].trim().split(/\s+/);
         let countryQuery, yearQuery, countLimit;
 
-        if (input.length >= 3) {
-            // Case: Cameroon 2026 50
-            countryQuery = input.slice(0, -2).join(' ').toLowerCase();
-            yearQuery = input[input.length - 2];
-            countLimit = parseInt(input[input.length - 1]);
-        } else if (input.length === 2) {
-            // Case: Cameroon 50
-            countryQuery = input[0].toLowerCase();
+        if (inputParts.length >= 3) {
+            countLimit = parseInt(inputParts[inputParts.length - 1]);
+            yearQuery = inputParts[inputParts.length - 2];
+            countryQuery = inputParts.slice(0, -2).join(' ').toLowerCase();
+        } else if (inputParts.length === 2) {
+            countLimit = parseInt(inputParts[1]);
             yearQuery = null;
-            countLimit = parseInt(input[1]);
+            countryQuery = inputParts[0].toLowerCase();
         } else {
-            return bot.sendMessage(chatId, "[ERROR] Usage: /getnum [Country] [Count] or /getnum [Country] [Year] [Count]");
+            return bot.sendMessage(chatId, "[ERROR] Format: /getnum [Country] [Count] or /getnum [Country] [Year] [Count]");
         }
 
-        if (isNaN(countLimit) || countLimit <= 0) return bot.sendMessage(chatId, "[ERROR] Please provide a valid count.");
+        if (isNaN(countLimit)) return bot.sendMessage(chatId, "[ERROR] Invalid count provided.");
 
         try {
             await ensureConnected();
         } catch (err) {
-            return bot.sendMessage(chatId, "[ERROR] UserBot disconnected: " + err.message);
+            return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
         }
 
         const displayTarget = yearQuery ? `${countryQuery} ${yearQuery}` : countryQuery;
-        bot.sendMessage(chatId, `[STARTING] Fetching ${countLimit} numbers for ${displayTarget}...`);
+        bot.sendMessage(chatId, `[SYSTEM] Searching specifically for: ${displayTarget}...`);
 
         const targetBot = "NokosxBot";
         let currentBatch = [];
         let totalFetched = 0;
 
         try {
-            // 2. Initial Start
+            // 2. Clear state and get fresh menu
             await userBot.sendMessage(targetBot, { message: "/start" });
-            await delay(3500);
+            await delay(4000);
 
-            // 3. Robust Button Search (Fixed to prevent selecting wrong country)
-            let messages = await userBot.getMessages(targetBot, { limit: 1 });
-            let lastMsg = messages[0];
+            // 3. STRICT BUTTON SEARCH
+            const messages = await userBot.getMessages(targetBot, { limit: 5 });
+            // Find the message that actually has a reply markup (the menu)
+            let menuMsg = messages.find(m => m.replyMarkup && m.replyMarkup.rows.length > 0);
+
+            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] Could not find the bot menu. Try again.");
+
             let targetButton = null;
-            let foundMatch = false;
+            let found = false;
 
-            if (lastMsg && lastMsg.replyMarkup) {
-                for (const row of lastMsg.replyMarkup.rows) {
-                    for (const btn of row.buttons) {
-                        const btnText = btn.text.toLowerCase();
-                        const matchesCountry = btnText.includes(countryQuery);
-                        const matchesYear = yearQuery ? btnText.includes(yearQuery) : true;
-                        
-                        if (matchesCountry && matchesYear) {
-                            targetButton = btn;
-                            foundMatch = true;
-                            break; // Stop at first valid match
-                        }
+            for (const row of menuMsg.replyMarkup.rows) {
+                for (const btn of row.buttons) {
+                    const btnText = btn.text.toLowerCase();
+                    
+                    // STRICT CHECK: The button must contain the country name
+                    const hasCountry = btnText.includes(countryQuery);
+                    // AND it must contain the year if one was specified
+                    const hasYear = yearQuery ? btnText.includes(yearQuery) : true;
+
+                    if (hasCountry && hasYear) {
+                        targetButton = btn;
+                        found = true;
+                        break; 
                     }
-                    if (foundMatch) break;
                 }
+                if (found) break;
             }
 
-            if (!targetButton) return bot.sendMessage(chatId, `[ERROR] Button for "${displayTarget}" not found in the menu.`);
+            if (!targetButton) {
+                return bot.sendMessage(chatId, `[ERROR] No button found matching "${displayTarget}". Please verify the name.`);
+            }
 
-            // 4. Click the matched button
-            await lastMsg.click({ button: targetButton });
-            await delay(5000); // Wait for the first number response
+            // 4. Execute Click
+            await menuMsg.click({ button: targetButton });
+            bot.sendMessage(chatId, `[SUCCESS] Clicked button: ${targetButton.text}. Starting extraction...`);
+            await delay(5000); 
 
             // 5. Extraction Loop
             for (let i = 0; i < countLimit; i++) {
                 await ensureConnected();
                 
-                messages = await userBot.getMessages(targetBot, { limit: 1 });
-                lastMsg = messages[0];
+                const responseMsgs = await userBot.getMessages(targetBot, { limit: 1 });
+                const lastMsg = responseMsgs[0];
                 const text = lastMsg.message || "";
 
-                // Extract phone digits
                 const phoneMatch = text.match(/\d{9,15}/);
                 if (phoneMatch) {
                     const rawNum = phoneMatch[0];
                     const res = normalizeWithCountry(rawNum);
-                    
-                    // Format for tap-to-copy
                     const formattedNum = res ? `${res.code}${res.num.startsWith('0') ? res.num.substring(1) : res.num}` : rawNum;
+                    
                     currentBatch.push(`\`${formattedNum}\``);
                     totalFetched++;
                 }
 
-                // Send Batch (5 per batch)
                 if (currentBatch.length === 5) {
-                    const batchMsg = `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`;
-                    await bot.sendMessage(chatId, batchMsg, { parse_mode: 'Markdown' });
+                    await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                     currentBatch = []; 
-                    await delay(1000); 
+                    await delay(1000);
                 }
 
-                // 6. Click "Change Number" for next
+                // 6. Click Change Number
                 if (i < countLimit - 1) {
                     let changeBtn = null;
                     if (lastMsg.replyMarkup) {
@@ -1169,32 +1170,24 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
                     if (changeBtn) {
                         await lastMsg.click({ button: changeBtn });
-                        await delay(5000); // Wait for generation
+                        await delay(5000);
                     } else {
-                        // Fallback: Restart if UI lost
-                        await userBot.sendMessage(targetBot, { message: "/start" });
-                        await delay(3500);
-                        messages = await userBot.getMessages(targetBot, { limit: 1 });
-                        if (messages[0].replyMarkup) {
-                             // Re-click the target country button
-                             await messages[0].click({ button: targetButton });
-                             await delay(4500);
-                        }
+                        // If logic breaks, stop and report
+                        bot.sendMessage(chatId, "[INFO] Change Number button disappeared. Ending session.");
+                        break;
                     }
                 }
             }
 
-            // 7. Send final batch
             if (currentBatch.length > 0) {
-                const finalBatchMsg = `[BATCH] Final\n\n${currentBatch.join('\n')}`;
-                await bot.sendMessage(chatId, finalBatchMsg, { parse_mode: 'Markdown' });
+                await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
             }
 
-            bot.sendMessage(chatId, `[COMPLETED] Successfully fetched ${totalFetched} numbers for ${displayTarget}.`);
+            bot.sendMessage(chatId, `[COMPLETED] Total: ${totalFetched} for ${displayTarget}.`);
 
         } catch (e) {
             console.error(e);
-            bot.sendMessage(chatId, '[USERBOT ERROR] ' + e.message);
+            bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
         }
     });
  

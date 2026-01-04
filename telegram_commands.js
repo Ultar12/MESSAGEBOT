@@ -1088,54 +1088,63 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             await userBot.sendMessage(targetBot, { message: "/start" });
             await delay(4000);
 
-            // 3. Find the Button (Improved Logic)
-let targetBtn = null;
+                    // --- 3. Find the Menu and the Button ---
+        try {
+            // Fetch latest messages to find the one with buttons
+            const messages = await userBot.getMessages(targetBot, { limit: 10 });
+            const menuMsg = messages.find(m => m.replyMarkup);
 
-// Clean queries: Remove emojis/symbols, convert to lowercase, and TRIM whitespace
-const cleanCountryQuery = countryQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim();
-const cleanYearQuery = yearQuery ? yearQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim() : null;
-
-for (const row of menuMsg.replyMarkup.rows) {
-    for (const btn of row.buttons) {
-        // Clean the button text exactly the same way
-        const cleanBtnText = btn.text.replace(/[^\w\s]/gi, '').toLowerCase().trim();
-        
-        // Split button text into parts to check for Country and Year separately
-        const btnParts = cleanBtnText.split(/\s+/); 
-
-        // Check for exact word match rather than just "includes"
-        const hasCountry = btnParts.includes(cleanCountryQuery);
-        const hasYear = cleanYearQuery ? btnParts.includes(cleanYearQuery) : true;
-
-        // If we have a year query, we MUST match both. 
-        // If no year query, we check if the button is ONLY the country 
-        // or starts with the country.
-        if (cleanYearQuery) {
-            if (hasCountry && hasYear) {
-                targetBtn = btn;
-                break;
+            if (!menuMsg) {
+                return bot.sendMessage(chatId, "[ERROR] No menu found. Check if NokosX BOT is responding.");
             }
-        } else {
-            // If user typed "Cameroon", don't accidentally pick "Cameroon 2026"
-            // unless "Cameroon" (alone) doesn't exist.
-            if (cleanBtnText === cleanCountryQuery) {
-                targetBtn = btn;
-                break;
-            }
-        }
-    }
-    if (targetBtn) break;
-}
 
+            let targetBtn = null;
+
+            // 🧽 Clean queries: Remove emojis/symbols, convert to lowercase, and TRIM
+            const cleanCountryQuery = countryQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim();
+            const cleanYearQuery = yearQuery ? yearQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim() : null;
+
+            for (const row of menuMsg.replyMarkup.rows) {
+                for (const btn of row.buttons) {
+                    // Clean the button text exactly the same way
+                    const cleanBtnText = btn.text.replace(/[^\w\s]/gi, '').toLowerCase().trim();
+                    const btnParts = cleanBtnText.split(/\s+/); 
+
+                    const hasCountry = btnParts.includes(cleanCountryQuery);
+                    const hasYear = cleanYearQuery ? btnParts.includes(cleanYearQuery) : true;
+
+                    if (cleanYearQuery) {
+                        // Must match BOTH "cameroon" and "2026"
+                        if (hasCountry && hasYear) {
+                            targetBtn = btn;
+                            break;
+                        }
+                    } else {
+                        // Must be an EXACT match for "cameroon" 
+                        // (prevents picking "cameroon 2026" or "bolivia")
+                        if (cleanBtnText === cleanCountryQuery) {
+                            targetBtn = btn;
+                            break;
+                        }
+                    }
+                }
+                if (targetBtn) break;
+            }
 
             if (!targetBtn) {
-                return bot.sendMessage(chatId, `[ERROR] Could not find button for "${countryQuery}".`);
+                return bot.sendMessage(chatId, `[ERROR] Could not find button for "${countryQuery}${yearQuery ? ' ' + yearQuery : ''}".`);
             }
 
-            // 4. Trigger the Button
+            // --- 4. Trigger the Button ---
             bot.sendMessage(chatId, `[ACTION] Selecting: ${targetBtn.text}`);
             await menuMsg.click({ button: targetBtn });
             await delay(5000);
+
+        } catch (findError) {
+            console.error("Button Logic Error:", findError);
+            return bot.sendMessage(chatId, "[ERROR] Failed while searching for country button.");
+        }
+
 
             // 5. Loop
             for (let i = 0; i < countLimit; i++) {

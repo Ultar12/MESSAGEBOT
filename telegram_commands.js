@@ -1047,20 +1047,22 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
            
-    // --- /getnum [Button Number] [Count] ---
-    // Example: /getnum 2 5
-    bot.onText(/\/getnum\s+(\d+)\s+(\d+)/i, async (msg, match) => {
+        // --- /getnum [Count] ---
+    // Usage: /getnum 50
+    // Then manually click the country in your Telegram app.
+    bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
         if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-        const buttonNumber = parseInt(match[1]); // 1-based index
-        const countLimit = parseInt(match[2]);
+        const countLimit = parseInt(match[1]);
         const targetBot = "NokosxBot";
 
-        if (buttonNumber < 1) return bot.sendMessage(chatId, "[ERROR] Button number must be 1 or higher.");
+        if (isNaN(countLimit) || countLimit <= 0) {
+            return bot.sendMessage(chatId, "[ERROR] Please provide a valid count. Example: /getnum 10");
+        }
 
         try {
             await ensureConnected();
@@ -1068,68 +1070,69 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
         }
 
-        bot.sendMessage(chatId, `[SYSTEM] Task: Clicking Button #${buttonNumber} for ${countLimit} numbers.`);
+        bot.sendMessage(chatId, `[WAITING] Please go to @NokosxBot and select your country now. The bot will start as soon as it sees the first number.`);
 
         let totalFetched = 0;
         let currentBatch = [];
+        let lastSeenMsgId = 0;
 
         try {
-            // 1. Get Fresh Menu
-            await userBot.sendMessage(targetBot, { message: "/start" });
-            await delay(4000);
-
-            const messages = await userBot.getMessages(targetBot, { limit: 5 });
-            const menuMsg = messages.find(m => m.replyMarkup && m.replyMarkup.rows.length > 0);
-
-            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] No menu found. Please send /start to NokosxBot manually.");
-
-            // 2. Click using the exact flat index (This stops it from clicking the 1st button)
-            const targetIndex = buttonNumber - 1;
-            
-            // Verify button exists and get text for confirmation
-            let flatButtons = [];
-            menuMsg.replyMarkup.rows.forEach(row => row.buttons.forEach(b => flatButtons.push(b)));
-            
-            if (targetIndex >= flatButtons.length) {
-                return bot.sendMessage(chatId, `[ERROR] Button #${buttonNumber} doesn't exist. Max: ${flatButtons.length}`);
+            // 1. Get the current last message ID to know what is "new"
+            const initialMsgs = await userBot.getMessages(targetBot, { limit: 1 });
+            if (initialMsgs.length > 0) {
+                lastSeenMsgId = initialMsgs[0].id;
             }
 
-            const btnLabel = flatButtons[targetIndex].text;
-            bot.sendMessage(chatId, `[ACTION] Clicking Index ${targetIndex} (${btnLabel})`);
+            // 2. Wait for the user to manually select a country
+            let firstMsg = null;
+            let timeout = 60; // Wait up to 60 seconds
+            while (timeout > 0) {
+                const check = await userBot.getMessages(targetBot, { limit: 1 });
+                if (check.length > 0 && check[0].id !== lastSeenMsgId) {
+                    const text = check[0].message || "";
+                    if (text.match(/\d{9,15}/)) {
+                        firstMsg = check[0];
+                        break;
+                    }
+                }
+                await delay(2000);
+                timeout--;
+            }
 
-            // CRITICAL FIX: Use the integer index directly, not the button object
-            await menuMsg.click(targetIndex);
-            await delay(5000);
+            if (!firstMsg) {
+                return bot.sendMessage(chatId, "[TIMEOUT] You didn't select a country in time. Please try the command again.");
+            }
+
+            bot.sendMessage(chatId, "[STARTED] First number detected. Automating the rest...");
 
             // 3. Extraction Loop
             for (let i = 0; i < countLimit; i++) {
                 await ensureConnected();
                 
-                const response = await userBot.getMessages(targetBot, { limit: 1 });
-                const currentMsg = response[0];
+                // If it's the very first one, we already have 'firstMsg'
+                const currentMsg = (i === 0) ? firstMsg : (await userBot.getMessages(targetBot, { limit: 1 }))[0];
                 const text = currentMsg.message || "";
 
                 const phoneMatch = text.match(/\d{9,15}/);
                 if (phoneMatch) {
                     const rawNum = phoneMatch[0];
                     
-                    // --- STRIP COUNTRY CODE ---
+                    // Normalize to strip country code
                     const normalized = normalizeWithCountry(rawNum);
-                    // Use only the local number (num) from the normalization result
                     const cleanNum = normalized ? normalized.num : rawNum;
                     
                     currentBatch.push(`\`${cleanNum}\``);
                     totalFetched++;
                 }
 
+                // Send Batch (5 per batch)
                 if (currentBatch.length === 5) {
-                    const batchHeader = `[BATCH] ${totalFetched - 4}-${totalFetched}`;
-                    await bot.sendMessage(chatId, `${batchHeader}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                    await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                     currentBatch = [];
                     await delay(1200);
                 }
 
-                // 4. Click "Change" using Index logic
+                // 4. Click "Change Number" for the next one
                 if (i < countLimit - 1) {
                     let changeIdx = -1;
                     let count = 0;
@@ -1148,14 +1151,15 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
                     if (changeIdx !== -1) {
                         await currentMsg.click(changeIdx);
-                        await delay(5500);
+                        await delay(5500); // Wait for generation
                     } else {
-                        bot.sendMessage(chatId, "[INFO] Change button missing. Task stopped.");
+                        bot.sendMessage(chatId, "[INFO] Change button missing. Ending task.");
                         break;
                     }
                 }
             }
 
+            // Final batch
             if (currentBatch.length > 0) {
                 await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
             }
@@ -1167,8 +1171,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
         }
     });
- 
-
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;

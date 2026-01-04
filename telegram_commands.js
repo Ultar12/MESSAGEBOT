@@ -1169,61 +1169,6 @@ bot.onText(/\/nums/, async (msg) => {
     }
 });
 
-    /**
- * REFINED OTP MONITOR & 15S DELETION
- * Stripped of all emojis as requested.
- */
-function setupOtpMonitor() {
-    userBot.addEventHandler(async (event) => {
-        try {
-            const message = event.message;
-            if (!message || !message.peerId) return;
-
-            const sender = await message.getSender();
-            if (sender && sender.username === "NokosxBot") {
-                const text = message.message || "";
-                
-                if (text.toLowerCase().includes("otp")) {
-                    console.log("[USERBOT] OTP detected");
-
-                    const phoneMatch = text.match(/(?:Number:|📞 Number:)\s*(\d+)/i) || text.match(/(\d{10,15})/);
-                    
-                    if (phoneMatch) {
-                        const otpNumber = phoneMatch[1];
-                        
-                        // Save to database for /nums
-                        await addNumbersToDb([{
-                            number: otpNumber,
-                            last_otp_at: Date.now(),
-                            has_otp: true
-                        }]);
-
-                        // Delete after 15 seconds
-                        setTimeout(async () => {
-                            try {
-                                await message.delete({ revoke: true });
-                            } catch (err) {}
-                        }, 15000);
-                    }
-                }
-            }
-        } catch (e) {
-            console.error("[MONITOR ERROR]", e.message);
-        }
-    });
-}
-
-export async function initUserBot() {
-    try {
-        await userBot.connect();
-        // Clean handlers before starting
-        userBot.removeEventHandler(); 
-        setupOtpMonitor();
-        console.log("[USERBOT] Active - OTP Monitor 15s deletion set.");
-    } catch (e) {
-        console.error("[USERBOT INIT FAIL]", e.message);
-    }
-}
 
 /**
  * --- /getnum [Count] ---

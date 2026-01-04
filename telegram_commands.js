@@ -1169,142 +1169,143 @@ bot.onText(/\/nums/, async (msg) => {
     }
 });
 
+    // --- /getnum [Count] ---
+    // Optimized for bots that Edit messages instead of sending new ones.
+    bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-/**
- * --- /getnum [Count] ---
- * 1. Sends /start.
- * 2. Waits for you to tap the country.
- * 3. Scans list (1-5 numbers), saves to DB, strips country code.
- * 4. Clicks "New Numbers" automatically.
- */
-bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
-    deleteUserCommand(bot, msg);
-    const chatId = msg.chat.id;
-    const userId = chatId.toString();
-    
-    if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+        const totalNeeded = parseInt(match[1]);
+        const targetBot = "NokosxBot";
 
-    const totalNeeded = parseInt(match[1]);
-    const targetBot = "NokosxBot";
-
-    try {
-        await ensureConnected();
-    } catch (err) {
-        return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
-    }
-
-    try {
-        // Step 1: Trigger menu
-        await userBot.sendMessage(targetBot, { message: "/start" });
-        bot.sendMessage(chatId, "[SYSTEM] Menu sent. Go to @NokosxBot and select your country. Automation starts on first number.");
-
-        let totalUniqueAdded = 0;
-        let currentBatch = [];
-        let firstMsgDetected = null;
-
-        // Step 2: Aggressive Wait for Selection
-        // We look for a message containing digits that is NOT an OTP message
-        let attempts = 0;
-        while (attempts < 60) {
-            const history = await userBot.getMessages(targetBot, { limit: 1 });
-            if (history.length > 0) {
-                const text = history[0].message || "";
-                // If it contains a number and it's NOT an OTP message, it's our list
-                if (text.match(/\d{9,15}/) && !text.toLowerCase().includes("otp")) {
-                    firstMsgDetected = history[0];
-                    break;
-                }
-            }
-            await delay(2000);
-            attempts++;
-        }
-
-        if (!firstMsgDetected) return bot.sendMessage(chatId, "[TIMEOUT] No country selection detected.");
-
-        bot.sendMessage(chatId, "[STARTED] Extracting unique numbers...");
-
-        // Step 3: The Main Loop
-        while (totalUniqueAdded < totalNeeded) {
+        try {
             await ensureConnected();
-            
-            const history = await userBot.getMessages(targetBot, { limit: 5 });
-            let targetMsg = history.find(m => 
-                (m.message || "").match(/\d{9,15}/) && 
-                m.replyMarkup && 
-                !m.message.toLowerCase().includes("otp")
-            );
-            
-            if (!targetMsg) {
-                await delay(3000);
-                continue; 
+        } catch (err) {
+            return bot.sendMessage(chatId, "[ERROR] UserBot connection failed.");
+        }
+
+        try {
+            // 1. Trigger the menu
+            await userBot.sendMessage(targetBot, { message: "/start" });
+            bot.sendMessage(chatId, "[SYSTEM] Menu sent. Please select your country in NokosxBot now. Automation will start as soon as numbers appear.");
+
+            let totalUniqueAdded = 0;
+            let currentBatch = [];
+            let listMsg = null;
+
+            // 2. Poll the latest message to detect the Edit/Selection
+            let waitTime = 60; 
+            while (waitTime > 0) {
+                const history = await userBot.getMessages(targetBot, { limit: 1 });
+                if (history.length > 0) {
+                    const text = history[0].message || "";
+                    // Detect if the message contains at least one phone-like number
+                    if (text.match(/\d{9,15}/) && !text.toLowerCase().includes("otp")) {
+                        listMsg = history[0];
+                        break;
+                    }
+                }
+                await delay(1500);
+                waitTime--;
             }
 
-            const text = targetMsg.message || "";
-            const allNumbers = text.match(/\d{9,15}/g); // Extract all numbers in the list
+            if (!listMsg) return bot.sendMessage(chatId, "[TIMEOUT] No number list detected. Please try again.");
 
-            if (allNumbers) {
-                for (const rawNum of allNumbers) {
-                    if (totalUniqueAdded >= totalNeeded) break;
+            bot.sendMessage(chatId, "[STARTED] Processing number list...");
 
-                    const exists = await checkNumberInDb(rawNum);
-                    if (!exists) {
-                        await addNumbersToDb([rawNum]);
-                        
-                        // Strip country code (e.g., 237)
-                        const normalized = normalizeWithCountry(rawNum);
-                        const cleanNum = normalized ? normalized.num : rawNum;
-                        
-                        currentBatch.push("`" + cleanNum + "`");
-                        totalUniqueAdded++;
+            // 3. Extraction & Auto-Refresh Loop
+            while (totalUniqueAdded < totalNeeded) {
+                await ensureConnected();
+                
+                // Get fresh state of the message (in case it was edited)
+                const history = await userBot.getMessages(targetBot, { limit: 5 });
+                const currentListMsg = history.find(m => 
+                    (m.message || "").match(/\d{9,15}/) && 
+                    m.replyMarkup && 
+                    !m.message.toLowerCase().includes("otp")
+                );
 
-                        if (currentBatch.length === 5) {
-                            await bot.sendMessage(chatId, "[BATCH] " + (totalUniqueAdded - 4) + "-" + totalUniqueAdded + "\n\n" + currentBatch.join('\n'), { parse_mode: 'Markdown' });
-                            currentBatch = [];
-                            await delay(1000);
+                if (!currentListMsg) {
+                    await delay(2500);
+                    continue;
+                }
+
+                const text = currentListMsg.message || "";
+                // Global match to get all numbers in the vertical list
+                const allNumbers = text.match(/\d{9,15}/g); 
+
+                if (allNumbers) {
+                    for (const rawNum of allNumbers) {
+                        if (totalUniqueAdded >= totalNeeded) break;
+
+                        // Check DB for duplicates
+                        const exists = await checkNumberInDb(rawNum);
+                        if (!exists) {
+                            // Save original to DB
+                            await addNumbersToDb([rawNum]);
+                            
+                            // Strip country code (e.g. 237) for your copy-paste list
+                            const normalized = normalizeWithCountry(rawNum);
+                            const cleanNum = normalized ? normalized.num : rawNum;
+                            
+                            currentBatch.push("`" + cleanNum + "`");
+                            totalUniqueAdded++;
+
+                            // Send in batches of 5
+                            if (currentBatch.length === 5) {
+                                await bot.sendMessage(chatId, "[BATCH] " + (totalUniqueAdded - 4) + "-" + totalUniqueAdded + "\n\n" + currentBatch.join('\n'), { parse_mode: 'Markdown' });
+                                currentBatch = [];
+                                await delay(1000);
+                            }
                         }
+                    }
+                }
+
+                // 4. Find and Click Refresh/Change Button
+                if (totalUniqueAdded < totalNeeded) {
+                    let btnIdx = -1;
+                    let flatCounter = 0;
+                    if (currentListMsg.replyMarkup) {
+                        for (const row of currentListMsg.replyMarkup.rows) {
+                            for (const b of row.buttons) {
+                                const btnText = b.text.toLowerCase();
+                                // Match common refresh button labels
+                                if (btnText.includes("new") || btnText.includes("change") || btnText.includes("refresh") || btnText.includes("get")) {
+                                    btnIdx = flatCounter;
+                                    break;
+                                }
+                                flatCounter++;
+                            }
+                            if (btnIdx !== -1) break;
+                        }
+                    }
+
+                    if (btnIdx !== -1) {
+                        await currentListMsg.click(btnIdx);
+                        await delay(7000); // Wait for the bot to edit the message with new numbers
+                    } else {
+                        // Fallback: Restart flow if button is missing
+                        await userBot.sendMessage(targetBot, { message: "/start" });
+                        await delay(4000);
                     }
                 }
             }
 
-            // Step 4: Click "New Numbers" or "Change"
-            if (totalUniqueAdded < totalNeeded) {
-                let btnIndex = -1;
-                let count = 0;
-                for (const row of targetMsg.replyMarkup.rows) {
-                    for (const b of row.buttons) {
-                        const bText = b.text.toLowerCase();
-                        if (bText.includes("new") || bText.includes("change") || bText.includes("refresh")) {
-                            btnIndex = count;
-                            break;
-                        }
-                        count++;
-                    }
-                    if (btnIndex !== -1) break;
-                }
-
-                if (btnIndex !== -1) {
-                    await targetMsg.click(btnIndex);
-                    await delay(6000); // Wait for the list to refresh
-                } else {
-                    // Force restart if button is lost
-                    await userBot.sendMessage(targetBot, { message: "/start" });
-                    await delay(4000);
-                }
+            // Send any remaining numbers
+            if (currentBatch.length > 0) {
+                await bot.sendMessage(chatId, "[BATCH] Final\n\n" + currentBatch.join('\n'), { parse_mode: 'Markdown' });
             }
+
+            bot.sendMessage(chatId, "[COMPLETED] Task finished. Added " + totalUniqueAdded + " unique numbers.");
+
+        } catch (e) {
+            console.error(e);
+            bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
         }
-
-        if (currentBatch.length > 0) {
-            await bot.sendMessage(chatId, "[BATCH] Final\n\n" + currentBatch.join('\n'), { parse_mode: 'Markdown' });
-        }
-
-        bot.sendMessage(chatId, "[COMPLETED] Successfully added " + totalUniqueAdded + " unique numbers.");
-
-    } catch (e) {
-        console.error(e);
-        bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
-    }
-});
-
+    });
     
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);

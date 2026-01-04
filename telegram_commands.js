@@ -1046,76 +1046,138 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
-       bot.onText(/\/getnum\s+(\d+)/, async (msg, match) => {
+           // --- 🤖 /getnum [Country] [Year(Optional)] [Count] ---
+    // Example: /getnum Cameroon 50  OR  /getnum Cameroon 2026 50
+    bot.onText(/\/getnum\s+(.+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
         if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-        // 🛡️ Ensure we are connected BEFORE doing anything
+        // 1. Parse Input
+        const input = match[1].trim().split(/\s+/);
+        let countryQuery, yearQuery, countLimit;
+
+        if (input.length >= 3) {
+            countryQuery = input.slice(0, -2).join(' ').toLowerCase();
+            yearQuery = input[input.length - 2];
+            countLimit = parseInt(input[input.length - 1]);
+        } else if (input.length === 2) {
+            countryQuery = input[0].toLowerCase();
+            yearQuery = null;
+            countLimit = parseInt(input[1]);
+        } else {
+            return bot.sendMessage(chatId, "⚠️ [ERROR] Usage: `/getnum [Country] [Count]` or `/getnum [Country] [Year] [Count]`");
+        }
+
+        if (isNaN(countLimit) || countLimit <= 0) return bot.sendMessage(chatId, "⚠️ [ERROR] Please provide a valid count.");
+
         try {
             await ensureConnected();
         } catch (err) {
-            return bot.sendMessage(chatId, "❌ [ERROR] UserBot failed to connect: " + err.message);
+            return bot.sendMessage(chatId, "🔌 [ERROR] UserBot disconnected: " + err.message);
         }
 
-        const count = parseInt(match[1]);
-        if (count > 20) return bot.sendMessage(chatId, '❌ [ERROR] Max 20 numbers.');
-
-        bot.sendMessage(chatId, `🤖 [SYSTEM] Fetching ${count} numbers...`);
+        const displayTarget = yearQuery ? `${countryQuery} ${yearQuery}` : countryQuery;
+        bot.sendMessage(chatId, `🚀 [STARTING] Fetching ${countLimit} numbers for **${displayTarget}**...`, { parse_mode: 'Markdown' });
 
         const targetBot = "NokosxBot";
+        let currentBatch = [];
+        let totalFetched = 0;
 
         try {
-            for (let i = 0; i < count; i++) {
-                // Ensure connection stays alive for each loop iteration
-                await ensureConnected();
+            // 2. Initial Start
+            await userBot.sendMessage(targetBot, { message: "/start" });
+            await delay(3500);
 
-                await userBot.sendMessage(targetBot, { message: "/start" });
-                await delay(3000);
+            // 3. Find and Click Country Button
+            let messages = await userBot.getMessages(targetBot, { limit: 1 });
+            let lastMsg = messages[0];
+            let targetButton = null;
 
-                const messages = await userBot.getMessages(targetBot, { limit: 1 });
-                const lastMsg = messages[0];
-
-                if (lastMsg && lastMsg.replyMarkup) {
-                    let btnToClick = null;
-                    lastMsg.replyMarkup.rows.forEach(row => {
-                        row.buttons.forEach(btn => {
-                            if (btn.text.toLowerCase().includes("change number")) btnToClick = btn;
-                        });
+            if (lastMsg && lastMsg.replyMarkup) {
+                lastMsg.replyMarkup.rows.forEach(row => {
+                    row.buttons.forEach(btn => {
+                        const btnText = btn.text.toLowerCase();
+                        const matchesCountry = btnText.includes(countryQuery);
+                        const matchesYear = yearQuery ? btnText.includes(yearQuery) : true;
+                        if (matchesCountry && matchesYear) targetButton = btn;
                     });
+                });
+            }
 
-                    if (btnToClick) {
-                        await lastMsg.click({ button: btnToClick });
-                        await delay(4000); // Slightly longer delay for server response
+            if (!targetButton) return bot.sendMessage(chatId, `❌ [ERROR] Button for "${displayTarget}" not found.`);
 
-                        const resultMsgs = await userBot.getMessages(targetBot, { limit: 1 });
-                        const text = resultMsgs[0].message;
+            await lastMsg.click({ button: targetButton });
+            await delay(4500);
 
-                        const phoneMatch = text.match(/\d{9,15}/);
-                        if (phoneMatch) {
-                            const res = normalizeWithCountry(phoneMatch[0]);
-                            if (res) {
-                                const output = `✅ [FETCHED ${i + 1}/${count}]\n` +
-                                               `Country: ${res.name}\n` +
-                                               `Code: \`${res.code}\`\n` +
-                                               `Number: \`${res.num.startsWith('0') ? res.num.substring(1) : res.num}\`\n` +
-                                               `Full: \`+${res.code}${res.num.startsWith('0') ? res.num.substring(1) : res.num}\``;
-                                
-                                await bot.sendMessage(chatId, output, { parse_mode: 'Markdown' });
-                            }
-                        } else {
-                            await bot.sendMessage(chatId, `❌ [ERROR ${i + 1}] Number not found in response.`);
+            // 4. Extraction Loop
+            for (let i = 0; i < countLimit; i++) {
+                await ensureConnected();
+                
+                messages = await userBot.getMessages(targetBot, { limit: 1 });
+                lastMsg = messages[0];
+                const text = lastMsg.message || "";
+
+                // Extract phone digits
+                const phoneMatch = text.match(/\d{9,15}/);
+                if (phoneMatch) {
+                    const rawNum = phoneMatch[0];
+                    const res = normalizeWithCountry(rawNum);
+                    
+                    // Format for tap-to-copy: `23480...`
+                    const formattedNum = res ? `${res.code}${res.num.startsWith('0') ? res.num.substring(1) : res.num}` : rawNum;
+                    currentBatch.push(`\`${formattedNum}\``);
+                    totalFetched++;
+                }
+
+                // 5. Send Batch if size is 5
+                if (currentBatch.length === 5) {
+                    const batchMsg = `📦 [BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`;
+                    await bot.sendMessage(chatId, batchMsg, { parse_mode: 'Markdown' });
+                    currentBatch = []; // Reset batch
+                    await delay(1000); 
+                }
+
+                // 6. Click "Change Number" for next number
+                if (i < countLimit - 1) {
+                    let changeBtn = null;
+                    if (lastMsg.replyMarkup) {
+                        lastMsg.replyMarkup.rows.forEach(row => {
+                            row.buttons.forEach(btn => {
+                                if (btn.text.toLowerCase().includes("change number")) changeBtn = btn;
+                            });
+                        });
+                    }
+
+                    if (changeBtn) {
+                        await lastMsg.click({ button: changeBtn });
+                        await delay(4500); 
+                    } else {
+                        // Fallback if bot UI changes
+                        await userBot.sendMessage(targetBot, { message: "/start" });
+                        await delay(3000);
+                        messages = await userBot.getMessages(targetBot, { limit: 1 });
+                        if (messages[0].replyMarkup) {
+                             await messages[0].click({ button: targetButton });
+                             await delay(4000);
                         }
                     }
                 }
-                if (i < count - 1) await delay(4000);
             }
-            bot.sendMessage(chatId, '🏁 [DONE] Automation task complete.');
+
+            // 7. Send final remaining numbers
+            if (currentBatch.length > 0) {
+                const finalBatchMsg = `📦 [BATCH] Final\n\n${currentBatch.join('\n')}`;
+                await bot.sendMessage(chatId, finalBatchMsg, { parse_mode: 'Markdown' });
+            }
+
+            bot.sendMessage(chatId, `🏁 [COMPLETED] Successfully fetched ${totalFetched} numbers for ${displayTarget}.`);
+
         } catch (e) {
             console.error(e);
-            bot.sendMessage(chatId, '❌ [USERBOT ERROR] ' + e.message);
+            bot.sendMessage(chatId, '🛑 [USERBOT ERROR] ' + e.message);
         }
     });
  

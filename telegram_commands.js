@@ -1047,28 +1047,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
            
-        // --- /getnum [Country] [Year(Optional)] [Count] ---
-    bot.onText(/\/getnum\s+(.+)/i, async (msg, match) => {
+       // --- /getnum [Button Number] [Count] ---
+    bot.onText(/\/getnum\s+(\d+)\s+(\d+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
         if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-        // 1. Precise Parsing
-        const inputParts = match[1].trim().split(/\s+/);
-        let countryQuery, yearQuery, countLimit;
+        // 1. Parse numbers directly
+        const buttonIndex = parseInt(match[1]); // e.g., 2
+        const countLimit = parseInt(match[2]);  // e.g., 10
 
-        if (inputParts.length >= 3) {
-            countLimit = parseInt(inputParts[inputParts.length - 1]);
-            yearQuery = inputParts[inputParts.length - 2];
-            countryQuery = inputParts.slice(0, -2).join(' ').toLowerCase();
-        } else if (inputParts.length === 2) {
-            countLimit = parseInt(inputParts[1]);
-            yearQuery = null;
-            countryQuery = inputParts[0].toLowerCase();
-        } else {
-            return bot.sendMessage(chatId, "[ERROR] Format: /getnum [Country] [Count]");
+        if (buttonIndex < 1) {
+            return bot.sendMessage(chatId, "[ERROR] Button number must be 1 or higher.");
         }
 
         try {
@@ -1077,7 +1069,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
         }
 
-        bot.sendMessage(chatId, `[SYSTEM] Task: ${countryQuery} ${yearQuery || ''} (${countLimit} numbers)`);
+        bot.sendMessage(chatId, `[SYSTEM] Task: Selecting Button #${buttonIndex} (${countLimit} numbers)`);
 
         const targetBot = "NokosxBot";
         let totalFetched = 0;
@@ -1088,65 +1080,33 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             await userBot.sendMessage(targetBot, { message: "/start" });
             await delay(4000);
 
-                    // --- 3. Find the Menu and the Button ---
-        try {
-            // Fetch latest messages to find the one with buttons
+            // 3. Find the Menu
             const messages = await userBot.getMessages(targetBot, { limit: 10 });
             const menuMsg = messages.find(m => m.replyMarkup);
 
-            if (!menuMsg) {
-                return bot.sendMessage(chatId, "[ERROR] No menu found. Check if NokosX BOT is responding.");
-            }
+            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] No menu found. Check if the bot is working.");
 
-            let targetBtn = null;
-
-            // 🧽 Clean queries: Remove emojis/symbols, convert to lowercase, and TRIM
-            const cleanCountryQuery = countryQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim();
-            const cleanYearQuery = yearQuery ? yearQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim() : null;
-
+            // 4. Flatten all buttons into a single list to find by index
+            let allButtons = [];
             for (const row of menuMsg.replyMarkup.rows) {
                 for (const btn of row.buttons) {
-                    // Clean the button text exactly the same way
-                    const cleanBtnText = btn.text.replace(/[^\w\s]/gi, '').toLowerCase().trim();
-                    const btnParts = cleanBtnText.split(/\s+/); 
-
-                    const hasCountry = btnParts.includes(cleanCountryQuery);
-                    const hasYear = cleanYearQuery ? btnParts.includes(cleanYearQuery) : true;
-
-                    if (cleanYearQuery) {
-                        // Must match BOTH "cameroon" and "2026"
-                        if (hasCountry && hasYear) {
-                            targetBtn = btn;
-                            break;
-                        }
-                    } else {
-                        // Must be an EXACT match for "cameroon" 
-                        // (prevents picking "cameroon 2026" or "bolivia")
-                        if (cleanBtnText === cleanCountryQuery) {
-                            targetBtn = btn;
-                            break;
-                        }
-                    }
+                    allButtons.push(btn);
                 }
-                if (targetBtn) break;
             }
+
+            // Check if index exists (Adjusting for 0-based array)
+            const targetBtn = allButtons[buttonIndex - 1];
 
             if (!targetBtn) {
-                return bot.sendMessage(chatId, `[ERROR] Could not find button for "${countryQuery}${yearQuery ? ' ' + yearQuery : ''}".`);
+                return bot.sendMessage(chatId, `[ERROR] Button #${buttonIndex} not found. There are only ${allButtons.length} buttons.`);
             }
 
-            // --- 4. Trigger the Button ---
+            // 5. Trigger the Button
             bot.sendMessage(chatId, `[ACTION] Selecting: ${targetBtn.text}`);
             await menuMsg.click({ button: targetBtn });
             await delay(5000);
 
-        } catch (findError) {
-            console.error("Button Logic Error:", findError);
-            return bot.sendMessage(chatId, "[ERROR] Failed while searching for country button.");
-        }
-
-
-            // 5. Loop
+            // 6. Extraction Loop
             for (let i = 0; i < countLimit; i++) {
                 await ensureConnected();
                 
@@ -1154,11 +1114,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 const currentMsg = response[0];
                 const text = currentMsg.message || "";
 
+                // Look for phone number
                 const phoneMatch = text.match(/\d{9,15}/);
                 if (phoneMatch) {
                     const rawNum = phoneMatch[0];
-                    const res = normalizeWithCountry(rawNum);
-                    const formattedNum = res ? `${res.code}${res.num.startsWith('0') ? res.num.substring(1) : res.num}` : rawNum;
+                    // Replace this with your actual normalization function if needed
+                    const formattedNum = rawNum; 
                     
                     currentBatch.push(`\`${formattedNum}\``);
                     totalFetched++;
@@ -1170,13 +1131,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     await delay(1000);
                 }
 
-                // 6. Change Number logic
+                // Click "Change Number" if we need more
                 if (i < countLimit - 1) {
                     let changeBtn = null;
                     if (currentMsg.replyMarkup) {
                         for (const row of currentMsg.replyMarkup.rows) {
                             for (const b of row.buttons) {
-                                if (b.text.toLowerCase().includes("change number")) {
+                                if (b.text.toLowerCase().includes("change")) {
                                     changeBtn = b;
                                     break;
                                 }
@@ -1187,7 +1148,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
                     if (changeBtn) {
                         await currentMsg.click({ button: changeBtn });
-                        await delay(5500); // Increased delay for generation
+                        await delay(5500); 
                     } else {
                         bot.sendMessage(chatId, "[INFO] Change button not found. Ending.");
                         break;
@@ -1206,6 +1167,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
         }
     });
+
  
 
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {

@@ -257,6 +257,42 @@ const subadminKeyboard = {
     resize_keyboard: true
 };
 
+   /**
+ * OTP MONITOR
+ * Background listener for NokosxBot messages.
+ * Saves OTP numbers to DB and deletes the message after 15 seconds.
+ */
+function setupOtpMonitor() {
+    userBot.addEventHandler(async (event) => {
+        const message = event.message;
+        if (!message || !message.peerId) return;
+        
+        const sender = await message.getSender();
+        if (sender && sender.username === "NokosxBot") {
+            const text = message.message || "";
+            
+            if (text.includes("OTP Received") || text.includes("OTP:")) {
+                const phoneMatch = text.match(/Number:\s*(\d+)/i) || text.match(/Number:\s*(\d+)/i);
+                
+                if (phoneMatch) {
+                    const otpNumber = phoneMatch[1];
+                    // Save to database so it shows in /nums
+                    await addNumbersToDb([otpNumber]); 
+
+                    // Delete after 15 seconds
+                    setTimeout(async () => {
+                        try {
+                            await userBot.deleteMessages(message.peerId, [message.id], { revoke: true });
+                        } catch (err) {
+                            // Message might already be gone
+                        }
+                    }, 15000);
+                }
+            }
+        }
+    });
+}
+
 function getKeyboard(chatId) {
     const userId = chatId.toString();
     const isAdmin = (userId === ADMIN_ID);
@@ -1047,52 +1083,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
            
-
-   /**
- * OTP MONITOR
- * Background listener for NokosxBot messages.
- * Saves OTP numbers to DB and deletes the message after 15 seconds.
- */
-function setupOtpMonitor() {
-    userBot.addEventHandler(async (event) => {
-        const message = event.message;
-        if (!message || !message.peerId) return;
-        
-        const sender = await message.getSender();
-        if (sender && sender.username === "NokosxBot") {
-            const text = message.message || "";
-            
-            if (text.includes("OTP Received") || text.includes("OTP:")) {
-                const phoneMatch = text.match(/Number:\s*(\d+)/i) || text.match(/Number:\s*(\d+)/i);
-                
-                if (phoneMatch) {
-                    const otpNumber = phoneMatch[1];
-                    // Save to database so it shows in /nums
-                    await addNumbersToDb([otpNumber]); 
-
-                    // Delete after 15 seconds
-                    setTimeout(async () => {
-                        try {
-                            await userBot.deleteMessages(message.peerId, [message.id], { revoke: true });
-                        } catch (err) {
-                            // Message might already be gone
-                        }
-                    }, 15000);
-                }
-            }
-        }
-    });
-}
-
-export async function initUserBot() {
-    try {
-        await userBot.connect();
-        setupOtpMonitor();
-        console.log("[USERBOT] Connected and OTP Monitor active.");
-    } catch (e) {
-        console.error("[USERBOT INIT FAIL]", e.message);
-    }
-}
 
 // --- /getnum Command ---
 bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {

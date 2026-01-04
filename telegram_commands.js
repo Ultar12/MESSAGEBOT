@@ -1047,7 +1047,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
            
-                    
         // --- /getnum [Country] [Year(Optional)] [Count] ---
     bot.onText(/\/getnum\s+(.+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
@@ -1056,7 +1055,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-        // 1. Precise Input Parsing
+        // 1. Precise Parsing
         const inputParts = match[1].trim().split(/\s+/);
         let countryQuery, yearQuery, countLimit;
 
@@ -1069,10 +1068,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             yearQuery = null;
             countryQuery = inputParts[0].toLowerCase();
         } else {
-            return bot.sendMessage(chatId, "[ERROR] Format: /getnum [Country] [Count] or /getnum [Country] [Year] [Count]");
+            return bot.sendMessage(chatId, "[ERROR] Format: /getnum [Country] [Count]");
         }
-
-        if (isNaN(countLimit)) return bot.sendMessage(chatId, "[ERROR] Invalid count provided.");
 
         try {
             await ensureConnected();
@@ -1080,61 +1077,61 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
         }
 
-        const displayTarget = yearQuery ? `${countryQuery} ${yearQuery}` : countryQuery;
-        bot.sendMessage(chatId, `[SYSTEM] Starting task for: ${displayTarget}`);
+        bot.sendMessage(chatId, `[SYSTEM] Task: ${countryQuery} ${yearQuery || ''} (${countLimit} numbers)`);
 
         const targetBot = "NokosxBot";
-        let currentBatch = [];
         let totalFetched = 0;
+        let currentBatch = [];
 
         try {
-            // 2. Get fresh menu
+            // 2. Start and Wait
             await userBot.sendMessage(targetBot, { message: "/start" });
             await delay(4000);
 
-            // 3. FIND EXACT BUTTON INDEX
-            const messages = await userBot.getMessages(targetBot, { limit: 5 });
-            let menuMsg = messages.find(m => m.replyMarkup && m.replyMarkup.rows.length > 0);
+            // 3. Find the Button (Ultra-Strict Logic)
+            const messages = await userBot.getMessages(targetBot, { limit: 10 });
+            const menuMsg = messages.find(m => m.replyMarkup);
 
-            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] Menu not found. Try sending /start to the bot manually first.");
+            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] No menu found. Check if the bot is working.");
 
-            let targetButtonIndex = -1;
-            let currentIndex = 0;
-            let buttonLabel = "";
+            let targetBtn = null;
+            
+            // Clean the queries to remove emojis/extra spaces
+            const cleanCountryQuery = countryQuery.replace(/[^\w\s]/gi, '').trim();
+            const cleanYearQuery = yearQuery ? yearQuery.replace(/[^\w\s]/gi, '').trim() : null;
 
-            // Calculate the flat index of the button (GramJS click(n) uses flat indexing)
             for (const row of menuMsg.replyMarkup.rows) {
                 for (const btn of row.buttons) {
-                    const btnText = btn.text.toLowerCase();
-                    const hasCountry = btnText.includes(countryQuery);
-                    const hasYear = yearQuery ? btnText.includes(yearQuery) : true;
+                    // Strip EVERYTHING from the button text except letters and numbers
+                    const cleanBtnText = btn.text.replace(/[^\w\s]/gi, '').toLowerCase();
+                    
+                    const matchesCountry = cleanBtnText.includes(cleanCountryQuery);
+                    const matchesYear = cleanYearQuery ? cleanBtnText.includes(cleanYearQuery) : true;
 
-                    if (hasCountry && hasYear) {
-                        targetButtonIndex = currentIndex;
-                        buttonLabel = btn.text;
+                    if (matchesCountry && matchesYear) {
+                        targetBtn = btn;
                         break;
                     }
-                    currentIndex++;
                 }
-                if (targetButtonIndex !== -1) break;
+                if (targetBtn) break;
             }
 
-            if (targetButtonIndex === -1) {
-                return bot.sendMessage(chatId, `[ERROR] No button matches "${displayTarget}".`);
+            if (!targetBtn) {
+                return bot.sendMessage(chatId, `[ERROR] Could not find button for "${countryQuery}".`);
             }
 
-            // 4. Execute Click using the exact flat index
-            bot.sendMessage(chatId, `[ACTION] Clicking button index ${targetButtonIndex} (${buttonLabel})`);
-            await menuMsg.click(targetButtonIndex);
-            await delay(5000); 
+            // 4. Trigger the Button
+            bot.sendMessage(chatId, `[ACTION] Selecting: ${targetBtn.text}`);
+            await menuMsg.click({ button: targetBtn });
+            await delay(5000);
 
-            // 5. Extraction Loop
+            // 5. Loop
             for (let i = 0; i < countLimit; i++) {
                 await ensureConnected();
                 
-                const responseMsgs = await userBot.getMessages(targetBot, { limit: 1 });
-                const lastMsg = responseMsgs[0];
-                const text = lastMsg.message || "";
+                const response = await userBot.getMessages(targetBot, { limit: 1 });
+                const currentMsg = response[0];
+                const text = currentMsg.message || "";
 
                 const phoneMatch = text.match(/\d{9,15}/);
                 if (phoneMatch) {
@@ -1146,46 +1143,42 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     totalFetched++;
                 }
 
-                // Send Batch (5 per batch)
                 if (currentBatch.length === 5) {
                     await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                    currentBatch = []; 
+                    currentBatch = [];
                     await delay(1000);
                 }
 
-                // 6. Click "Change Number" via index
+                // 6. Change Number logic
                 if (i < countLimit - 1) {
-                    let changeIndex = -1;
-                    let flatIdx = 0;
-                    if (lastMsg.replyMarkup) {
-                        for (const row of lastMsg.replyMarkup.rows) {
-                            for (const btn of row.buttons) {
-                                if (btn.text.toLowerCase().includes("change number")) {
-                                    changeIndex = flatIdx;
+                    let changeBtn = null;
+                    if (currentMsg.replyMarkup) {
+                        for (const row of currentMsg.replyMarkup.rows) {
+                            for (const b of row.buttons) {
+                                if (b.text.toLowerCase().includes("change number")) {
+                                    changeBtn = b;
                                     break;
                                 }
-                                flatIdx++;
                             }
-                            if (changeIndex !== -1) break;
+                            if (changeBtn) break;
                         }
                     }
 
-                    if (changeIndex !== -1) {
-                        await lastMsg.click(changeIndex);
-                        await delay(5000);
+                    if (changeBtn) {
+                        await currentMsg.click({ button: changeBtn });
+                        await delay(5500); // Increased delay for generation
                     } else {
-                        bot.sendMessage(chatId, "[INFO] Change button missing. Ending loop.");
+                        bot.sendMessage(chatId, "[INFO] Change button not found. Ending.");
                         break;
                     }
                 }
             }
 
-            // Final batch
             if (currentBatch.length > 0) {
                 await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
             }
 
-            bot.sendMessage(chatId, `[COMPLETED] Total: ${totalFetched} for ${displayTarget}`);
+            bot.sendMessage(chatId, `[COMPLETED] Successfully fetched ${totalFetched} numbers.`);
 
         } catch (e) {
             console.error(e);

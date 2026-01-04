@@ -1088,33 +1088,45 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             await userBot.sendMessage(targetBot, { message: "/start" });
             await delay(4000);
 
-            // 3. Find the Button (Ultra-Strict Logic)
-            const messages = await userBot.getMessages(targetBot, { limit: 10 });
-            const menuMsg = messages.find(m => m.replyMarkup);
+            // 3. Find the Button (Improved Logic)
+let targetBtn = null;
 
-            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] No menu found. Check if the bot is working.");
+// Clean queries: Remove emojis/symbols, convert to lowercase, and TRIM whitespace
+const cleanCountryQuery = countryQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim();
+const cleanYearQuery = yearQuery ? yearQuery.replace(/[^\w\s]/gi, '').toLowerCase().trim() : null;
 
-            let targetBtn = null;
-            
-            // Clean the queries to remove emojis/extra spaces
-            const cleanCountryQuery = countryQuery.replace(/[^\w\s]/gi, '').trim();
-            const cleanYearQuery = yearQuery ? yearQuery.replace(/[^\w\s]/gi, '').trim() : null;
+for (const row of menuMsg.replyMarkup.rows) {
+    for (const btn of row.buttons) {
+        // Clean the button text exactly the same way
+        const cleanBtnText = btn.text.replace(/[^\w\s]/gi, '').toLowerCase().trim();
+        
+        // Split button text into parts to check for Country and Year separately
+        const btnParts = cleanBtnText.split(/\s+/); 
 
-            for (const row of menuMsg.replyMarkup.rows) {
-                for (const btn of row.buttons) {
-                    // Strip EVERYTHING from the button text except letters and numbers
-                    const cleanBtnText = btn.text.replace(/[^\w\s]/gi, '').toLowerCase();
-                    
-                    const matchesCountry = cleanBtnText.includes(cleanCountryQuery);
-                    const matchesYear = cleanYearQuery ? cleanBtnText.includes(cleanYearQuery) : true;
+        // Check for exact word match rather than just "includes"
+        const hasCountry = btnParts.includes(cleanCountryQuery);
+        const hasYear = cleanYearQuery ? btnParts.includes(cleanYearQuery) : true;
 
-                    if (matchesCountry && matchesYear) {
-                        targetBtn = btn;
-                        break;
-                    }
-                }
-                if (targetBtn) break;
+        // If we have a year query, we MUST match both. 
+        // If no year query, we check if the button is ONLY the country 
+        // or starts with the country.
+        if (cleanYearQuery) {
+            if (hasCountry && hasYear) {
+                targetBtn = btn;
+                break;
             }
+        } else {
+            // If user typed "Cameroon", don't accidentally pick "Cameroon 2026"
+            // unless "Cameroon" (alone) doesn't exist.
+            if (cleanBtnText === cleanCountryQuery) {
+                targetBtn = btn;
+                break;
+            }
+        }
+    }
+    if (targetBtn) break;
+}
+
 
             if (!targetBtn) {
                 return bot.sendMessage(chatId, `[ERROR] Could not find button for "${countryQuery}".`);

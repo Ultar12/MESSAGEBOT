@@ -1047,9 +1047,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
            
-        // --- /getnum [Count] ---
-    // Usage: /getnum 50
-    // Then manually click the country in your Telegram app.
+
+       // --- /getnum [Count] ---
+    // 1. Bot sends /start to bring up the menu.
+    // 2. You manually pick the country in your Telegram app.
+    // 3. Bot detects the first number and automates the rest.
     bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1061,7 +1063,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const targetBot = "NokosxBot";
 
         if (isNaN(countLimit) || countLimit <= 0) {
-            return bot.sendMessage(chatId, "[ERROR] Please provide a valid count. Example: /getnum 10");
+            return bot.sendMessage(chatId, "[ERROR] Usage: /getnum [count]");
         }
 
         try {
@@ -1070,23 +1072,26 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
         }
 
-        bot.sendMessage(chatId, `[WAITING] Please go to @NokosxBot and select your country now. The bot will start as soon as it sees the first number.`);
-
-        let totalFetched = 0;
-        let currentBatch = [];
-        let lastSeenMsgId = 0;
-
         try {
-            // 1. Get the current last message ID to know what is "new"
+            // 1. Send /start to show the menu
+            await userBot.sendMessage(targetBot, { message: "/start" });
+            
+            bot.sendMessage(chatId, "[SYSTEM] Menu sent to @NokosxBot. Please manually select your country now. I will start once the first number appears.");
+
+            let totalFetched = 0;
+            let currentBatch = [];
+            let lastSeenMsgId = 0;
+
+            // Get current last message ID
             const initialMsgs = await userBot.getMessages(targetBot, { limit: 1 });
             if (initialMsgs.length > 0) {
                 lastSeenMsgId = initialMsgs[0].id;
             }
 
-            // 2. Wait for the user to manually select a country
+            // 2. Wait for user to select country (detecting new message with digits)
             let firstMsg = null;
-            let timeout = 60; // Wait up to 60 seconds
-            while (timeout > 0) {
+            let waitTime = 60; // 2 minutes max wait
+            while (waitTime > 0) {
                 const check = await userBot.getMessages(targetBot, { limit: 1 });
                 if (check.length > 0 && check[0].id !== lastSeenMsgId) {
                     const text = check[0].message || "";
@@ -1096,20 +1101,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     }
                 }
                 await delay(2000);
-                timeout--;
+                waitTime--;
             }
 
             if (!firstMsg) {
-                return bot.sendMessage(chatId, "[TIMEOUT] You didn't select a country in time. Please try the command again.");
+                return bot.sendMessage(chatId, "[TIMEOUT] No selection detected within 2 minutes.");
             }
 
-            bot.sendMessage(chatId, "[STARTED] First number detected. Automating the rest...");
+            bot.sendMessage(chatId, "[STARTED] Selection detected. Automating extraction...");
 
-            // 3. Extraction Loop
+            // 3. Automation Loop
             for (let i = 0; i < countLimit; i++) {
                 await ensureConnected();
                 
-                // If it's the very first one, we already have 'firstMsg'
+                // Get the message (use the one we caught first, then fetch new ones)
                 const currentMsg = (i === 0) ? firstMsg : (await userBot.getMessages(targetBot, { limit: 1 }))[0];
                 const text = currentMsg.message || "";
 
@@ -1117,7 +1122,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 if (phoneMatch) {
                     const rawNum = phoneMatch[0];
                     
-                    // Normalize to strip country code
+                    // Strip country code using existing normalization
                     const normalized = normalizeWithCountry(rawNum);
                     const cleanNum = normalized ? normalized.num : rawNum;
                     
@@ -1125,41 +1130,41 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     totalFetched++;
                 }
 
-                // Send Batch (5 per batch)
+                // Batching: 5 numbers per message
                 if (currentBatch.length === 5) {
                     await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                     currentBatch = [];
-                    await delay(1200);
+                    await delay(1500);
                 }
 
                 // 4. Click "Change Number" for the next one
                 if (i < countLimit - 1) {
-                    let changeIdx = -1;
-                    let count = 0;
+                    let changeIndex = -1;
+                    let flatIdx = 0;
                     if (currentMsg.replyMarkup) {
                         for (const row of currentMsg.replyMarkup.rows) {
                             for (const b of row.buttons) {
                                 if (b.text.toLowerCase().includes("change")) {
-                                    changeIdx = count;
+                                    changeIndex = flatIdx;
                                     break;
                                 }
-                                count++;
+                                flatIdx++;
                             }
-                            if (changeIdx !== -1) break;
+                            if (changeIndex !== -1) break;
                         }
                     }
 
-                    if (changeIdx !== -1) {
-                        await currentMsg.click(changeIdx);
-                        await delay(5500); // Wait for generation
+                    if (changeIndex !== -1) {
+                        await currentMsg.click(changeIndex);
+                        await delay(5500); // Allow time for generation
                     } else {
-                        bot.sendMessage(chatId, "[INFO] Change button missing. Ending task.");
+                        bot.sendMessage(chatId, "[INFO] Change button not found. Task ended.");
                         break;
                     }
                 }
             }
 
-            // Final batch
+            // Send final remaining numbers
             if (currentBatch.length > 0) {
                 await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
             }
@@ -1171,6 +1176,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
         }
     });
+
+    
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;

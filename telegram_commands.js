@@ -1047,7 +1047,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
            
-       // --- /getnum [Button Number] [Count] ---
+    // --- /getnum [Button Number] [Count] ---
+    // Example: /getnum 2 5
     bot.onText(/\/getnum\s+(\d+)\s+(\d+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1055,13 +1056,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-        // 1. Parse numbers directly
-        const buttonIndex = parseInt(match[1]); // e.g., 2
-        const countLimit = parseInt(match[2]);  // e.g., 10
+        const buttonNumber = parseInt(match[1]); // 1-based index
+        const countLimit = parseInt(match[2]);
+        const targetBot = "NokosxBot";
 
-        if (buttonIndex < 1) {
-            return bot.sendMessage(chatId, "[ERROR] Button number must be 1 or higher.");
-        }
+        if (buttonNumber < 1) return bot.sendMessage(chatId, "[ERROR] Button number must be 1 or higher.");
 
         try {
             await ensureConnected();
@@ -1069,44 +1068,40 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
         }
 
-        bot.sendMessage(chatId, `[SYSTEM] Task: Selecting Button #${buttonIndex} (${countLimit} numbers)`);
+        bot.sendMessage(chatId, `[SYSTEM] Task: Clicking Button #${buttonNumber} for ${countLimit} numbers.`);
 
-        const targetBot = "NokosxBot";
         let totalFetched = 0;
         let currentBatch = [];
 
         try {
-            // 2. Start and Wait
+            // 1. Get Fresh Menu
             await userBot.sendMessage(targetBot, { message: "/start" });
             await delay(4000);
 
-            // 3. Find the Menu
-            const messages = await userBot.getMessages(targetBot, { limit: 10 });
-            const menuMsg = messages.find(m => m.replyMarkup);
+            const messages = await userBot.getMessages(targetBot, { limit: 5 });
+            const menuMsg = messages.find(m => m.replyMarkup && m.replyMarkup.rows.length > 0);
 
-            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] No menu found. Check if the bot is working.");
+            if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] No menu found. Please send /start to NokosxBot manually.");
 
-            // 4. Flatten all buttons into a single list to find by index
-            let allButtons = [];
-            for (const row of menuMsg.replyMarkup.rows) {
-                for (const btn of row.buttons) {
-                    allButtons.push(btn);
-                }
+            // 2. Click using the exact flat index (This stops it from clicking the 1st button)
+            const targetIndex = buttonNumber - 1;
+            
+            // Verify button exists and get text for confirmation
+            let flatButtons = [];
+            menuMsg.replyMarkup.rows.forEach(row => row.buttons.forEach(b => flatButtons.push(b)));
+            
+            if (targetIndex >= flatButtons.length) {
+                return bot.sendMessage(chatId, `[ERROR] Button #${buttonNumber} doesn't exist. Max: ${flatButtons.length}`);
             }
 
-            // Check if index exists (Adjusting for 0-based array)
-            const targetBtn = allButtons[buttonIndex - 1];
+            const btnLabel = flatButtons[targetIndex].text;
+            bot.sendMessage(chatId, `[ACTION] Clicking Index ${targetIndex} (${btnLabel})`);
 
-            if (!targetBtn) {
-                return bot.sendMessage(chatId, `[ERROR] Button #${buttonIndex} not found. There are only ${allButtons.length} buttons.`);
-            }
-
-            // 5. Trigger the Button
-            bot.sendMessage(chatId, `[ACTION] Selecting: ${targetBtn.text}`);
-            await menuMsg.click({ button: targetBtn });
+            // CRITICAL FIX: Use the integer index directly, not the button object
+            await menuMsg.click(targetIndex);
             await delay(5000);
 
-            // 6. Extraction Loop
+            // 3. Extraction Loop
             for (let i = 0; i < countLimit; i++) {
                 await ensureConnected();
                 
@@ -1114,43 +1109,48 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 const currentMsg = response[0];
                 const text = currentMsg.message || "";
 
-                // Look for phone number
                 const phoneMatch = text.match(/\d{9,15}/);
                 if (phoneMatch) {
                     const rawNum = phoneMatch[0];
-                    // Replace this with your actual normalization function if needed
-                    const formattedNum = rawNum; 
                     
-                    currentBatch.push(`\`${formattedNum}\``);
+                    // --- STRIP COUNTRY CODE ---
+                    const normalized = normalizeWithCountry(rawNum);
+                    // Use only the local number (num) from the normalization result
+                    const cleanNum = normalized ? normalized.num : rawNum;
+                    
+                    currentBatch.push(`\`${cleanNum}\``);
                     totalFetched++;
                 }
 
                 if (currentBatch.length === 5) {
-                    await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                    const batchHeader = `[BATCH] ${totalFetched - 4}-${totalFetched}`;
+                    await bot.sendMessage(chatId, `${batchHeader}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                     currentBatch = [];
-                    await delay(1000);
+                    await delay(1200);
                 }
 
-                // Click "Change Number" if we need more
+                // 4. Click "Change" using Index logic
                 if (i < countLimit - 1) {
-                    let changeBtn = null;
+                    let changeIdx = -1;
+                    let count = 0;
                     if (currentMsg.replyMarkup) {
                         for (const row of currentMsg.replyMarkup.rows) {
                             for (const b of row.buttons) {
                                 if (b.text.toLowerCase().includes("change")) {
-                                    changeBtn = b;
+                                    changeIdx = count;
                                     break;
                                 }
+                                count++;
                             }
-                            if (changeBtn) break;
+                            if (changeIdx !== -1) break;
                         }
                     }
 
-                    if (changeBtn) {
-                        await currentMsg.click({ button: changeBtn });
-                        await delay(5500); 
+                    if (changeIdx !== -1) {
+                        await currentMsg.click(changeIdx);
+                        await delay(5500);
                     } else {
-                        bot.sendMessage(chatId, "[INFO] Change button not found. Ending.");
+                        bot.sendMessage(chatId, "[INFO] Change button missing. Task stopped.");
                         break;
                     }
                 }
@@ -1167,7 +1167,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
         }
     });
-
  
 
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {

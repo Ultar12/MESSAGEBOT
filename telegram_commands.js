@@ -584,6 +584,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
         // --- /txt Command: Real-time Text File Filter (Admin & Subadmin) ---
+        // --- /txt Command: Smart Streaming Filter ---
     bot.onText(/\/txt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -591,24 +592,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         
         const isUserAdmin = (userId === ADMIN_ID);
         const isSubAdmin = (SUBADMIN_IDS || []).includes(userId);
-
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /txt');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file');
         }
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Starting real-time verification...');
+            bot.sendMessage(chatId, '[PROCESSING] Starting smart verification. Active numbers will stream first...');
 
             const activeFolders = Object.keys(clients).filter(f => clients[f]);
             const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
-            if (!sock) return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected to perform check.');
+            if (!sock) return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected.');
 
             const connectedSet = new Set();
-            Object.values(shortIdMap).forEach(session => {
-                const res = normalizeWithCountry(session.phone);
+            Object.values(shortIdMap).forEach(s => {
+                const res = normalizeWithCountry(s.phone);
                 if (res) connectedSet.add(res.num);
             });
 
@@ -616,94 +616,90 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const rawText = await response.text();
-
             const lines = rawText.split(/\r?\n/);
-            
-            let activeBuffer = [];
-            let bannedBuffer = [];
-            let stats = {
-                total: 0,
-                active: 0,
-                banned: 0,
-                connected: 0,
-                cm03: 0
-            };
 
-            bot.sendMessage(chatId, '[SENDING] Numbers will be sent below as they are verified...');
+            let activeBuffer = [];
+            let bannedStorage = []; // Collected to send at the very end
+            let stats = { total: 0, active: 0, banned: 0, connected: 0, cm03: 0 };
 
             for (let line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
-
                 stats.total++;
+
                 const result = normalizeWithCountry(trimmed);
+                if (!result || !result.num) continue;
 
-                if (result && result.num) {
-                    // FILTER 1: Cameroon 03 Check
-                    if (result.code === '237' && result.num.startsWith('03')) {
-                        stats.cm03++;
-                        continue;
-                    }
-
-                    // FILTER 2: Already connected check
-                    if (connectedSet.has(result.num)) {
-                        stats.connected++;
-                        continue;
-                    }
-
-                    // FILTER 3: WhatsApp Ban Check
-                    try {
-                        const jid = result.code === 'N/A' ? `${result.num}@s.whatsapp.net` : `${result.code}${result.num.replace(/^0/, '')}@s.whatsapp.net`;
-                        const [check] = await sock.onWhatsApp(jid);
-                        
-                        if (check && check.exists) {
-                            activeBuffer.push('`' + result.num + '`');
-                            stats.active++;
-                            
-                            if (activeBuffer.length === 5) {
-                                await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
-                                activeBuffer = [];
-                                await delay(1000); // Safety delay
-                            }
-                        } else {
-                            bannedBuffer.push('`' + result.num + '`');
-                            stats.banned++;
-
-                            if (bannedBuffer.length === 5) {
-                                await bot.sendMessage(chatId, '[BANNED]\n' + bannedBuffer.join('\n'), { parse_mode: 'Markdown' });
-                                bannedBuffer = [];
-                                await delay(1000);
-                            }
-                        }
-                    } catch (err) {
-                        continue;
-                    }
-
-                    // Prevent flooding WA servers
-                    if (stats.total % 10 === 0) await delay(300);
+                // 1. Filter: Cameroon 03
+                if (result.code === '237' && result.num.startsWith('03')) {
+                    stats.cm03++;
+                    continue;
                 }
+
+                // 2. Filter: Already connected
+                if (connectedSet.has(result.num)) {
+                    stats.connected++;
+                    continue;
+                }
+
+                // 3. Strict WhatsApp Check
+                try {
+                    const cleanPhone = result.code === 'N/A' ? result.num : `${result.code}${result.num.replace(/^0/, '')}`;
+                    const jid = `${cleanPhone}@s.whatsapp.net`;
+                    
+                    const [exists] = await sock.onWhatsApp(jid);
+
+                    if (exists && exists.exists) {
+                        // It is confirmed ACTIVE
+                        activeBuffer.push('`' + result.num + '`');
+                        stats.active++;
+                        
+                        // Stream active numbers immediately in batches of 5
+                        if (activeBuffer.length === 5) {
+                            await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
+                            activeBuffer = [];
+                            await delay(1000); 
+                        }
+                    } else {
+                        // It is BANNED or NOT REGISTERED
+                        bannedStorage.push('`' + result.num + '`');
+                        stats.banned++;
+                    }
+                } catch (err) {
+                    continue;
+                }
+
+                // Safety delay to prevent account temporary block
+                if (stats.total % 15 === 0) await delay(500);
             }
 
-            // Flush remaining numbers in buffers
+            // 4. Finalizing Active Stream
             if (activeBuffer.length > 0) {
                 await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
             }
-            if (bannedBuffer.length > 0) {
-                await bot.sendMessage(chatId, '[BANNED]\n' + bannedBuffer.join('\n'), { parse_mode: 'Markdown' });
+
+            // 5. Send Banned Numbers (Only at the end)
+            if (bannedStorage.length > 0) {
+                bot.sendMessage(chatId, '[SYSTEM] Active stream finished. Sending banned numbers...');
+                for (let i = 0; i < bannedStorage.length; i += 5) {
+                    const chunk = bannedStorage.slice(i, i + 5);
+                    await bot.sendMessage(chatId, '[BANNED]\n' + chunk.join('\n'), { parse_mode: 'Markdown' });
+                    await delay(1000);
+                }
             }
-            
+
+            // 6. Final Report
             bot.sendMessage(chatId, 
                 '[FILTER REPORT]\n' +
-                'Input Lines: ' + lines.length + '\n' +
-                'Active Found: ' + stats.active + '\n' +
-                'Banned Found: ' + stats.banned + '\n' +
+                'Processed: ' + stats.total + '\n' +
+                'Active: ' + stats.active + '\n' +
+                'Banned: ' + stats.banned + '\n' +
                 'Connected Skipped: ' + stats.connected + '\n' +
                 'CM 03 Removed: ' + stats.cm03 + '\n\n' +
-                '[DONE] Text file processing complete.'
+                '[DONE] Smart filtering complete.'
             );
 
         } catch (e) {
-            console.error(e);
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });

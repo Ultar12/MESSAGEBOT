@@ -161,6 +161,59 @@ function normalizeWithCountry(rawNumber) {
     return null;
 }
 
+/**
+ * --- BAN TYPE CHECKER ---
+ * Distinguishes between Active, Reviewable (Suspended), and Permanently Banned.
+ * * WARNING: Use sparingly. Attempting registration too often can trigger 
+ * WhatsApp's anti-spam filters on your environment.
+ */
+
+export async function checkDetailedBanStatus(sock, phoneNumber) {
+    try {
+        // Step 1: Check if it exists on WhatsApp first
+        const [result] = await sock.onWhatsApp(`${phoneNumber}@s.whatsapp.net`);
+        
+        if (result && result.exists) {
+            return { status: "ACTIVE", detail: "Number is currently live." };
+        }
+
+        // Step 2: If not active, attempt to request a registration code (SMS)
+        // This is where we see the specific server rejection reason.
+        try {
+            await sock.requestRegistrationCode({
+                phoneNumber: phoneNumber,
+                method: 'sms',
+                // Mocking registration params
+                fields: {
+                    mcc: "624", // Example for Cameroon, adjust as needed
+                    mnc: "01"
+                }
+            });
+            
+            // If it reaches here, it means it's NOT banned but just not logged in.
+            return { status: "NOT_LOGGED_IN", detail: "Active but no account created." };
+        } catch (err) {
+            const reason = err.data?.reason || err.message;
+
+            // Step 3: Parse the rejection reason
+            // 'blocked' usually means Suspended with "Request Review" option
+            if (reason === 'blocked') {
+                return { status: "TEMPORARY_BAN", detail: "Suspended - Review option available." };
+            }
+            
+            // 'banned' usually means Permanent/Flagged
+            if (reason === 'banned') {
+                return { status: "PERMANENT_BAN", detail: "Permanently removed from network." };
+            }
+
+            return { status: "UNKNOWN", detail: reason };
+        }
+
+    } catch (e) {
+        return { status: "ERROR", detail: e.message };
+    }
+}
+
 
 // --- Shared Filter and Batch Sender ---
 async function processNumbers(rawText, chatId, shortIdMap, bot) {
@@ -759,6 +812,103 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+        /**
+     * --- /checknum [number] ---
+     * Performs a deep scan to detect:
+     * 1. Active: Currently on WhatsApp.
+     * 2. Reviewable: Suspended but has the "Request a Review" option.
+     * 3. Permanent: Blacklisted from the network.
+     */
+    bot.onText(/\/checknum\s+(\d+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = (SUBADMIN_IDS || []).includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        const rawInput = match[1];
+        const res = normalizeWithCountry(rawInput);
+
+        if (!res || !res.num) {
+            return bot.sendMessage(chatId, "[ERROR] Invalid number format.");
+        }
+
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
+
+        if (!sock) {
+            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected to perform deep check.");
+        }
+
+        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+        const jid = `${fullPhone}@s.whatsapp.net`;
+
+        try {
+            bot.sendMessage(chatId, "[CHECKING] Performing deep scan on " + fullPhone + "...");
+
+            // 1. Initial Existence Check
+            const [exists] = await sock.onWhatsApp(jid);
+
+            if (exists && exists.exists) {
+                return bot.sendMessage(chatId, 
+                    "[RESULT] " + fullPhone + "\n" +
+                    "Status: ACTIVE\n" +
+                    "Detail: Number is currently live and usable."
+                );
+            }
+
+            // 2. Registration Probe (Mock Attempt)
+            // This triggers the server to return the specific ban reason
+            try {
+                await sock.requestRegistrationCode({
+                    phoneNumber: "+" + fullPhone,
+                    method: 'sms',
+                    fields: {
+                        mcc: "624", // Defaulting to Cameroon; adjust if needed based on res.code
+                        mnc: "01"
+                    }
+                });
+
+                // If it succeeds, the number is NOT banned, just not registered
+                bot.sendMessage(chatId, 
+                    "[RESULT] " + fullPhone + "\n" +
+                    "Status: NOT REGISTERED\n" +
+                    "Detail: Number is clean but no WhatsApp account exists yet."
+                );
+
+            } catch (regErr) {
+                const reason = regErr.data?.reason || regErr.message || "unknown";
+
+                if (reason === 'blocked') {
+                    // This is the "Request a Review" status
+                    bot.sendMessage(chatId, 
+                        "[RESULT] " + fullPhone + "\n" +
+                        "Status: TEMPORARY BAN / REVIEWABLE\n" +
+                        "Detail: This account is suspended. The Request a Review option is available."
+                    );
+                } else if (reason === 'banned') {
+                    // This is the Permanent Ban status
+                    bot.sendMessage(chatId, 
+                        "[RESULT] " + fullPhone + "\n" +
+                        "Status: PERMANENT BAN\n" +
+                        "Detail: This number is blacklisted and cannot be reviewed."
+                    );
+                } else {
+                    bot.sendMessage(chatId, 
+                        "[RESULT] " + fullPhone + "\n" +
+                        "Status: " + reason.toUpperCase() + "\n" +
+                        "Detail: Rejection reason from WhatsApp servers."
+                    );
+                }
+            }
+
+        } catch (e) {
+            console.error(e);
+            bot.sendMessage(chatId, "[ERROR] Check failed: " + e.message);
+        }
+    });
 
         // --- /xl [Reply to .xlsx] ---
     // 1. Filters Cameroon 03.

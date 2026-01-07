@@ -583,10 +583,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
 
-        // --- /txt Command: Text File Smart Filter (Admin & Subadmin) ---
-    // 1. Skips Cameroon numbers starting with 03.
-    // 2. Skips already connected accounts.
-    // 3. Verifies WhatsApp status (Banned vs Active).
+        // --- /txt Command: Real-time Text File Filter (Admin & Subadmin) ---
     bot.onText(/\/txt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -602,58 +599,55 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Filtering prefixes and verifying WhatsApp status...');
+            bot.sendMessage(chatId, '[PROCESSING] Starting real-time verification...');
 
-            // 1. Get an active WhatsApp socket for the check
             const activeFolders = Object.keys(clients).filter(f => clients[f]);
             const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
             if (!sock) return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected to perform check.');
 
-            // 2. Build list of connected numbers
             const connectedSet = new Set();
             Object.values(shortIdMap).forEach(session => {
                 const res = normalizeWithCountry(session.phone);
                 if (res) connectedSet.add(res.num);
             });
 
-            // 3. Read File
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const rawText = await response.text();
 
             const lines = rawText.split(/\r?\n/);
-            const activeNumbers = [];
-            const bannedNumbers = [];
-            let skippedConnected = 0;
-            let skippedCameroon03 = 0;
-            let detectedCountry = "Unknown";
-            let detectedCode = "N/A";
+            
+            let activeBuffer = [];
+            let bannedBuffer = [];
+            let stats = {
+                total: 0,
+                active: 0,
+                banned: 0,
+                connected: 0,
+                cm03: 0
+            };
 
-            // 4. Process & Filter Loop
+            bot.sendMessage(chatId, '[SENDING] Numbers will be sent below as they are verified...');
+
             for (let line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
 
+                stats.total++;
                 const result = normalizeWithCountry(trimmed);
 
                 if (result && result.num) {
-                    // Capture country info
-                    if (detectedCountry === "Unknown" && result.name !== "Local/Unknown") {
-                        detectedCountry = result.name;
-                        detectedCode = result.code;
-                    }
-
                     // FILTER 1: Cameroon 03 Check
                     if (result.code === '237' && result.num.startsWith('03')) {
-                        skippedCameroon03++;
+                        stats.cm03++;
                         continue;
                     }
 
                     // FILTER 2: Already connected check
                     if (connectedSet.has(result.num)) {
-                        skippedConnected++;
+                        stats.connected++;
                         continue;
                     }
 
@@ -663,54 +657,50 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                         const [check] = await sock.onWhatsApp(jid);
                         
                         if (check && check.exists) {
-                            activeNumbers.push(result.num);
+                            activeBuffer.push('`' + result.num + '`');
+                            stats.active++;
+                            
+                            if (activeBuffer.length === 5) {
+                                await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
+                                activeBuffer = [];
+                                await delay(1000); // Safety delay
+                            }
                         } else {
-                            bannedNumbers.push(result.num);
+                            bannedBuffer.push('`' + result.num + '`');
+                            stats.banned++;
+
+                            if (bannedBuffer.length === 5) {
+                                await bot.sendMessage(chatId, '[BANNED]\n' + bannedBuffer.join('\n'), { parse_mode: 'Markdown' });
+                                bannedBuffer = [];
+                                await delay(1000);
+                            }
                         }
                     } catch (err) {
-                        // Skip if API error
                         continue;
                     }
 
-                    // Rate limit protection for WA servers
-                    if ((activeNumbers.length + bannedNumbers.length) % 10 === 0) await delay(300);
+                    // Prevent flooding WA servers
+                    if (stats.total % 10 === 0) await delay(300);
                 }
             }
 
-            // 5. Send Report
-            bot.sendMessage(chatId, 
-                '[FILTER REPORT]\n' +
-                'Country: ' + detectedCountry + ' (+' + detectedCode + ')\n' +
-                'Input Lines: ' + lines.length + '\n' +
-                'Connected: ' + skippedConnected + '\n' +
-                'CM 03 Removed: ' + skippedCameroon03 + '\n' +
-                'Active Found: ' + activeNumbers.length + '\n' +
-                'Banned Found: ' + bannedNumbers.length
-            );
-
-            // 6. Send Active Batches
-            if (activeNumbers.length > 0) {
-                await bot.sendMessage(chatId, '[LIST] ACTIVE NUMBERS');
-                for (let i = 0; i < activeNumbers.length; i += 5) {
-                    const chunk = activeNumbers.slice(i, i + 5);
-                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                    await delay(1200);
-                }
+            // Flush remaining numbers in buffers
+            if (activeBuffer.length > 0) {
+                await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
             }
-
-            // 7. Send Banned Batches
-            if (bannedNumbers.length > 0) {
-                await bot.sendMessage(chatId, '[LIST] BANNED/INVALID NUMBERS');
-                for (let i = 0; i < bannedNumbers.length; i += 5) {
-                    const chunk = bannedNumbers.slice(i, i + 5);
-                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                    await delay(1200);
-                }
+            if (bannedBuffer.length > 0) {
+                await bot.sendMessage(chatId, '[BANNED]\n' + bannedBuffer.join('\n'), { parse_mode: 'Markdown' });
             }
             
-            bot.sendMessage(chatId, '[DONE] Text file processing complete.');
+            bot.sendMessage(chatId, 
+                '[FILTER REPORT]\n' +
+                'Input Lines: ' + lines.length + '\n' +
+                'Active Found: ' + stats.active + '\n' +
+                'Banned Found: ' + stats.banned + '\n' +
+                'Connected Skipped: ' + stats.connected + '\n' +
+                'CM 03 Removed: ' + stats.cm03 + '\n\n' +
+                '[DONE] Text file processing complete.'
+            );
 
         } catch (e) {
             console.error(e);

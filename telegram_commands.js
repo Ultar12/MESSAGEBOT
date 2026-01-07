@@ -2310,6 +2310,49 @@ bot.onText(/\/nums/, async (msg) => {
         }
     });
 
+        /**
+     * --- /check [Number] ---
+     * 🕵️ Checks if a number is active on WhatsApp or potentially banned.
+     * Uses one of your connected WhatsApp bot accounts to perform the check.
+     */
+    bot.onText(/\/check\s+(\d+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+
+        const targetNumber = match[1];
+        
+        // 1. Find an active WhatsApp client to use for the check
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) {
+            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots are currently connected to perform the check.");
+        }
+
+        const sock = clients[activeFolders[0]]; // Use the first available bot
+        const jid = targetNumber.includes('@') ? targetNumber : `${targetNumber}@s.whatsapp.net`;
+
+        try {
+            bot.sendMessage(chatId, `[CHECKING] Scanning ${targetNumber}...`);
+
+            // 2. Use Baileys onWhatsApp method
+            const [result] = await sock.onWhatsApp(jid);
+
+            if (result && result.exists) {
+                // Number is active
+                bot.sendMessage(chatId, `[RESULT] ${targetNumber}\nStatus: ACTIVE\nJID: \`${result.jid}\``, { parse_mode: 'Markdown' });
+            } else {
+                // Number is not registered or BANNED
+                bot.sendMessage(chatId, `[RESULT] ${targetNumber}\nStatus: NOT FOUND / BANNED\nNote: This number is either not on WA or has been suspended.`);
+            }
+
+        } catch (e) {
+            console.error("Check Error:", e.message);
+            bot.sendMessage(chatId, "[ERROR] Check failed: " + e.message);
+        }
+    });
+
     // --- /scrape command: Join group link and extract members as VCF ---
     bot.onText(/\/scrape\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);

@@ -636,13 +636,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
 
-        // --- /txt Command: Real-time Text File Filter (Admin & Subadmin) ---
-        // --- /txt Command: Smart Streaming Filter ---
-    // --- /txt Command: Smart Real-time Filter ---
+        // --- /txt Command: Smart Real-time Filter (Deep Verification) ---
     bot.onText(/\/txt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
+        
         if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
@@ -665,21 +664,21 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const response = await fetch(fileLink);
             const rawText = await response.text();
             
-            // Clean lines: trim whitespace and remove empty lines
+            // Clean lines
             const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l !== "");
 
-            // 2. Initial Summary (Sent first)
+            // 2. Initial Summary (Sent First)
             await bot.sendMessage(chatId, 
                 '[FILE DETECTED]\n' +
-                'Total Lines: ' + lines.length + '\n' +
-                'Status: Initializing smart verification...'
+                'Total Lines Found: ' + lines.length + '\n' +
+                'Process: Starting deep verification (onWhatsApp + Status Check)...'
             );
 
             let activeBuffer = [];
             let bannedStorage = [];
             let stats = { total: 0, active: 0, banned: 0, connected: 0, cm03: 0 };
 
-            // 3. Main Verification Loop
+            // 3. Main Logic Loop
             for (let line of lines) {
                 stats.total++;
                 const result = normalizeWithCountry(line);
@@ -697,48 +696,65 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     continue;
                 }
 
-                // Filter 3: Smart WhatsApp Verification
                 try {
-                    // Stripping leading zeros for strict JID matching
+                    // Strict JID Construction (No leading zeros)
                     const cleanNum = result.num.replace(/^0+/, '');
-                    const jid = result.code === 'N/A' ? `${result.num}@s.whatsapp.net` : `${result.code}${cleanNum}@s.whatsapp.net`;
+                    const fullPhone = result.code === 'N/A' ? result.num : `${result.code}${cleanNum}`;
+                    const jid = `${fullPhone}@s.whatsapp.net`;
                     
+                    // Step A: Basic Existence Check
                     const onWa = await sock.onWhatsApp(jid);
 
                     if (onWa && onWa.length > 0 && onWa[0].exists) {
-                        // Confirmed ACTIVE
-                        activeBuffer.push('`' + result.num + '`');
-                        stats.active++;
                         
-                        // Streaming Active batches immediately
-                        if (activeBuffer.length === 5) {
-                            await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
-                            activeBuffer = [];
-                            await delay(1200);
+                        // Step B: Deep Check (Fetch Status/About)
+                        // Banned numbers will throw an error or return null here
+                        try {
+                            const status = await sock.fetchStatus(jid);
+                            
+                            if (status && status.status !== undefined) {
+                                // Number is definitely ACTIVE
+                                activeBuffer.push('`' + result.num + '`');
+                                stats.active++;
+                                
+                                if (activeBuffer.length === 5) {
+                                    await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
+                                    activeBuffer = [];
+                                    await delay(1200);
+                                }
+                            } else {
+                                // Exists but no status = Likely Shadow Banned
+                                bannedStorage.push('`' + result.num + '`');
+                                stats.banned++;
+                            }
+                        } catch (statusErr) {
+                            // If status check fails, it is BANNED
+                            bannedStorage.push('`' + result.num + '`');
+                            stats.banned++;
                         }
+
                     } else {
-                        // Confirmed BANNED or INVALID
+                        // Not on WhatsApp = BANNED or INVALID
                         bannedStorage.push('`' + result.num + '`');
                         stats.banned++;
                     }
                 } catch (e) {
-                    // Error defaults to banned/invalid to be safe
                     bannedStorage.push('`' + result.num + '`');
                     stats.banned++;
                 }
 
-                // Rate limit protection for WA servers
-                if (stats.total % 12 === 0) await delay(400);
+                // Adaptive delay to keep accuracy high
+                if (stats.total % 8 === 0) await delay(600);
             }
 
-            // 4. Wrap up remaining Active numbers
+            // 4. Send remaining active numbers
             if (activeBuffer.length > 0) {
                 await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
             }
 
-            // 5. Send Banned Numbers (Always last batch)
+            // 5. Send Banned Numbers (Always Last)
             if (bannedStorage.length > 0) {
-                await bot.sendMessage(chatId, '[SYSTEM] Active list complete. Sending banned/invalid list...');
+                await bot.sendMessage(chatId, '[SYSTEM] Verification complete. Sending banned numbers list...');
                 for (let i = 0; i < bannedStorage.length; i += 5) {
                     const chunk = bannedStorage.slice(i, i + 5);
                     await bot.sendMessage(chatId, '[BANNED]\n' + chunk.join('\n'), { parse_mode: 'Markdown' });
@@ -750,11 +766,11 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, 
                 '[FILTER REPORT]\n' +
                 'Processed: ' + stats.total + '\n' +
-                'Active: ' + stats.active + '\n' +
-                'Banned: ' + stats.banned + '\n' +
-                'Connected Skip: ' + stats.connected + '\n' +
-                'CM 03 Skip: ' + stats.cm03 + '\n\n' +
-                '[DONE] Text file processing finished.'
+                'Active (Deep Verified): ' + stats.active + '\n' +
+                'Banned/Invalid: ' + stats.banned + '\n' +
+                'Connected Skipped: ' + stats.connected + '\n' +
+                'CM 03 Removed: ' + stats.cm03 + '\n\n' +
+                '[DONE] Smart filtering finished.'
             );
             
         } catch (e) {

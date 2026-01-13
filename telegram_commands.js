@@ -1596,16 +1596,7 @@ bot.onText(/\/nums/, async (msg) => {
         sendMenu(bot, msg.chat.id, '[ADDED] ' + num + '\nTotal DB: ' + total);
     });
 
-    bot.onText(/\/checknum\s+(\S+)/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
-        const num = match[1].replace(/[^0-9]/g, '');
-        if (num.length < 7) return bot.sendMessage(msg.chat.id, '[ERROR] Invalid number.');
-        bot.sendMessage(msg.chat.id, '[CHECKING] ' + num + '...');
-        const exists = await checkNumberInDb(num);
-        if (exists) sendMenu(bot, msg.chat.id, '[FOUND] ' + num + ' is in the database.');
-        else sendMenu(bot, msg.chat.id, '[NOT FOUND] ' + num + ' is NOT in the database.');
-    });
+
 
     bot.onText(/\/broadcast(?:\s+(.+))?/, async (msg, match) => {
         deleteUserCommand(bot, msg);
@@ -1842,107 +1833,91 @@ bot.onText(/\/nums/, async (msg) => {
         return { error: 'Failed to fetch group info after trying ' + activeFolders.length + ' bots: ' + errorMessage + '.' };
     }
 
-    // --- /search [number] : Searches for a number or pattern (e.g. 49XXXXXXXX82) in a file ---
-    bot.onText(/\/search\s+(\S+)/, async (msg, match) => {
+        /**
+     * --- /search [last 4 digits] (Reply to file) ---
+     * Scans an attached .txt or .xlsx file for numbers ending with specific digits.
+     * Example: Reply to a file with "/search 3328" or "/search 234****3328"
+     */
+    bot.onText(/\/search\s+(.+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
-        
-        const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = SUBADMIN_IDS.includes(userId);
-        if (!isUserAdmin && !isSubAdmin) return;
 
-        let inputNumber = match[1].trim();
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
+        // Verify it is a reply to a file
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /search [number]');
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt or .xlsx file with /search [digits]");
         }
 
+        const rawQuery = match[1].trim();
+        const digitsOnly = rawQuery.replace(/\D/g, '');
+        
+        if (digitsOnly.length < 4) {
+            return bot.sendMessage(chatId, "[ERROR] Provide at least the last 4 digits.");
+        }
+
+        const targetSuffix = digitsOnly.slice(-4);
+        const file = msg.reply_to_message.document;
+
         try {
-            // Support for wildcards: replace mathematical bold '𝗫' with standard 'X'
-            // and remove any other non-digit/non-X characters
-            const cleanInput = inputNumber.replace(/𝗫/g, 'X').replace(/[^\dX]/gi, '');
-            
-            // Create a regex pattern: 'X' becomes '\d' (any digit)
-            const regexSource = cleanInput.replace(/X/gi, '\\d');
-            const searchRegex = new RegExp('^' + regexSource + '$');
+            bot.sendMessage(chatId, "[PROCESSING] Searching for ..." + targetSuffix + " in file: " + file.file_name);
 
-            bot.sendMessage(chatId, '[PROCESSING] Searching for pattern ' + cleanInput + ' in file...');
-            
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileLink = await bot.getFileLink(fileId);
+            const fileLink = await bot.getFileLink(file.file_id);
             const response = await fetch(fileLink);
-            const fileName = msg.reply_to_message.document.file_name || '';
-            
-            let foundCount = 0;
-            let totalChecked = 0;
-            let matches = [];
+            let numbersInFile = [];
 
-            const processLine = (content, locationLabel) => {
-                totalChecked++;
-                const check = normalizeWithCountry(content.toString().trim());
-                if (check && check.num) {
-                    // Test the normalized number against the pattern
-                    if (searchRegex.test(check.num)) {
-                        foundCount++;
-                        if (matches.length < 5) {
-                            matches.push(check.num + ' (' + locationLabel + ')');
-                        }
-                        return true;
-                    }
-                }
-                return false;
-            };
-
-            if (fileName.endsWith('.xlsx')) {
-                const arrayBuffer = await response.arrayBuffer();
-                const buffer = Buffer.from(arrayBuffer);
+            // --- Handle Different File Types ---
+            if (file.file_name.endsWith('.xlsx')) {
+                // Parse Excel
+                const buffer = await response.buffer();
                 const workbook = XLSX.read(buffer, { type: 'buffer' });
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
                 const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-
-                for (let r = 0; r < data.length; r++) {
-                    const row = data[r];
-                    if (!Array.isArray(row)) continue;
-                    for (let c = 0; c < row.length; c++) {
-                        if (row[c]) {
-                            processLine(row[c], 'Row: ' + (r + 1) + ', Col: ' + (c + 1));
-                        }
+                data.forEach(row => {
+                    if (Array.isArray(row)) {
+                        row.forEach(cell => { if (cell) numbersInFile.push(cell.toString().trim()); });
                     }
-                }
+                });
             } else {
+                // Parse Text/VCF
                 const text = await response.text();
-                const lines = text.split(/\r?\n/);
-                for (let i = 0; i < lines.length; i++) {
-                    if (lines[i].trim()) {
-                        processLine(lines[i], 'Line: ' + (i + 1));
-                    }
-                }
+                numbersInFile = text.split(/\r?\n/).map(l => l.trim()).filter(l => l !== "");
             }
 
-            if (foundCount > 0) {
-                let report = '[SEARCH RESULT: FOUND]\n' +
-                             'Pattern: ' + cleanInput + '\n' +
-                             'Matches Found: ' + foundCount + '\n\n' +
-                             'Samples:\n' + matches.join('\n');
+            // --- Filter Matches ---
+            const matches = new Set(); // Use Set to avoid duplicates
+            numbersInFile.forEach(item => {
+                const res = normalizeWithCountry(item);
+                const compareNum = res ? res.num : item.replace(/\D/g, '');
                 
-                if (foundCount > 5) report += '\n...and ' + (foundCount - 5) + ' more';
-                
-                bot.sendMessage(chatId, report + '\n\nTotal checked: ' + totalChecked);
-            } else {
-                bot.sendMessage(chatId, 
-                    '[SEARCH RESULT: NOT FOUND]\n' +
-                    'Pattern: ' + cleanInput + '\n' +
-                    'Status: No matches found.\n' +
-                    'Total checked: ' + totalChecked
-                );
+                if (compareNum.endsWith(targetSuffix)) {
+                    matches.add(compareNum);
+                }
+            });
+
+            const uniqueMatches = Array.from(matches);
+
+            if (uniqueMatches.length === 0) {
+                return bot.sendMessage(chatId, "[NOT FOUND] No numbers in this file end with " + targetSuffix);
             }
+
+            bot.sendMessage(chatId, "[RESULT] Found " + uniqueMatches.length + " match(es):");
+
+            // --- Send in Batches ---
+            for (let i = 0; i < uniqueMatches.length; i += 10) {
+                const chunk = uniqueMatches.slice(i, i + 10);
+                const msgText = chunk.map(n => '`' + n + '`').join('\n');
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+            }
+
+            bot.sendMessage(chatId, "[DONE] File search complete.");
 
         } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+            console.error(e);
+            bot.sendMessage(chatId, "[ERROR] Search failed: " + e.message);
         }
     });
-    
 
     // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
     bot.onText(/\/convert/, async (msg) => {

@@ -1838,7 +1838,7 @@ bot.onText(/\/nums/, async (msg) => {
      * Scans an attached .txt or .xlsx file for numbers ending with specific digits.
      * Example: Reply to a file with "/search 3328" or "/search 234****3328"
      */
-    bot.onText(/\/search\s+(.+)/, async (msg, match) => {
+    bot.onText(/\/s\s+(.+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();

@@ -1833,10 +1833,11 @@ bot.onText(/\/nums/, async (msg) => {
         return { error: 'Failed to fetch group info after trying ' + activeFolders.length + ' bots: ' + errorMessage + '.' };
     }
 
-        /**
-     * --- /search [last 4 digits] (Reply to file) ---
-     * Scans an attached .txt or .xlsx file for numbers ending with specific digits.
-     * Example: Reply to a file with "/search 3328" or "/search 234****3328"
+    /**
+     * --- /search [pattern/suffix] (Reply to file) ---
+     * Scans .txt or .xlsx files for numbers ending with specific digits.
+     * Automatically excludes Nigerian (234) numbers.
+     * Example: /search 49XXXXXXXX66 or /search 3328
      */
     bot.onText(/\/s\s+(.+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
@@ -1845,31 +1846,35 @@ bot.onText(/\/nums/, async (msg) => {
 
         if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-        // Verify it is a reply to a file
+        // Must be a reply to a file
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt or .xlsx file with /search [digits]");
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt or .xlsx file with your search query.");
         }
 
         const rawQuery = match[1].trim();
-        const digitsOnly = rawQuery.replace(/\D/g, '');
+        // Extract digits only from the end of the query to get the suffix
+        const queryDigits = rawQuery.replace(/\D/g, '');
         
-        if (digitsOnly.length < 4) {
-            return bot.sendMessage(chatId, "[ERROR] Provide at least the last 4 digits.");
+        if (queryDigits.length < 2) {
+            return bot.sendMessage(chatId, "[ERROR] Please provide a longer suffix for accuracy.");
         }
 
-        const targetSuffix = digitsOnly.slice(-4);
+        // We take the last part of the digits provided as the suffix
+        // If it's a pattern like 49...66, we take the '66'
+        const parts = rawQuery.split(/[^0-9]+/);
+        const targetSuffix = parts[parts.length - 1];
+
         const file = msg.reply_to_message.document;
 
         try {
-            bot.sendMessage(chatId, "[PROCESSING] Searching for ..." + targetSuffix + " in file: " + file.file_name);
+            bot.sendMessage(chatId, "[PROCESSING] Searching for numbers ending in " + targetSuffix + " (Excluding Nigeria)...");
 
             const fileLink = await bot.getFileLink(file.file_id);
             const response = await fetch(fileLink);
             let numbersInFile = [];
 
-            // --- Handle Different File Types ---
+            // --- Read File Content ---
             if (file.file_name.endsWith('.xlsx')) {
-                // Parse Excel
                 const buffer = await response.buffer();
                 const workbook = XLSX.read(buffer, { type: 'buffer' });
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -1880,35 +1885,45 @@ bot.onText(/\/nums/, async (msg) => {
                     }
                 });
             } else {
-                // Parse Text/VCF
                 const text = await response.text();
                 numbersInFile = text.split(/\r?\n/).map(l => l.trim()).filter(l => l !== "");
             }
 
-            // --- Filter Matches ---
-            const matches = new Set(); // Use Set to avoid duplicates
+            const matches = new Set();
+            let nigeriaSkipped = 0;
+
+            // --- Filter Numbers ---
             numbersInFile.forEach(item => {
                 const res = normalizeWithCountry(item);
-                const compareNum = res ? res.num : item.replace(/\D/g, '');
-                
-                if (compareNum.endsWith(targetSuffix)) {
-                    matches.add(compareNum);
+                if (!res) return;
+
+                // 1. Rule: Exclude Nigeria
+                if (res.code === '234') {
+                    nigeriaSkipped++;
+                    return;
+                }
+
+                // 2. Rule: Match Suffix
+                // We compare the local part of the number
+                if (res.num.endsWith(targetSuffix)) {
+                    matches.add(res.num);
                 }
             });
 
             const uniqueMatches = Array.from(matches);
 
             if (uniqueMatches.length === 0) {
-                return bot.sendMessage(chatId, "[NOT FOUND] No numbers in this file end with " + targetSuffix);
+                return bot.sendMessage(chatId, "[NOT FOUND] No matching numbers found (Skipped " + nigeriaSkipped + " Nigerian numbers).");
             }
 
-            bot.sendMessage(chatId, "[RESULT] Found " + uniqueMatches.length + " match(es):");
+            bot.sendMessage(chatId, "[RESULT] Found " + uniqueMatches.length + " match(es) (Skipped " + nigeriaSkipped + " Nigerian numbers):");
 
-            // --- Send in Batches ---
+            // --- Send Matches in Batches ---
             for (let i = 0; i < uniqueMatches.length; i += 10) {
                 const chunk = uniqueMatches.slice(i, i + 10);
                 const msgText = chunk.map(n => '`' + n + '`').join('\n');
                 await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                if (i + 10 < uniqueMatches.length) await delay(800);
             }
 
             bot.sendMessage(chatId, "[DONE] File search complete.");

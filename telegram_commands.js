@@ -11,6 +11,10 @@ import {
 import { delay } from '@whiskeysockets/baileys';
 import * as mammoth from 'mammoth';
 import path from 'path';
+import docxConverter from 'docx-pdf';
+import ExcelJS from 'exceljs';
+import PDFDocument from 'pdfkit-table';
+import PDFPlain from 'pdfkit';
 import fs from 'fs'; 
 import * as XLSX from 'xlsx';
 import fetch from 'node-fetch';
@@ -730,131 +734,7 @@ bot.onText(/\/txt/, async (msg) => {
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });  
-    
-
-    // --- /xl Command: Smart Real-time Excel Filter ---
-    bot.onText(/\/xl/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
-
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to an .xlsx file');
-        }
-
-        try {
-            const activeFolders = Object.keys(clients).filter(f => clients[f]);
-            const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
-            if (!sock) return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected.');
-
-            const connectedSet = new Set();
-            Object.values(shortIdMap).forEach(s => {
-                const res = normalizeWithCountry(s.phone);
-                if (res) connectedSet.add(res.num);
-            });
-
-            const fileLink = await bot.getFileLink(msg.reply_to_message.document.file_id);
-            const response = await fetch(fileLink);
-            const buffer = await response.buffer();
-            const workbook = XLSX.read(buffer, { type: 'buffer' });
-            const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1 });
-            
-            const allCells = [];
-            data.forEach(row => { if(Array.isArray(row)) row.forEach(c => { if(c) allCells.push(c.toString()); })});
-
-            await bot.sendMessage(chatId, 
-                '[EXCEL DETECTED]\n' +
-                'Total Entries: ' + allCells.length + '\n' +
-                'Status: Verifying active accounts...'
-            );
-
-            let activeBuffer = [];
-            let bannedStorage = [];
-            let stats = { total: 0, active: 0, banned: 0, connected: 0, cm03: 0 };
-
-            for (let cell of allCells) {
-                stats.total++;
-                const result = normalizeWithCountry(cell);
-                if (!result || !result.num) continue;
-
-                if (result.code === '237' && result.num.startsWith('03')) { stats.cm03++; continue; }
-                if (connectedSet.has(result.num)) { stats.connected++; continue; }
-
-                try {
-                    const cleanNum = result.num.replace(/^0+/, '');
-                    const jid = result.code === 'N/A' ? `${result.num}@s.whatsapp.net` : `${result.code}${cleanNum}@s.whatsapp.net`;
-                    const onWa = await sock.onWhatsApp(jid);
-
-                    if (onWa && onWa.length > 0 && onWa[0].exists) {
-                        activeBuffer.push('`' + result.num + '`');
-                        stats.active++;
-                        if (activeBuffer.length === 5) {
-                            await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
-                            activeBuffer = [];
-                            await delay(1200);
-                        }
-                    } else {
-                        bannedStorage.push('`' + result.num + '`');
-                        stats.banned++;
-                    }
-                } catch (e) { bannedStorage.push('`' + result.num + '`'); stats.banned++; }
-
-                if (stats.total % 12 === 0) await delay(400);
-            }
-
-            if (activeBuffer.length > 0) await bot.sendMessage(chatId, '[ACTIVE]\n' + activeBuffer.join('\n'), { parse_mode: 'Markdown' });
-
-            if (bannedStorage.length > 0) {
-                await bot.sendMessage(chatId, '[SYSTEM] Active list complete. Sending banned list...');
-                for (let i = 0; i < bannedStorage.length; i += 5) {
-                    const chunk = bannedStorage.slice(i, i + 5);
-                    await bot.sendMessage(chatId, '[BANNED]\n' + chunk.join('\n'), { parse_mode: 'Markdown' });
-                    await delay(1200);
-                }
-            }
-
-            bot.sendMessage(chatId, 
-                '[FILTER REPORT]\n' +
-                'Processed: ' + stats.total + '\n' +
-                'Active: ' + stats.active + '\n' +
-                'Banned: ' + stats.banned + '\n' +
-                'Connected Skip: ' + stats.connected + '\n' +
-                'CM 03 Skip: ' + stats.cm03 + '\n\n' +
-                '[DONE] Excel processing finished.'
-            );
-        } catch (e) { bot.sendMessage(chatId, '[ERROR] ' + e.message); }
-    });
-
-    // 1. LOGOUT ALL (Iterates EVERY connected account)
-    bot.onText(/\/logoutall/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
-        const chatId = msg.chat.id;
-        
-        const connectedFolders = Object.keys(clients);
-        const totalConnected = connectedFolders.length;
-        
-        if (totalConnected === 0) return sendMenu(bot, chatId, "[ERROR] No accounts connected.");
-
-        bot.sendMessage(chatId, '[SYSTEM CLEANUP] Found ' + totalConnected + ' active accounts.\nStarting Global Logout Sequence (Slots 1-20)...');
-
-        let processedCount = 0;
-        
-        for (const folder of connectedFolders) {
-            const sock = clients[folder];
-            const shortId = Object.keys(shortIdMap).find(key => shortIdMap[key].folder === folder) || 'Unknown';
-            
-            try {
-                await performLogoutSequence(sock, shortId, bot, chatId);
-                processedCount++;
-            } catch (e) {
-                console.error('Logout failed for ' + shortId + ': ' + e);
-            }
-        }
-
-        sendMenu(bot, chatId, '[LOGOUT COMPLETE]\n\nProcessed: ' + processedCount + '/' + totalConnected + ' Accounts\nUnlinking attempts sent.\nBots disconnected.');
-    });
+     
 
     // 2. LOGOUT SINGLE
     bot.onText(/\/logout\s+(\S+)/, async (msg, match) => {
@@ -2676,107 +2556,108 @@ bot.onText(/\/nums/, async (msg) => {
         }
     });
 
-        /**
-     * --- /pdf (Reply to a document) ---
-     * Converts .docx, .xlsx, or text files into a PDF document.
-     */
-    bot.onText(/\/pdf/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
 
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+// --- /pdf (Reply to a document) ---
+// Updated to work with ES Modules and no emojis
+bot.onText(/\/pdf/, async (msg) => {
+    deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
 
-        // Verify it's a reply to a document
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, "[ERROR] Please reply to a .docx or .xlsx file with /pdf");
-        }
+    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-        const doc = msg.reply_to_message.document;
-        const fileName = doc.file_name;
-        const fileExt = path.extname(fileName).toLowerCase();
-        const inputPath = path.join('./', `input_${Date.now()}${fileExt}`);
-        const outputPath = path.join('./', `converted_${Date.now()}.pdf`);
+    if (!msg.reply_to_message || !msg.reply_to_message.document) {
+        return bot.sendMessage(chatId, "[ERROR] Please reply to a .docx, .xlsx, or .txt file with /pdf");
+    }
 
-        try {
-            bot.sendMessage(chatId, "[PROCESSING] Downloading " + fileName + "...");
+    const doc = msg.reply_to_message.document;
+    const fileName = doc.file_name;
+    const fileExt = path.extname(fileName).toLowerCase();
+    
+    // Unique filenames to prevent conflicts
+    const timestamp = Date.now();
+    const inputPath = `./input_${timestamp}${fileExt}`;
+    const outputPath = `./converted_${timestamp}.pdf`;
 
-            // 1. Download the file
-            const fileLink = await bot.getFileLink(doc.file_id);
-            const response = await fetch(fileLink);
-            const buffer = await response.buffer();
-            fs.writeFileSync(inputPath, buffer);
+    try {
+        bot.sendMessage(chatId, "[PROCESSING] Downloading " + fileName + "...");
 
-            bot.sendMessage(chatId, "[CONVERTING] Generating PDF version...");
+        const fileLink = await bot.getFileLink(doc.file_id);
+        const response = await fetch(fileLink);
+        const buffer = await response.buffer();
+        fs.writeFileSync(inputPath, buffer);
 
-            // 2. Conversion Logic
-            if (fileExt === '.docx') {
-                // Handle Word Document
-                const docxConverter = require('docx-pdf');
-                await new Promise((resolve, reject) => {
-                    docxConverter(inputPath, outputPath, (err, result) => {
-                        if (err) reject(err);
-                        else resolve(result);
-                    });
+        bot.sendMessage(chatId, "[CONVERTING] Formatting PDF...");
+
+        if (fileExt === '.docx') {
+            // Handle Word
+            await new Promise((resolve, reject) => {
+                docxConverter(inputPath, outputPath, (err, result) => {
+                    if (err) reject(err);
+                    else resolve(result);
                 });
-            } else if (fileExt === '.xlsx') {
-                // Handle Excel Document (Basic Table approach)
-                const ExcelJS = require('exceljs');
-                const PDFDocument = require('pdfkit-table');
-                
-                const workbook = new ExcelJS.Workbook();
-                await workbook.xlsx.readFile(inputPath);
-                const worksheet = workbook.getWorksheet(1);
-                
-                const pdfDoc = new PDFDocument({ margin: 30, size: 'A4' });
-                pdfDoc.pipe(fs.createWriteStream(outputPath));
+            });
+        } else if (fileExt === '.xlsx') {
+            // Handle Excel
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.readFile(inputPath);
+            const worksheet = workbook.getWorksheet(1);
+            
+            const pdfDoc = new PDFDocument({ margin: 30, size: 'A4' });
+            const writeStream = fs.createWriteStream(outputPath);
+            pdfDoc.pipe(writeStream);
 
-                const table = {
-                    title: fileName,
-                    headers: [],
-                    rows: []
-                };
+            const table = {
+                title: fileName,
+                headers: [],
+                rows: []
+            };
 
-                // Extracting Headers and Data
-                worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-                    const rowValues = row.values.slice(1); // ExcelJS index 1 is column A
-                    if (rowNumber === 1) {
-                        table.headers = rowValues.map(v => v ? v.toString() : "");
-                    } else {
-                        table.rows.push(rowValues.map(v => v ? v.toString() : ""));
-                    }
-                });
-
-                await pdfDoc.table(table, { prepareHeader: () => pdfDoc.fontSize(10), prepareRow: () => pdfDoc.fontSize(8) });
-                pdfDoc.end();
-                
-                // Wait for the stream to finish writing
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            } else {
-                // Fallback for text/txt
-                const PDFDocument = require('pdfkit');
-                const pdfDoc = new PDFDocument();
-                pdfDoc.pipe(fs.createWriteStream(outputPath));
-                const text = fs.readFileSync(inputPath, 'utf8');
-                pdfDoc.text(text);
-                pdfDoc.end();
-                await new Promise(resolve => setTimeout(resolve, 1500));
-            }
-
-            // 3. Send the converted PDF
-            await bot.sendDocument(chatId, outputPath, { 
-                caption: "[SUCCESS] Converted " + fileName + " to PDF."
+            worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+                const rowValues = row.values.slice(1); 
+                if (rowNumber === 1) {
+                    table.headers = rowValues.map(v => v ? v.toString() : "");
+                } else {
+                    table.rows.push(rowValues.map(v => v ? v.toString() : ""));
+                }
             });
 
-        } catch (e) {
-            console.error(e);
-            bot.sendMessage(chatId, "[ERROR] Conversion failed: " + e.message);
-        } finally {
-            // 4. Cleanup temporary files
+            await pdfDoc.table(table, { 
+                prepareHeader: () => pdfDoc.fontSize(10).fillColor('black'),
+                prepareRow: () => pdfDoc.fontSize(8).fillColor('black')
+            });
+
+            pdfDoc.end();
+            
+            // Wait for file to finish writing to disk
+            await new Promise((resolve) => writeStream.on('finish', resolve));
+        } else {
+            // Handle Text/Txt fallback
+            const pdfDoc = new PDFPlain();
+            const writeStream = fs.createWriteStream(outputPath);
+            pdfDoc.pipe(writeStream);
+            const textContent = fs.readFileSync(inputPath, 'utf8');
+            pdfDoc.text(textContent);
+            pdfDoc.end();
+            await new Promise((resolve) => writeStream.on('finish', resolve));
+        }
+
+        // Send file back to user
+        await bot.sendDocument(chatId, outputPath, { 
+            caption: "[SUCCESS] Converted " + fileName + " to PDF."
+        });
+
+    } catch (e) {
+        console.error("PDF Error:", e);
+        bot.sendMessage(chatId, "[ERROR] Conversion failed: " + e.message);
+    } finally {
+        // Cleanup
+        try {
             if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
             if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        }
-    });
+        } catch (err) {}
+    }
+}); 
 
     // Save - EXACT OLD LOGIC (1-by-1 check)
     bot.onText(/\/save/, async (msg) => {

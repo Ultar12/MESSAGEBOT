@@ -2574,7 +2574,7 @@ bot.onText(/\/pdf/, async (msg) => {
     const fileExt = path.extname(fileName).toLowerCase();
     
     // Hard limit for Heroku Basic Dynos (512MB RAM)
-    if (doc.file_size > 4 * 1024 * 1024) {
+    if (doc.file_size > 50 * 1024 * 1024) {
         return bot.sendMessage(chatId, "[ERROR] File too large for this server. Max 4MB allowed.");
     }
 

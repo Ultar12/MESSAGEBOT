@@ -2676,6 +2676,108 @@ bot.onText(/\/nums/, async (msg) => {
         }
     });
 
+        /**
+     * --- /pdf (Reply to a document) ---
+     * Converts .docx, .xlsx, or text files into a PDF document.
+     */
+    bot.onText(/\/pdf/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        // Verify it's a reply to a document
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .docx or .xlsx file with /pdf");
+        }
+
+        const doc = msg.reply_to_message.document;
+        const fileName = doc.file_name;
+        const fileExt = path.extname(fileName).toLowerCase();
+        const inputPath = path.join('./', `input_${Date.now()}${fileExt}`);
+        const outputPath = path.join('./', `converted_${Date.now()}.pdf`);
+
+        try {
+            bot.sendMessage(chatId, "[PROCESSING] Downloading " + fileName + "...");
+
+            // 1. Download the file
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const buffer = await response.buffer();
+            fs.writeFileSync(inputPath, buffer);
+
+            bot.sendMessage(chatId, "[CONVERTING] Generating PDF version...");
+
+            // 2. Conversion Logic
+            if (fileExt === '.docx') {
+                // Handle Word Document
+                const docxConverter = require('docx-pdf');
+                await new Promise((resolve, reject) => {
+                    docxConverter(inputPath, outputPath, (err, result) => {
+                        if (err) reject(err);
+                        else resolve(result);
+                    });
+                });
+            } else if (fileExt === '.xlsx') {
+                // Handle Excel Document (Basic Table approach)
+                const ExcelJS = require('exceljs');
+                const PDFDocument = require('pdfkit-table');
+                
+                const workbook = new ExcelJS.Workbook();
+                await workbook.xlsx.readFile(inputPath);
+                const worksheet = workbook.getWorksheet(1);
+                
+                const pdfDoc = new PDFDocument({ margin: 30, size: 'A4' });
+                pdfDoc.pipe(fs.createWriteStream(outputPath));
+
+                const table = {
+                    title: fileName,
+                    headers: [],
+                    rows: []
+                };
+
+                // Extracting Headers and Data
+                worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+                    const rowValues = row.values.slice(1); // ExcelJS index 1 is column A
+                    if (rowNumber === 1) {
+                        table.headers = rowValues.map(v => v ? v.toString() : "");
+                    } else {
+                        table.rows.push(rowValues.map(v => v ? v.toString() : ""));
+                    }
+                });
+
+                await pdfDoc.table(table, { prepareHeader: () => pdfDoc.fontSize(10), prepareRow: () => pdfDoc.fontSize(8) });
+                pdfDoc.end();
+                
+                // Wait for the stream to finish writing
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            } else {
+                // Fallback for text/txt
+                const PDFDocument = require('pdfkit');
+                const pdfDoc = new PDFDocument();
+                pdfDoc.pipe(fs.createWriteStream(outputPath));
+                const text = fs.readFileSync(inputPath, 'utf8');
+                pdfDoc.text(text);
+                pdfDoc.end();
+                await new Promise(resolve => setTimeout(resolve, 1500));
+            }
+
+            // 3. Send the converted PDF
+            await bot.sendDocument(chatId, outputPath, { 
+                caption: "[SUCCESS] Converted " + fileName + " to PDF."
+            });
+
+        } catch (e) {
+            console.error(e);
+            bot.sendMessage(chatId, "[ERROR] Conversion failed: " + e.message);
+        } finally {
+            // 4. Cleanup temporary files
+            if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+        }
+    });
+
     // Save - EXACT OLD LOGIC (1-by-1 check)
     bot.onText(/\/save/, async (msg) => {
         deleteUserCommand(bot, msg);

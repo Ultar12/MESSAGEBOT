@@ -2557,8 +2557,7 @@ bot.onText(/\/nums/, async (msg) => {
     });
 
 
-// --- /pdf (Reply to a document) ---
-// Updated to work with ES Modules and no emojis
+// --- /pdf (Memory-Safe Streaming Version) ---
 bot.onText(/\/pdf/, async (msg) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
@@ -2567,45 +2566,56 @@ bot.onText(/\/pdf/, async (msg) => {
     if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
     if (!msg.reply_to_message || !msg.reply_to_message.document) {
-        return bot.sendMessage(chatId, "[ERROR] Please reply to a .docx, .xlsx, or .txt file with /pdf");
+        return bot.sendMessage(chatId, "[ERROR] Reply to a .docx or .xlsx file.");
     }
 
     const doc = msg.reply_to_message.document;
     const fileName = doc.file_name;
     const fileExt = path.extname(fileName).toLowerCase();
     
-    // Unique filenames to prevent conflicts
+    // Hard limit for Heroku Basic Dynos (512MB RAM)
+    if (doc.file_size > 4 * 1024 * 1024) {
+        return bot.sendMessage(chatId, "[ERROR] File too large for this server. Max 4MB allowed.");
+    }
+
     const timestamp = Date.now();
-    const inputPath = `./input_${timestamp}${fileExt}`;
-    const outputPath = `./converted_${timestamp}.pdf`;
+    const inputPath = `./in_${timestamp}${fileExt}`;
+    const outputPath = `./out_${timestamp}.pdf`;
 
     try {
-        bot.sendMessage(chatId, "[PROCESSING] Downloading " + fileName + "...");
+        bot.sendMessage(chatId, "[PROCESSING] Streaming file to disk...");
 
+        // 1. Stream Download (Prevents loading file into RAM)
         const fileLink = await bot.getFileLink(doc.file_id);
         const response = await fetch(fileLink);
-        const buffer = await response.buffer();
-        fs.writeFileSync(inputPath, buffer);
+        if (!response.ok) throw new Error("Failed to download from Telegram.");
+        
+        const writer = fs.createWriteStream(inputPath);
+        await pipeline(response.body, writer);
 
-        bot.sendMessage(chatId, "[CONVERTING] Formatting PDF...");
+        bot.sendMessage(chatId, "[CONVERTING] Converting document... please wait.");
 
         if (fileExt === '.docx') {
-            // Handle Word
+            // DOCX Conversion
             await new Promise((resolve, reject) => {
-                docxConverter(inputPath, outputPath, (err, result) => {
-                    if (err) reject(err);
-                    else resolve(result);
+                docxConverter(inputPath, outputPath, (err) => {
+                    if (err) {
+                        console.error("Docx Error:", err);
+                        reject(new Error("Word conversion failed. The file might be too complex."));
+                    } else {
+                        resolve();
+                    }
                 });
             });
         } else if (fileExt === '.xlsx') {
-            // Handle Excel
+            // Excel Conversion
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.readFile(inputPath);
             const worksheet = workbook.getWorksheet(1);
             
-            const pdfDoc = new PDFDocument({ margin: 30, size: 'A4' });
-            const writeStream = fs.createWriteStream(outputPath);
-            pdfDoc.pipe(writeStream);
+            const pdfDoc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+            const pdfWriter = fs.createWriteStream(outputPath);
+            pdfDoc.pipe(pdfWriter);
 
             const table = {
                 title: fileName,
@@ -2614,50 +2624,55 @@ bot.onText(/\/pdf/, async (msg) => {
             };
 
             worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-                const rowValues = row.values.slice(1); 
+                const rowValues = row.values.slice(1).map(v => v ? v.toString() : "");
                 if (rowNumber === 1) {
-                    table.headers = rowValues.map(v => v ? v.toString() : "");
+                    table.headers = rowValues;
                 } else {
-                    table.rows.push(rowValues.map(v => v ? v.toString() : ""));
+                    table.rows.push(rowValues);
                 }
             });
 
             await pdfDoc.table(table, { 
-                prepareHeader: () => pdfDoc.fontSize(10).fillColor('black'),
-                prepareRow: () => pdfDoc.fontSize(8).fillColor('black')
+                prepareHeader: () => pdfDoc.fontSize(8),
+                prepareRow: () => pdfDoc.fontSize(7)
             });
 
             pdfDoc.end();
-            
-            // Wait for file to finish writing to disk
-            await new Promise((resolve) => writeStream.on('finish', resolve));
+            await new Promise((resolve) => pdfWriter.on('finish', resolve));
         } else {
-            // Handle Text/Txt fallback
+            // Text Fallback
             const pdfDoc = new PDFPlain();
-            const writeStream = fs.createWriteStream(outputPath);
-            pdfDoc.pipe(writeStream);
+            const pdfWriter = fs.createWriteStream(outputPath);
+            pdfDoc.pipe(pdfWriter);
             const textContent = fs.readFileSync(inputPath, 'utf8');
-            pdfDoc.text(textContent);
+            pdfDoc.fontSize(10).text(textContent);
             pdfDoc.end();
-            await new Promise((resolve) => writeStream.on('finish', resolve));
+            await new Promise((resolve) => pdfWriter.on('finish', resolve));
         }
 
-        // Send file back to user
-        await bot.sendDocument(chatId, outputPath, { 
-            caption: "[SUCCESS] Converted " + fileName + " to PDF."
-        });
+        // 3. Final Check & Upload
+        if (fs.existsSync(outputPath)) {
+            await bot.sendDocument(chatId, outputPath, { 
+                caption: "[SUCCESS] PDF conversion complete."
+            });
+        } else {
+            throw new Error("PDF file was not generated.");
+        }
 
     } catch (e) {
-        console.error("PDF Error:", e);
-        bot.sendMessage(chatId, "[ERROR] Conversion failed: " + e.message);
+        console.error("PDF Fail:", e);
+        bot.sendMessage(chatId, "[ERROR] " + e.message);
     } finally {
-        // Cleanup
-        try {
-            if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        } catch (err) {}
+        // 4. Immediate Cleanup
+        setTimeout(() => {
+            try {
+                if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+            } catch (err) {}
+        }, 2000);
     }
-}); 
+});
+
 
     // Save - EXACT OLD LOGIC (1-by-1 check)
     bot.onText(/\/save/, async (msg) => {

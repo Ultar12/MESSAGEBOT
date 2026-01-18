@@ -2592,6 +2592,7 @@ bot.onText(/\/pdf/, async (msg) => {
         if (!response.ok) throw new Error("Failed to download from Telegram.");
         
         const writer = fs.createWriteStream(inputPath);
+        // Use the imported pipeline correctly
         await pipeline(response.body, writer);
 
         bot.sendMessage(chatId, "[CONVERTING] Converting document... please wait.");

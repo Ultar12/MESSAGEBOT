@@ -762,37 +762,37 @@ bot.onText(/\/txt/, async (msg) => {
     });
 
 
-        // --- /txt [Reply to file] ---
-    // 1. Filters connected sessions.
-    // 2. Checks WhatsApp Ban Status.
-    // 3. Sends Active and Banned lists separately.
+        
+
+                // --- /txt [Reply to file] ---
+    // 1. Streaming Mode: Sends Active numbers IMMEDIATELY as they are found.
+    // 2. Accumulates Banned numbers to show at the end.
     bot.onText(/\/tx/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
-        // Authorization: Allow both Admin and Subadmins
+        // Authorization
         const isUserAdmin = (userId === ADMIN_ID);
         const isSubAdmin = SUBADMIN_IDS.includes(userId);
-
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /txt');
         }
 
-        // We need an active client to perform the checks
+        // Need an active bot to perform checks
         const activeFolders = Object.keys(clients).filter(f => clients[f]);
         const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
         if (!sock) {
-            return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected to perform ban checks.');
+            return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected to perform checks.');
         }
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Reading file and verifying accounts...');
+            bot.sendMessage(chatId, '[STREAMING] Checking file... Active numbers will be sent immediately.');
 
-            // --- STEP 1: Build List of Connected Numbers (Normalized) ---
+            // --- STEP 1: Get Connected Numbers (to skip duplicates) ---
             const connectedSet = new Set();
             Object.values(shortIdMap).forEach(session => {
                 const res = normalizeWithCountry(session.phone);
@@ -804,38 +804,30 @@ bot.onText(/\/txt/, async (msg) => {
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const rawText = await response.text();
-
-            // --- STEP 3: Process, Filter & Check Ban Status ---
             const lines = rawText.split(/\r?\n/);
+
+            // --- STEP 3: Streaming Loop ---
+            let activeBatch = []; // Buffer for active numbers
+            const bannedNumbers = []; // Store banned ones for the end
             
-            let skippedConnected = 0;
-            let detectedCountry = "Unknown";
-            let detectedCode = "N/A";
-            
-            const validNumbers = [];
-            const bannedNumbers = [];
             let totalChecked = 0;
+            let skippedConnected = 0;
+            let validCount = 0;
 
             for (const line of lines) {
                 const result = normalizeWithCountry(line.trim());
 
                 if (result && result.num) {
-                    // Capture country info from the first valid number
-                    if (detectedCountry === "Unknown" && result.name !== "Local/Unknown") {
-                        detectedCountry = result.name;
-                        detectedCode = result.code;
-                    }
-
-                    // 1. Filter out numbers already running on the bot
+                    
+                    // Filter duplicates
                     if (connectedSet.has(result.num)) {
                         skippedConnected++;
                         continue;
                     }
 
-                    // 2. Check WhatsApp Status
+                    // Check Status
                     totalChecked++;
                     try {
-                        // Construct JID
                         const jid = result.code === 'N/A' 
                             ? `${result.num}@s.whatsapp.net` 
                             : `${result.code}${result.num.replace(/^0/, '')}@s.whatsapp.net`;
@@ -843,63 +835,59 @@ bot.onText(/\/txt/, async (msg) => {
                         const [check] = await sock.onWhatsApp(jid);
                         
                         if (check && check.exists) {
-                            validNumbers.push(result.num);
+                            // Found Valid: Add to batch
+                            activeBatch.push(result.num);
+                            validCount++;
+
+                            // **TRIGGER: Send Batch immediately if we have 5**
+                            if (activeBatch.length === 5) {
+                                const msgText = activeBatch.map(n => '`' + n + '`').join('\n');
+                                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                                activeBatch = []; // Clear buffer
+                            }
                         } else {
+                            // Found Banned: Save for later
                             bannedNumbers.push(result.num);
                         }
                     } catch (err) {
-                        // If check fails (network error), treat as banned or skip
+                        // Network error? Treat as banned/skip for now
                         bannedNumbers.push(result.num);
                     }
 
-                    // Anti-ban delay (small pause every 10 checks to protect the checker bot)
-                    if (totalChecked % 10 === 0) await delay(500);
+                    // Safety delay to protect your checker bot (300ms)
+                    if (totalChecked % 5 === 0) await delay(300);
                 }
             }
 
-            if (totalChecked === 0) {
-                return bot.sendMessage(chatId, '[DONE] No new numbers found to check.\nSkipped ' + skippedConnected + ' connected numbers.');
+            // --- STEP 4: Flush Remaining Active Numbers ---
+            if (activeBatch.length > 0) {
+                const msgText = activeBatch.map(n => '`' + n + '`').join('\n');
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
             }
 
-            // --- STEP 4: Send Report ---
-            bot.sendMessage(chatId, 
-                '[FILTER REPORT]\n' +
-                'Country: ' + detectedCountry + ' (+' + detectedCode + ')\n' +
-                'Already Connected: ' + skippedConnected + '\n' +
-                'Checked: ' + totalChecked + '\n' +
-                'Active: ' + validNumbers.length + '\n' +
-                'Banned/Invalid: ' + bannedNumbers.length
-            );
-
-            // --- STEP 5: Send Active Numbers Batches ---
-            if (validNumbers.length > 0) {
-                await bot.sendMessage(chatId, '🟢 **[ACTIVE NUMBERS]**', { parse_mode: 'Markdown' });
-                for (let i = 0; i < validNumbers.length; i += 5) {
-                    const chunk = validNumbers.slice(i, i + 5);
-                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                    await delay(1000);
-                }
-            }
-
-            // --- STEP 6: Send Banned Numbers Batches ---
+            // --- STEP 5: Send Banned Report (At the end) ---
             if (bannedNumbers.length > 0) {
-                await delay(1000);
-                await bot.sendMessage(chatId, '🔴 **[BANNED/INVALID NUMBERS]**', { parse_mode: 'Markdown' });
-                for (let i = 0; i < bannedNumbers.length; i += 5) {
-                    const chunk = bannedNumbers.slice(i, i + 5);
+                await bot.sendMessage(chatId, `🔴 **[BANNED / INVALID]** (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
+                
+                // Send banned in batches of 10 to clear them out quickly
+                for (let i = 0; i < bannedNumbers.length; i += 10) {
+                    const chunk = bannedNumbers.slice(i, i + 10);
                     const msgText = chunk.map(n => '`' + n + '`').join('\n');
                     await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                    await delay(1000);
+                    await delay(800);
                 }
             }
-            
-            bot.sendMessage(chatId, '[DONE] Processing complete.');
+
+            // Final Summary
+            bot.sendMessage(chatId, 
+                `[DONE]\nChecked: ${totalChecked}\nActive: ${validCount}\nBanned: ${bannedNumbers.length}\nSkipped: ${skippedConnected}`
+            );
 
         } catch (e) {
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
+
 
 
         /**

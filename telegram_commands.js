@@ -762,6 +762,146 @@ bot.onText(/\/txt/, async (msg) => {
     });
 
 
+        // --- /txt [Reply to file] ---
+    // 1. Filters connected sessions.
+    // 2. Checks WhatsApp Ban Status.
+    // 3. Sends Active and Banned lists separately.
+    bot.onText(/\/tx/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // Authorization: Allow both Admin and Subadmins
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /txt');
+        }
+
+        // We need an active client to perform the checks
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
+
+        if (!sock) {
+            return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected to perform ban checks.');
+        }
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Reading file and verifying accounts...');
+
+            // --- STEP 1: Build List of Connected Numbers (Normalized) ---
+            const connectedSet = new Set();
+            Object.values(shortIdMap).forEach(session => {
+                const res = normalizeWithCountry(session.phone);
+                if (res) connectedSet.add(res.num);
+            });
+
+            // --- STEP 2: Read File ---
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const rawText = await response.text();
+
+            // --- STEP 3: Process, Filter & Check Ban Status ---
+            const lines = rawText.split(/\r?\n/);
+            
+            let skippedConnected = 0;
+            let detectedCountry = "Unknown";
+            let detectedCode = "N/A";
+            
+            const validNumbers = [];
+            const bannedNumbers = [];
+            let totalChecked = 0;
+
+            for (const line of lines) {
+                const result = normalizeWithCountry(line.trim());
+
+                if (result && result.num) {
+                    // Capture country info from the first valid number
+                    if (detectedCountry === "Unknown" && result.name !== "Local/Unknown") {
+                        detectedCountry = result.name;
+                        detectedCode = result.code;
+                    }
+
+                    // 1. Filter out numbers already running on the bot
+                    if (connectedSet.has(result.num)) {
+                        skippedConnected++;
+                        continue;
+                    }
+
+                    // 2. Check WhatsApp Status
+                    totalChecked++;
+                    try {
+                        // Construct JID
+                        const jid = result.code === 'N/A' 
+                            ? `${result.num}@s.whatsapp.net` 
+                            : `${result.code}${result.num.replace(/^0/, '')}@s.whatsapp.net`;
+                        
+                        const [check] = await sock.onWhatsApp(jid);
+                        
+                        if (check && check.exists) {
+                            validNumbers.push(result.num);
+                        } else {
+                            bannedNumbers.push(result.num);
+                        }
+                    } catch (err) {
+                        // If check fails (network error), treat as banned or skip
+                        bannedNumbers.push(result.num);
+                    }
+
+                    // Anti-ban delay (small pause every 10 checks to protect the checker bot)
+                    if (totalChecked % 10 === 0) await delay(500);
+                }
+            }
+
+            if (totalChecked === 0) {
+                return bot.sendMessage(chatId, '[DONE] No new numbers found to check.\nSkipped ' + skippedConnected + ' connected numbers.');
+            }
+
+            // --- STEP 4: Send Report ---
+            bot.sendMessage(chatId, 
+                '[FILTER REPORT]\n' +
+                'Country: ' + detectedCountry + ' (+' + detectedCode + ')\n' +
+                'Already Connected: ' + skippedConnected + '\n' +
+                'Checked: ' + totalChecked + '\n' +
+                'Active: ' + validNumbers.length + '\n' +
+                'Banned/Invalid: ' + bannedNumbers.length
+            );
+
+            // --- STEP 5: Send Active Numbers Batches ---
+            if (validNumbers.length > 0) {
+                await bot.sendMessage(chatId, '🟢 **[ACTIVE NUMBERS]**', { parse_mode: 'Markdown' });
+                for (let i = 0; i < validNumbers.length; i += 5) {
+                    const chunk = validNumbers.slice(i, i + 5);
+                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
+                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                    await delay(1000);
+                }
+            }
+
+            // --- STEP 6: Send Banned Numbers Batches ---
+            if (bannedNumbers.length > 0) {
+                await delay(1000);
+                await bot.sendMessage(chatId, '🔴 **[BANNED/INVALID NUMBERS]**', { parse_mode: 'Markdown' });
+                for (let i = 0; i < bannedNumbers.length; i += 5) {
+                    const chunk = bannedNumbers.slice(i, i + 5);
+                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
+                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                    await delay(1000);
+                }
+            }
+            
+            bot.sendMessage(chatId, '[DONE] Processing complete.');
+
+        } catch (e) {
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+        }
+    });
+
+
         /**
      * --- /checknum [number] ---
      * Performs a deep scan to detect:

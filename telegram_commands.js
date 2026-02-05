@@ -1519,7 +1519,7 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
                     currentBatch.push(`\`${rawNum}\``);
                     totalFetched++;
 
-                    if (currentBatch.length === 5) {
+                    if (currentBatch.length === 6) {
                         await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                         currentBatch = [];
                         await delay(1000);

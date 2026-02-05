@@ -1458,6 +1458,20 @@ bot.onText(/\/nums/, async (msg) => {
 });
 
 
+// --- Helper: Define Country Codes ---
+const getCountryPrefix = (text) => {
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes("venezuela")) return "58";
+    if (lowerText.includes("bolivia")) return "591";
+    if (lowerText.includes("cameroon")) return "237";
+    if (lowerText.includes("haiti")) return "509";
+    if (lowerText.includes("israel")) return "972";
+    if (lowerText.includes("vietnam")) return "84";
+    if (lowerText.includes("tajikistan")) return "992";
+    if (lowerText.includes("nigeria")) return "234";
+    return ""; // Default if not found
+};
+
 // --- /getnum [Amount] ---
 bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     deleteUserCommand(bot, msg);
@@ -1474,39 +1488,34 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     try {
         await ensureConnected();
 
-        // 1. Start the bot and prompt the user
         await userBot.sendMessage(targetBot, { message: "/start" });
-        bot.sendMessage(chatId, "🚀 [WAITING] I've started the bot. Please go to UxOTP and **select your country** now.");
+        bot.sendMessage(chatId, "🚀 [WAITING] Please go to UxOTP and **select your country** now.");
 
-        // 2. Wait for the user to select a country
         let countrySelected = false;
-        let selectionMsg = null;
+        let countryPrefix = "";
         let attempts = 0;
 
-        while (!countrySelected && attempts < 20) { // 60 second timeout
+        while (!countrySelected && attempts < 20) {
             const response = await userBot.getMessages(targetBot, { limit: 1 });
             const latest = response[0];
             
-            // Check if the latest message looks like a number list (contains "Numbers:" or digits)
             if (latest && latest.message && latest.message.includes("Numbers:")) {
-                selectionMsg = latest;
+                countryPrefix = getCountryPrefix(latest.message);
                 countrySelected = true;
             } else {
                 attempts++;
-                await delay(3000); // Check every 3 seconds
+                await delay(3000);
             }
         }
 
         if (!countrySelected) {
-            return bot.sendMessage(chatId, "⚠️ [TIMEOUT] You didn't select a country in time. Please try again.");
+            return bot.sendMessage(chatId, "[TIMEOUT] Selection not detected.");
         }
 
-        bot.sendMessage(chatId, "✅ [DETECTED] Country selected! Starting extraction...");
+        bot.sendMessage(chatId, `[DETECTED] Starting extraction (Code: +${countryPrefix})...`);
 
-        // 3. Extraction Loop
         while (totalFetched < countLimit) {
             await ensureConnected();
-            
             const response = await userBot.getMessages(targetBot, { limit: 1 });
             const currentMsg = response[0];
             const text = currentMsg.message || "";
@@ -1516,18 +1525,27 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
             if (phoneMatches && phoneMatches.length > 0) {
                 for (const rawNum of phoneMatches) {
                     if (totalFetched >= countLimit) break;
-                    currentBatch.push(`\`${rawNum}\``);
+
+                    // 1. Logic to separate code from number
+                    let formattedNum = rawNum;
+                    if (countryPrefix && rawNum.startsWith(countryPrefix)) {
+                        // Splits into "58 416..." format
+                        const actualNum = rawNum.substring(countryPrefix.length);
+                        formattedNum = `${countryPrefix} ${actualNum}`;
+                    }
+
+                    currentBatch.push(`\`${formattedNum}\``);
                     totalFetched++;
 
+                    // 2. Batch size set to 6
                     if (currentBatch.length === 6) {
-                        await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                        await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 5}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                         currentBatch = [];
                         await delay(1000);
                     }
                 }
             }
 
-            // 4. Click "New Numbers" if we still need more
             if (totalFetched < countLimit) {
                 let newNumbersBtn = null;
                 if (currentMsg.replyMarkup) {

@@ -1458,7 +1458,8 @@ bot.onText(/\/nums/, async (msg) => {
 });
 
 
-// --- Helper: Define Country Codes ---
+
+                        // --- Helper: Define Country Codes to Strip ---
 const getCountryPrefix = (text) => {
     const lowerText = text.toLowerCase();
     if (lowerText.includes("venezuela")) return "58";
@@ -1469,7 +1470,7 @@ const getCountryPrefix = (text) => {
     if (lowerText.includes("vietnam")) return "84";
     if (lowerText.includes("tajikistan")) return "992";
     if (lowerText.includes("nigeria")) return "234";
-    return ""; // Default if not found
+    return ""; 
 };
 
 // --- /getnum [Amount] ---
@@ -1509,10 +1510,10 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
         }
 
         if (!countrySelected) {
-            return bot.sendMessage(chatId, "[TIMEOUT] Selection not detected.");
+            return bot.sendMessage(chatId, "⚠️ [TIMEOUT] Selection not detected.");
         }
 
-        bot.sendMessage(chatId, `[DETECTED] Starting extraction (Code: +${countryPrefix})...`);
+        bot.sendMessage(chatId, `✅ [DETECTED] Stripping code: +${countryPrefix}. Starting extraction...`);
 
         while (totalFetched < countLimit) {
             await ensureConnected();
@@ -1526,15 +1527,14 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
                 for (const rawNum of phoneMatches) {
                     if (totalFetched >= countLimit) break;
 
-                    // 1. Logic to separate code from number
-                    let formattedNum = rawNum;
+                    // 1. Logic to REMOVE the country code
+                    let cleanNum = rawNum;
                     if (countryPrefix && rawNum.startsWith(countryPrefix)) {
-                        // Splits into "58 416..." format
-                        const actualNum = rawNum.substring(countryPrefix.length);
-                        formattedNum = `${countryPrefix} ${actualNum}`;
+                        // This removes the prefix (e.g., 58) from the start of the string
+                        cleanNum = rawNum.substring(countryPrefix.length);
                     }
 
-                    currentBatch.push(`\`${formattedNum}\``);
+                    currentBatch.push(`\`${cleanNum}\``);
                     totalFetched++;
 
                     // 2. Batch size set to 6
@@ -1580,6 +1580,7 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
         bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
     }
 });
+
 
 
     

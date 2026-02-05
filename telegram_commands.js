@@ -1458,101 +1458,81 @@ bot.onText(/\/nums/, async (msg) => {
 });
 
 
-    // --- /getnum [Button Number] [Total Count] ---
-bot.onText(/\/getnum\s+(\d+)\s+(\d+)/i, async (msg, match) => {
+// --- /getnum [Amount] ---
+bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
     const userId = chatId.toString();
     
-    // Authorization check
     if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-    const buttonIndex = parseInt(match[1]); // e.g., 1 for Venezuela
-    const countLimit = parseInt(match[2]);  // total numbers you want
-
-    if (buttonIndex < 1) {
-        return bot.sendMessage(chatId, "[ERROR] Button number must be 1 or higher.");
-    }
-
-    try {
-        await ensureConnected();
-    } catch (err) {
-        return bot.sendMessage(chatId, "[ERROR] UserBot offline: " + err.message);
-    }
-
-    bot.sendMessage(chatId, `[SYSTEM] Task: Selecting Button #${buttonIndex} to get ${countLimit} numbers.`);
-
-    const targetBot = "UxOtpBOT";
+    const countLimit = parseInt(match[1]); 
+    const targetBot = "UxOtpBOT"; 
     let totalFetched = 0;
     let currentBatch = [];
 
     try {
-        // 1. Reset the Bot Menu
+        await ensureConnected();
+
+        // 1. Start the bot and prompt the user
         await userBot.sendMessage(targetBot, { message: "/start" });
-        await delay(4000);
+        bot.sendMessage(chatId, "🚀 [WAITING] I've started the bot. Please go to UxOTP and **select your country** now.");
 
-        // 2. Find the Menu Message
-        const messages = await userBot.getMessages(targetBot, { limit: 10 });
-        const menuMsg = messages.find(m => m.replyMarkup);
+        // 2. Wait for the user to select a country
+        let countrySelected = false;
+        let selectionMsg = null;
+        let attempts = 0;
 
-        if (!menuMsg) return bot.sendMessage(chatId, "[ERROR] No menu found. Check if UxOTP is responding.");
-
-        // 3. Select Button by Index (Position)
-        let allButtons = [];
-        for (const row of menuMsg.replyMarkup.rows) {
-            for (const btn of row.buttons) {
-                allButtons.push(btn);
+        while (!countrySelected && attempts < 20) { // 60 second timeout
+            const response = await userBot.getMessages(targetBot, { limit: 1 });
+            const latest = response[0];
+            
+            // Check if the latest message looks like a number list (contains "Numbers:" or digits)
+            if (latest && latest.message && latest.message.includes("Numbers:")) {
+                selectionMsg = latest;
+                countrySelected = true;
+            } else {
+                attempts++;
+                await delay(3000); // Check every 3 seconds
             }
         }
 
-        const targetBtn = allButtons[buttonIndex - 1];
-        if (!targetBtn) {
-            return bot.sendMessage(chatId, `[ERROR] Button #${buttonIndex} not found. Only ${allButtons.length} buttons available.`);
+        if (!countrySelected) {
+            return bot.sendMessage(chatId, "⚠️ [TIMEOUT] You didn't select a country in time. Please try again.");
         }
 
-        bot.sendMessage(chatId, `[ACTION] Selecting: ${targetBtn.text}`);
-        await menuMsg.click({ button: targetBtn });
-        await delay(5000);
+        bot.sendMessage(chatId, "✅ [DETECTED] Country selected! Starting extraction...");
 
-        // 4. Extraction Loop (UxOTP Multi-Number logic)
+        // 3. Extraction Loop
         while (totalFetched < countLimit) {
             await ensureConnected();
             
-            // Get the latest message from the bot
             const response = await userBot.getMessages(targetBot, { limit: 1 });
             const currentMsg = response[0];
             const text = currentMsg.message || "";
 
-            // Regex to find all numbers (10+ digits) in the text
             const phoneMatches = text.match(/\d{10,15}/g);
             
             if (phoneMatches && phoneMatches.length > 0) {
                 for (const rawNum of phoneMatches) {
                     if (totalFetched >= countLimit) break;
-
                     currentBatch.push(`\`${rawNum}\``);
                     totalFetched++;
 
-                    // Send batch updates to user every 5 numbers
                     if (currentBatch.length === 5) {
                         await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 4}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                         currentBatch = [];
                         await delay(1000);
                     }
                 }
-            } else {
-                bot.sendMessage(chatId, "[INFO] No numbers found yet. Waiting for update...");
-                await delay(4000);
-                continue; 
             }
 
-            // 5. Click "New Numbers" if we still need more
+            // 4. Click "New Numbers" if we still need more
             if (totalFetched < countLimit) {
                 let newNumbersBtn = null;
                 if (currentMsg.replyMarkup) {
                     for (const row of currentMsg.replyMarkup.rows) {
                         for (const b of row.buttons) {
-                            // Specifically matches the UxOTP "New Numbers" button text
                             if (b.text.toLowerCase().includes("new numbers")) {
                                 newNumbersBtn = b;
                                 break;
@@ -1564,26 +1544,25 @@ bot.onText(/\/getnum\s+(\d+)\s+(\d+)/i, async (msg, match) => {
 
                 if (newNumbersBtn) {
                     await currentMsg.click({ button: newNumbersBtn });
-                    await delay(6000); // Wait for the bot to generate the next list
+                    await delay(6500); 
                 } else {
-                    bot.sendMessage(chatId, "[INFO] 'New Numbers' button not found. Ending.");
                     break;
                 }
             }
         }
 
-        // Final cleanup for remaining numbers
         if (currentBatch.length > 0) {
             await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
         }
 
-        bot.sendMessage(chatId, `[COMPLETED] Successfully fetched ${totalFetched} numbers.`);
+        bot.sendMessage(chatId, `[COMPLETED] Successfully grabbed ${totalFetched} numbers.`);
 
     } catch (e) {
         console.error(e);
         bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
     }
 });
+
 
     
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {

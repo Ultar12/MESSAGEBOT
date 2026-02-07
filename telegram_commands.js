@@ -1462,6 +1462,7 @@ bot.onText(/\/nums/, async (msg) => {
 // --- Helper: Define Country Codes to Strip ---
 const getCountryPrefix = (text) => {
     const lowerText = text.toLowerCase();
+    // Optimized to match Richie bot format "Your Venezuela 🇻🇪3 Whatsapp Number:"
     if (lowerText.includes("venezuela")) return "58";
     if (lowerText.includes("nigeria")) return "234";
     if (lowerText.includes("vietnam")) return "84";
@@ -1509,7 +1510,7 @@ bot.on('callback_query', async (callbackQuery) => {
         await ensureConnected();
 
         if (botType === 'rishi') {
-            // Using the specific bold trigger for Richie bot
+            // Sends the exact bold button text from Richie bot
             await userBot.sendMessage(targetBot, { message: "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫" });
             bot.sendMessage(chatId, "SENT: Get Number command. Please select your country in the bot now.");
         } else {
@@ -1525,16 +1526,12 @@ bot.on('callback_query', async (callbackQuery) => {
             const res = await userBot.getMessages(targetBot, { limit: 1 });
             const text = res[0]?.message || "";
             
-            // Fixed: Stricter check for the Richie bot format (includes "+" and "Number:")
-            if ((text.includes("Number:") || text.includes("Numbers:")) && text.includes("+")) {
-                countryPrefix = getCountryPrefix(text);
-                numberVisible = true;
-            } else if (botType === 'uxotp' && text.includes("Numbers:")) {
-                // Compatibility for UxOTP list format
+            // Fixed: Looking for "+" and "Number" (Singular) to match Richie Bot image
+            if (text.includes("Number") && text.includes("+")) {
                 countryPrefix = getCountryPrefix(text);
                 numberVisible = true;
             } else {
-                await delay(2500); // Check every 2.5 seconds
+                await delay(2000); // Check every 2 seconds
             }
         }
 
@@ -1547,17 +1544,17 @@ bot.on('callback_query', async (callbackQuery) => {
             const currentMsg = response[0];
             const text = currentMsg.message || "";
             
-            // Grab any sequence of digits starting with "+"
-            const phoneMatches = text.match(/\+\d{10,15}/g) || text.match(/\d{10,15}/g); 
+            // Grab any number that follows a "+" to avoid grabbing IDs
+            const phoneMatches = text.match(/\+\d{10,15}/g); 
             
             if (phoneMatches) {
                 for (let rawNum of phoneMatches) {
                     if (totalFetched >= countLimit) break;
 
-                    // Clean the number (remove + or list markers)
+                    // Remove the + and trim
                     let cleanNum = rawNum.replace("+", "").trim();
                     
-                    // Strip the country prefix
+                    // Strip the country prefix (e.g., remove 58)
                     if (countryPrefix && cleanNum.startsWith(countryPrefix)) {
                         cleanNum = cleanNum.substring(countryPrefix.length);
                     }
@@ -1580,7 +1577,7 @@ bot.on('callback_query', async (callbackQuery) => {
                     for (const row of currentMsg.replyMarkup.rows) {
                         for (const b of row.buttons) {
                             const btnText = b.text.toLowerCase();
-                            // Match "Get Next" for Richie or "New Numbers" for UxOTP
+                            // Handles "Get Next" for Richie and "New Numbers" for UxOTP
                             if (btnText.includes("get next") || btnText.includes("new numbers")) {
                                 nextBtn = b;
                                 break;
@@ -1592,7 +1589,7 @@ bot.on('callback_query', async (callbackQuery) => {
 
                 if (nextBtn) {
                     await currentMsg.click({ button: nextBtn });
-                    // Richie bot is single-number, so we wait less; UxOTP wait more
+                    // Richie bot (single number) wait 4.5s; UxOTP (list) wait 6.5s
                     await delay(botType === 'rishi' ? 4500 : 6500); 
                 } else {
                     break; 

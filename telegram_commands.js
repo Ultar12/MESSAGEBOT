@@ -1463,10 +1463,11 @@ bot.onText(/\/nums/, async (msg) => {
 const getCountryPrefix = (text) => {
     const lowerText = text.toLowerCase();
     if (lowerText.includes("venezuela")) return "58";
+    if (lowerText.includes("nigeria")) return "234";
+    if (lowerText.includes("vietnam")) return "84";
     if (lowerText.includes("bolivia")) return "591";
     if (lowerText.includes("cameroon")) return "237";
     if (lowerText.includes("haiti")) return "509";
-    if (lowerText.includes("nigeria")) return "234";
     return ""; 
 };
 
@@ -1477,20 +1478,20 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     const userId = chatId.toString();
     
     if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
-
     const countLimit = parseInt(match[1]);
 
     const opts = {
         reply_markup: {
             inline_keyboard: [
-                [{ text: "UxOTP BOT (Lists of 5)", callback_data: `bot_uxotp_${countLimit}` }],
-                [{ text: "RishiXfreebot (Single Num)", callback_data: `bot_rishi_${countLimit}` }]
+                [{ text: "UxOTP BOT", callback_data: `bot_uxotp_${countLimit}` }],
+                [{ text: "TEAM 56 (Richie)", callback_data: `bot_rishi_${countLimit}` }]
             ]
         }
     };
-    bot.sendMessage(chatId, "🤖 Select the source bot:", opts);
+    bot.sendMessage(chatId, "Select the source bot:", opts);
 });
 
+// --- Callback Query Handler ---
 bot.on('callback_query', async (callbackQuery) => {
     const data = callbackQuery.data;
     const chatId = callbackQuery.message.chat.id;
@@ -1509,47 +1510,65 @@ bot.on('callback_query', async (callbackQuery) => {
         await userBot.sendMessage(targetBot, { message: "/start" });
 
         if (botType === 'rishi') {
-            bot.sendMessage(chatId, "👉 [RishiX] Click **'Get Number'**, then **select your country**.");
+            bot.sendMessage(chatId, "WAITING: Checking verification status... Ensure you have joined the required channels.");
+            
+            let verified = false;
+            for (let i = 0; i < 15; i++) {
+                const res = await userBot.getMessages(targetBot, { limit: 1 });
+                if (res[0]?.message?.includes("You are a Verified Member!")) {
+                    verified = true;
+                    break;
+                }
+                await delay(3000);
+            }
+            if (!verified) return bot.sendMessage(chatId, "ERROR: You are not verified on TEAM 56 BOT. Verify manually.");
+
+            bot.sendMessage(chatId, "VERIFIED: Click 'Get Number', then Select Country.");
         } else {
-            bot.sendMessage(chatId, "👉 [UxOTP] Please **select your country**.");
+            bot.sendMessage(chatId, "UxOTP: Please select your country.");
         }
 
-        let countrySelected = false;
+        // 2. Strict Detection Logic
+        let numberVisible = false;
         let countryPrefix = "";
-        let attempts = 0;
-
-        // Wait for first number appearance
-        while (!countrySelected && attempts < 30) {
-            const response = await userBot.getMessages(targetBot, { limit: 1 });
-            const latest = response[0];
-            const text = latest?.message || "";
-
-            if (text.match(/\d{10,15}/)) {
+        
+        while (!numberVisible) {
+            const res = await userBot.getMessages(targetBot, { limit: 1 });
+            const text = res[0]?.message || "";
+            
+            // Checks for 'Number:' and '+' to ensure it is not a User ID
+            if (text.includes("Number:") && text.includes("+")) {
                 countryPrefix = getCountryPrefix(text);
-                countrySelected = true;
+                if (countryPrefix !== "") {
+                    numberVisible = true;
+                } else {
+                    bot.sendMessage(chatId, "Country detected but code not in list. Numbers may not be stripped.");
+                    numberVisible = true;
+                }
             } else {
-                attempts++;
                 await delay(3000);
             }
         }
 
-        if (!countrySelected) return bot.sendMessage(chatId, "⚠️ [TIMEOUT] Selection not detected.");
+        bot.sendMessage(chatId, `STARTED: Detected Country Code: +${countryPrefix}`);
 
-        bot.sendMessage(chatId, `✅ Extraction started (Code: +${countryPrefix})...`);
-
+        // 3. Extraction Loop
         while (totalFetched < countLimit) {
             await ensureConnected();
             const response = await userBot.getMessages(targetBot, { limit: 1 });
             const currentMsg = response[0];
             const text = currentMsg.message || "";
-
-            const phoneMatches = text.match(/\d{10,15}/g);
+            
+            // Grabs numbers only if they start with '+'
+            const phoneMatches = text.match(/\+\d{10,15}/g); 
             
             if (phoneMatches) {
-                for (const rawNum of phoneMatches) {
+                for (let rawNum of phoneMatches) {
                     if (totalFetched >= countLimit) break;
 
+                    rawNum = rawNum.replace("+", "");
                     let cleanNum = rawNum;
+                    
                     if (countryPrefix && rawNum.startsWith(countryPrefix)) {
                         cleanNum = rawNum.substring(countryPrefix.length);
                     }
@@ -1571,7 +1590,6 @@ bot.on('callback_query', async (callbackQuery) => {
                     for (const row of currentMsg.replyMarkup.rows) {
                         for (const b of row.buttons) {
                             const btnText = b.text.toLowerCase();
-                            // UxOTP: "New Numbers" | RishiX: "Get Next"
                             if (btnText.includes("new numbers") || btnText.includes("get next")) {
                                 nextBtn = b;
                                 break;
@@ -1583,8 +1601,7 @@ bot.on('callback_query', async (callbackQuery) => {
 
                 if (nextBtn) {
                     await currentMsg.click({ button: nextBtn });
-                    // Wait longer for single-number bots to avoid flooding
-                    await delay(botType === 'rishi' ? 4500 : 7000); 
+                    await delay(botType === 'rishi' ? 5000 : 7000); 
                 } else {
                     break; 
                 }
@@ -1594,12 +1611,9 @@ bot.on('callback_query', async (callbackQuery) => {
         if (currentBatch.length > 0) {
             await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
         }
-
-        bot.sendMessage(chatId, `[COMPLETED] Successfully grabbed ${totalFetched} numbers.`);
-
+        bot.sendMessage(chatId, `COMPLETED: Successfully grabbed ${totalFetched} numbers.`);
     } catch (e) {
-        console.error(e);
-        bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
+        bot.sendMessage(chatId, "USERBOT ERROR: " + e.message);
     }
 });
 

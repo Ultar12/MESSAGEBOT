@@ -1459,16 +1459,13 @@ bot.onText(/\/nums/, async (msg) => {
 
 
 
-                        // --- Helper: Define Country Codes to Strip ---
+// --- Helper: Define Country Codes to Strip ---
 const getCountryPrefix = (text) => {
     const lowerText = text.toLowerCase();
     if (lowerText.includes("venezuela")) return "58";
     if (lowerText.includes("bolivia")) return "591";
     if (lowerText.includes("cameroon")) return "237";
     if (lowerText.includes("haiti")) return "509";
-    if (lowerText.includes("israel")) return "972";
-    if (lowerText.includes("vietnam")) return "84";
-    if (lowerText.includes("tajikistan")) return "992";
     if (lowerText.includes("nigeria")) return "234";
     return ""; 
 };
@@ -1481,27 +1478,54 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     
     if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
-    const countLimit = parseInt(match[1]); 
-    const targetBot = "UxOtpBOT"; 
+    const countLimit = parseInt(match[1]);
+
+    const opts = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "UxOTP BOT (Lists of 5)", callback_data: `bot_uxotp_${countLimit}` }],
+                [{ text: "RishiXfreebot (Single Num)", callback_data: `bot_rishi_${countLimit}` }]
+            ]
+        }
+    };
+    bot.sendMessage(chatId, "🤖 Select the source bot:", opts);
+});
+
+bot.on('callback_query', async (callbackQuery) => {
+    const data = callbackQuery.data;
+    const chatId = callbackQuery.message.chat.id;
+    const [_, botType, amountStr] = data.split('_');
+    const countLimit = parseInt(amountStr);
+    
+    const targetBot = botType === 'rishi' ? "RishiXfreebot" : "UxOtpBOT";
     let totalFetched = 0;
     let currentBatch = [];
 
+    bot.answerCallbackQuery(callbackQuery.id);
+    bot.editMessageText(`Selected: ${targetBot}. Initializing...`, { chat_id: chatId, message_id: callbackQuery.message.message_id });
+
     try {
         await ensureConnected();
-
         await userBot.sendMessage(targetBot, { message: "/start" });
-        bot.sendMessage(chatId, "🚀 [WAITING] Please go to UxOTP and **select your country** now.");
+
+        if (botType === 'rishi') {
+            bot.sendMessage(chatId, "👉 [RishiX] Click **'Get Number'**, then **select your country**.");
+        } else {
+            bot.sendMessage(chatId, "👉 [UxOTP] Please **select your country**.");
+        }
 
         let countrySelected = false;
         let countryPrefix = "";
         let attempts = 0;
 
-        while (!countrySelected && attempts < 20) {
+        // Wait for first number appearance
+        while (!countrySelected && attempts < 30) {
             const response = await userBot.getMessages(targetBot, { limit: 1 });
             const latest = response[0];
-            
-            if (latest && latest.message && latest.message.includes("Numbers:")) {
-                countryPrefix = getCountryPrefix(latest.message);
+            const text = latest?.message || "";
+
+            if (text.match(/\d{10,15}/)) {
+                countryPrefix = getCountryPrefix(text);
                 countrySelected = true;
             } else {
                 attempts++;
@@ -1509,11 +1533,9 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
             }
         }
 
-        if (!countrySelected) {
-            return bot.sendMessage(chatId, "⚠️ [TIMEOUT] Selection not detected.");
-        }
+        if (!countrySelected) return bot.sendMessage(chatId, "⚠️ [TIMEOUT] Selection not detected.");
 
-        bot.sendMessage(chatId, `✅ [DETECTED] Stripping code: +${countryPrefix}. Starting extraction...`);
+        bot.sendMessage(chatId, `✅ Extraction started (Code: +${countryPrefix})...`);
 
         while (totalFetched < countLimit) {
             await ensureConnected();
@@ -1523,21 +1545,18 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
 
             const phoneMatches = text.match(/\d{10,15}/g);
             
-            if (phoneMatches && phoneMatches.length > 0) {
+            if (phoneMatches) {
                 for (const rawNum of phoneMatches) {
                     if (totalFetched >= countLimit) break;
 
-                    // 1. Logic to REMOVE the country code
                     let cleanNum = rawNum;
                     if (countryPrefix && rawNum.startsWith(countryPrefix)) {
-                        // This removes the prefix (e.g., 58) from the start of the string
                         cleanNum = rawNum.substring(countryPrefix.length);
                     }
 
                     currentBatch.push(`\`${cleanNum}\``);
                     totalFetched++;
 
-                    // 2. Batch size set to 6
                     if (currentBatch.length === 6) {
                         await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 5}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                         currentBatch = [];
@@ -1547,24 +1566,27 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
             }
 
             if (totalFetched < countLimit) {
-                let newNumbersBtn = null;
+                let nextBtn = null;
                 if (currentMsg.replyMarkup) {
                     for (const row of currentMsg.replyMarkup.rows) {
                         for (const b of row.buttons) {
-                            if (b.text.toLowerCase().includes("new numbers")) {
-                                newNumbersBtn = b;
+                            const btnText = b.text.toLowerCase();
+                            // UxOTP: "New Numbers" | RishiX: "Get Next"
+                            if (btnText.includes("new numbers") || btnText.includes("get next")) {
+                                nextBtn = b;
                                 break;
                             }
                         }
-                        if (newNumbersBtn) break;
+                        if (nextBtn) break;
                     }
                 }
 
-                if (newNumbersBtn) {
-                    await currentMsg.click({ button: newNumbersBtn });
-                    await delay(6500); 
+                if (nextBtn) {
+                    await currentMsg.click({ button: nextBtn });
+                    // Wait longer for single-number bots to avoid flooding
+                    await delay(botType === 'rishi' ? 4500 : 7000); 
                 } else {
-                    break;
+                    break; 
                 }
             }
         }
@@ -1580,7 +1602,6 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
         bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
     }
 });
-
 
 
     

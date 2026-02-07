@@ -1459,7 +1459,8 @@ bot.onText(/\/nums/, async (msg) => {
 
 
 
-// --- Helper: Define Country Codes to Strip ---
+
+                    // --- Helper: Define Country Codes to Strip ---
 const getCountryPrefix = (text) => {
     const lowerText = text.toLowerCase();
     if (lowerText.includes("venezuela")) return "58";
@@ -1498,6 +1499,7 @@ bot.on('callback_query', async (callbackQuery) => {
     const [_, botType, amountStr] = data.split('_');
     const countLimit = parseInt(amountStr);
     
+    // Note: The script treats "RishiXfreebot" and "TEAM 56" as the same target based on your images.
     const targetBot = botType === 'rishi' ? "RishiXfreebot" : "UxOtpBOT";
     let totalFetched = 0;
     let currentBatch = [];
@@ -1507,24 +1509,13 @@ bot.on('callback_query', async (callbackQuery) => {
 
     try {
         await ensureConnected();
-        await userBot.sendMessage(targetBot, { message: "/start" });
 
         if (botType === 'rishi') {
-            bot.sendMessage(chatId, "WAITING: Checking verification status... Ensure you have joined the required channels.");
-            
-            let verified = false;
-            for (let i = 0; i < 15; i++) {
-                const res = await userBot.getMessages(targetBot, { limit: 1 });
-                if (res[0]?.message?.includes("You are a Verified Member!")) {
-                    verified = true;
-                    break;
-                }
-                await delay(3000);
-            }
-            if (!verified) return bot.sendMessage(chatId, "ERROR: You are not verified on TEAM 56 BOT. Verify manually.");
-
-            bot.sendMessage(chatId, "VERIFIED: Click 'Get Number', then Select Country.");
+            // Updated to send the specific "Get Number" trigger instead of /start
+            await userBot.sendMessage(targetBot, { message: "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫" });
+            bot.sendMessage(chatId, "SENT: Get Number command. Select your country in the bot now.");
         } else {
+            await userBot.sendMessage(targetBot, { message: "/start" });
             bot.sendMessage(chatId, "UxOTP: Please select your country.");
         }
 
@@ -1536,17 +1527,12 @@ bot.on('callback_query', async (callbackQuery) => {
             const res = await userBot.getMessages(targetBot, { limit: 1 });
             const text = res[0]?.message || "";
             
-            // Checks for 'Number:' and '+' to ensure it is not a User ID
+            // Wait for the specific "Number:" header and the "+" to appear
             if (text.includes("Number:") && text.includes("+")) {
                 countryPrefix = getCountryPrefix(text);
-                if (countryPrefix !== "") {
-                    numberVisible = true;
-                } else {
-                    bot.sendMessage(chatId, "Country detected but code not in list. Numbers may not be stripped.");
-                    numberVisible = true;
-                }
+                numberVisible = true;
             } else {
-                await delay(3000);
+                await delay(3000); // Check every 3 seconds
             }
         }
 
@@ -1559,7 +1545,7 @@ bot.on('callback_query', async (callbackQuery) => {
             const currentMsg = response[0];
             const text = currentMsg.message || "";
             
-            // Grabs numbers only if they start with '+'
+            // Only grab digits following a "+" to avoid User IDs
             const phoneMatches = text.match(/\+\d{10,15}/g); 
             
             if (phoneMatches) {
@@ -1590,6 +1576,7 @@ bot.on('callback_query', async (callbackQuery) => {
                     for (const row of currentMsg.replyMarkup.rows) {
                         for (const b of row.buttons) {
                             const btnText = b.text.toLowerCase();
+                            // Check for either bot's "Next" button text
                             if (btnText.includes("new numbers") || btnText.includes("get next")) {
                                 nextBtn = b;
                                 break;
@@ -1601,6 +1588,7 @@ bot.on('callback_query', async (callbackQuery) => {
 
                 if (nextBtn) {
                     await currentMsg.click({ button: nextBtn });
+                    // Richie bot (single number) needs a slightly faster loop than the multi-number bot
                     await delay(botType === 'rishi' ? 5000 : 7000); 
                 } else {
                     break; 
@@ -1616,7 +1604,6 @@ bot.on('callback_query', async (callbackQuery) => {
         bot.sendMessage(chatId, "USERBOT ERROR: " + e.message);
     }
 });
-
 
     
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {

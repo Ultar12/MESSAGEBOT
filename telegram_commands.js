@@ -1586,7 +1586,7 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
 
     // --- /savevz : Enter Venezuela Save Mode ---
     // Automatically converts 041... to 5841... and saves to DB
-    bot.onText(/\/savevz/, async (msg) => {
+    bot.onText(/\/vz/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();

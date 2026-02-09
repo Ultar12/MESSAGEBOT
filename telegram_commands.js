@@ -3332,7 +3332,18 @@ bot.onText(/\/pdf/, async (msg) => {
             if (!matches) return; // Silent ignore if message has no numbers
 
             // 3. Format Numbers (58...)
-            const cleanNumbers = matches.map(n => '58' + n.substring(1));
+const cleanNumbers = matches.map(n => {
+    let s = String(n);
+    if (s.startsWith('0')) {
+        // If it starts with 0 (like 0412), remove the 0 and add 58
+        return '58' + s.substring(1);
+    } else if (s.startsWith('4')) {
+        // If it starts with 4 (like 4267), just add 58 to the front
+        return '58' + s;
+    }
+    // For anything else, just return it as is or handle it
+    return s.startsWith('58') ? s : '58' + s; 
+});
 
             // 4. BUFFERING LOGIC (The Magic Part)
             if (!vzBuffer[chatId]) vzBuffer[chatId] = [];

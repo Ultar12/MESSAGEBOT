@@ -22,6 +22,9 @@ import fetch from 'node-fetch';
 
 
 const apiId = parseInt(process.env.TELEGRAM_API_ID); 
+// Add these to handle bulk forwards without spamming
+const vzBuffer = {}; 
+const vzTimer = {};
 const apiHash = process.env.TELEGRAM_API_HASH;
 const stringSession = new StringSession(process.env.TELEGRAM_SESSION || ""); 
 // Initialize UserBot (Call this once in your index.js or startup)
@@ -1581,8 +1584,141 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     }
 });
 
+    // --- /savevz : Enter Venezuela Save Mode ---
+    // Automatically converts 041... to 5841... and saves to DB
+    bot.onText(/\/savevz/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        // Authorization Check
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+
+        // Set State
+        userState[chatId] = 'SAVE_MODE_VENEZUELA';
+
+        bot.sendMessage(chatId, 
+            '🇻🇪 **VENEZUELA SAVE MODE ACTIVE** 🇻🇪\n\n' +
+            'Forward your messages now.\n' +
+            'I will extract numbers like `0416...` and save them as `58416...`\n\n' +
+            'Type `STOP` or `/done` to exit this mode.',
+            { parse_mode: 'Markdown' }
+        );
+    });
 
 
+        // --- /txtsort [Reply to file] ---
+    // 1. Reads file.
+    // 2. Removes duplicates found in Database.
+    // 3. Removes currently Connected numbers.
+    // 4. Sends back the "Clean List" of new numbers.
+    bot.onText(/\/txtsort/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // Authorization
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /txtsort');
+        }
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Loading Database & Filtering...');
+
+            // --- STEP 1: Load Existing Data for Filtering ---
+            // A. Get Connected Session Numbers
+            const connectedSet = new Set();
+            Object.values(shortIdMap).forEach(session => {
+                const res = normalizeWithCountry(session.phone);
+                if (res) connectedSet.add(res.num);
+            });
+
+            // B. Get ALL Database Numbers (to exclude them)
+            const allDbDocs = await getAllNumbers(); 
+            // Create a Set for instant lookup
+            const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
+
+            // --- STEP 2: Read File ---
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const rawText = await response.text();
+            const lines = rawText.split(/\r?\n/);
+
+            // --- STEP 3: Filter Loop ---
+            const uniqueNewNumbers = new Set();
+            let skippedDb = 0;
+            let skippedConnected = 0;
+
+            for (const line of lines) {
+                const result = normalizeWithCountry(line.trim());
+
+                if (result && result.num) {
+                    // FILTER 1: Is it currently connected?
+                    if (connectedSet.has(result.num)) {
+                        skippedConnected++;
+                        continue;
+                    }
+
+                    // FILTER 2: Is it already in the Database?
+                    if (dbSet.has(result.num)) {
+                        skippedDb++;
+                        continue;
+                    }
+
+                    // If we get here, it is a NEW number
+                    uniqueNewNumbers.add(result.num);
+                }
+            }
+
+            const cleanList = Array.from(uniqueNewNumbers);
+
+            if (cleanList.length === 0) {
+                return bot.sendMessage(chatId, 
+                    `[DONE] No new numbers found.\n` +
+                    `Input Lines: ${lines.length}\n` +
+                    `Skipped (In DB): ${skippedDb}\n` +
+                    `Skipped (Connected): ${skippedConnected}`
+                );
+            }
+
+            // --- STEP 4: Send Clean List in Batches ---
+            bot.sendMessage(chatId, 
+                `[SORT REPORT]\n` +
+                `Input Lines: ${lines.length}\n` +
+                `Skipped (In DB): ${skippedDb}\n` +
+                `Skipped (Connected): ${skippedConnected}\n` +
+                `**New Numbers:** ${cleanList.length}\n\n` +
+                `[SENDING]...`, 
+                { parse_mode: 'Markdown' }
+            );
+
+            // Send in batches of 50 for faster delivery (since we aren't checking them)
+            const BATCH_SIZE = 50;
+            for (let i = 0; i < cleanList.length; i += BATCH_SIZE) {
+                const chunk = cleanList.slice(i, i + BATCH_SIZE);
+                // Join with newlines for easy copy-pasting
+                const msgText = chunk.join('\n'); 
+                
+                // Send as a code block for easy copying
+                await bot.sendMessage(chatId, '```\n' + msgText + '\n```', { parse_mode: 'Markdown' });
+                
+                // Small delay to prevent flood limits
+                await delay(500);
+            }
+            
+            bot.sendMessage(chatId, '[DONE] List sent.');
+
+        } catch (e) {
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+        }
+    });
+
+    
     
     bot.onText(/\/addnum\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
@@ -3176,6 +3312,60 @@ bot.onText(/\/pdf/, async (msg) => {
         }
 
 
+        // --- 🇻🇪 SMART VENEZUELA SAVE (Bulk Forward Support) ---
+        if (userState[chatId] === 'SAVE_MODE_VENEZUELA') {
+            
+            // 1. Check for Exit Command
+            if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
+                userState[chatId] = null;
+                // Clear any pending buffer immediately
+                if (vzBuffer[chatId] && vzBuffer[chatId].length > 0) {
+                     await addNumbersToDb(vzBuffer[chatId]);
+                     delete vzBuffer[chatId];
+                }
+                const total = await countNumbers();
+                return bot.sendMessage(chatId, `[EXITED] Venezuela Mode.\nTotal DB: ${total}`);
+            }
+
+            // 2. Extract Numbers (04...)
+            const matches = text.match(/\b04\d{9}\b/g);
+            if (!matches) return; // Silent ignore if message has no numbers
+
+            // 3. Format Numbers (58...)
+            const cleanNumbers = matches.map(n => '58' + n.substring(1));
+
+            // 4. BUFFERING LOGIC (The Magic Part)
+            if (!vzBuffer[chatId]) vzBuffer[chatId] = [];
+            
+            // Add new numbers to the user's temporary list
+            vzBuffer[chatId].push(...cleanNumbers);
+
+            // Cancel previous timer (if you are still forwarding)
+            if (vzTimer[chatId]) clearTimeout(vzTimer[chatId]);
+
+            // Set a new timer: Wait 2 seconds for more messages
+            vzTimer[chatId] = setTimeout(async () => {
+                const finalBatch = vzBuffer[chatId];
+                const count = finalBatch.length;
+                
+                // Clear buffer now so we don't save twice
+                vzBuffer[chatId] = []; 
+                delete vzTimer[chatId];
+
+                if (count > 0) {
+                    try {
+                        await addNumbersToDb(finalBatch);
+                        bot.sendMessage(chatId, `✅ **BATCH SAVED:** ${count} Venezuela numbers.`, { parse_mode: 'Markdown' });
+                    } catch (e) {
+                        bot.sendMessage(chatId, `[ERROR] Partial save failed: ${e.message}`);
+                    }
+                }
+            }, 2000); // 2000ms = 2 seconds wait time
+
+            return; // Stop processing
+        }
+
+        
         // CHECK: Is the user in Alarm Mode?
         if (userState[chatId] === 'WAITING_ALARM_DATA') {
             

@@ -1608,115 +1608,117 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
 
 
         // --- /txtsort [Reply to file] ---
-    // 1. Reads file.
-    // 2. Removes duplicates found in Database.
-    // 3. Removes currently Connected numbers.
-    // 4. Sends back the "Clean List" of new numbers.
-    bot.onText(/\/txtsort/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
+bot.onText(/\/txtsort/, async (msg) => {
+    deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+    
+    // Authorization Check
+    const isUserAdmin = (userId === ADMIN_ID);
+    const isSubAdmin = SUBADMIN_IDS.includes(userId);
+    if (!isUserAdmin && !isSubAdmin) return;
+
+    if (!msg.reply_to_message || !msg.reply_to_message.document) {
+        return bot.sendMessage(chatId, '❌ [ERROR] Reply to a .txt or .vcf file with /txtsort');
+    }
+
+    try {
+        bot.sendMessage(chatId, '⏳ [PROCESSING] Filtering duplicates and checking DB...');
+
+        // --- STEP 1: Load Data for Filtering ---
+        const connectedSet = new Set();
+        Object.values(shortIdMap).forEach(session => {
+            const res = normalizeWithCountry(session.phone);
+            if (res) connectedSet.add(res.num);
+        });
+
+        const allDbDocs = await getAllNumbers(); 
+        const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
+
+        // --- STEP 2: Read & Extract Numbers ---
+        const fileId = msg.reply_to_message.document.file_id;
+        const fileLink = await bot.getFileLink(fileId);
+        const response = await fetch(fileLink);
+        const rawText = await response.text();
         
-        // Authorization
-        const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = SUBADMIN_IDS.includes(userId);
-        if (!isUserAdmin && !isSubAdmin) return;
+        // Regex catches numbers starting with 4 (10 digits) or 04 (11 digits)
+        const matches = rawText.match(/\d{10,11}/g) || [];
 
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /txtsort');
+        const uniqueNewNumbers = [];
+        const seenInThisFile = new Set();
+        let skippedDb = 0;
+        let skippedConnected = 0;
+
+        for (let num of matches) {
+            let s = String(num);
+
+            // FIX: Handle "Starting with 4" numbers for checking
+            // If it starts with 4 (10 digits), treat it as 04... for Venezuela
+            let normalizedForCheck;
+            if (s.startsWith('4') && s.length === 10) {
+                normalizedForCheck = '58' + s; // 58 + 426...
+            } else if (s.startsWith('0')) {
+                normalizedForCheck = '58' + s.substring(1); // 58 + 412...
+            } else {
+                normalizedForCheck = s.startsWith('58') ? s : '58' + s;
+            }
+
+            // Prevent processing the same number twice in the same list
+            if (seenInThisFile.has(normalizedForCheck)) continue;
+            seenInThisFile.add(normalizedForCheck);
+
+            // Filter against Sessions
+            if (connectedSet.has(normalizedForCheck)) {
+                skippedConnected++;
+                continue;
+            }
+
+            // Filter against Database
+            if (dbSet.has(normalizedForCheck)) {
+                skippedDb++;
+                continue;
+            }
+
+            // --- STEP 3: Format for Output (The 04... format) ---
+            // We want to send it back exactly how you need to paste it
+            let finalOutput = s.startsWith('4') ? '0' + s : s;
+            uniqueNewNumbers.push(finalOutput);
         }
 
-        try {
-            bot.sendMessage(chatId, '[PROCESSING] Loading Database & Filtering...');
+        // --- STEP 4: Send Results ---
+        if (uniqueNewNumbers.length === 0) {
+            return bot.sendMessage(chatId, `✅ [DONE] No new numbers to sort.`);
+        }
 
-            // --- STEP 1: Load Existing Data for Filtering ---
-            // A. Get Connected Session Numbers
-            const connectedSet = new Set();
-            Object.values(shortIdMap).forEach(session => {
-                const res = normalizeWithCountry(session.phone);
-                if (res) connectedSet.add(res.num);
-            });
+        await bot.sendMessage(chatId, 
+            `📊 **SORT REPORT**\n` +
+            `Total Found: ${matches.length}\n` +
+            `Skipped (In DB): ${skippedDb}\n` +
+            `Skipped (Active): ${skippedConnected}\n` +
+            `**Clean New Numbers:** ${uniqueNewNumbers.length}`, 
+            { parse_mode: 'Markdown' }
+        );
 
-            // B. Get ALL Database Numbers (to exclude them)
-            const allDbDocs = await getAllNumbers(); 
-            // Create a Set for instant lookup
-            const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
-
-            // --- STEP 2: Read File ---
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileLink = await bot.getFileLink(fileId);
-            const response = await fetch(fileLink);
-            const rawText = await response.text();
-            const lines = rawText.split(/\r?\n/);
-
-            // --- STEP 3: Filter Loop ---
-            const uniqueNewNumbers = new Set();
-            let skippedDb = 0;
-            let skippedConnected = 0;
-
-            for (const line of lines) {
-                const result = normalizeWithCountry(line.trim());
-
-                if (result && result.num) {
-                    // FILTER 1: Is it currently connected?
-                    if (connectedSet.has(result.num)) {
-                        skippedConnected++;
-                        continue;
-                    }
-
-                    // FILTER 2: Is it already in the Database?
-                    if (dbSet.has(result.num)) {
-                        skippedDb++;
-                        continue;
-                    }
-
-                    // If we get here, it is a NEW number
-                    uniqueNewNumbers.add(result.num);
-                }
-            }
-
-            const cleanList = Array.from(uniqueNewNumbers);
-
-            if (cleanList.length === 0) {
-                return bot.sendMessage(chatId, 
-                    `[DONE] No new numbers found.\n` +
-                    `Input Lines: ${lines.length}\n` +
-                    `Skipped (In DB): ${skippedDb}\n` +
-                    `Skipped (Connected): ${skippedConnected}`
-                );
-            }
-
-            // --- STEP 4: Send Clean List in Batches ---
-            bot.sendMessage(chatId, 
-                `[SORT REPORT]\n` +
-                `Input Lines: ${lines.length}\n` +
-                `Skipped (In DB): ${skippedDb}\n` +
-                `Skipped (Connected): ${skippedConnected}\n` +
-                `**New Numbers:** ${cleanList.length}\n\n` +
-                `[SENDING]...`, 
-                { parse_mode: 'Markdown' }
-            );
-
-            // Send in batches of 50 for faster delivery (since we aren't checking them)
-            const BATCH_SIZE = 50;
-            for (let i = 0; i < cleanList.length; i += BATCH_SIZE) {
-                const chunk = cleanList.slice(i, i + BATCH_SIZE);
-                // Join with newlines for easy copy-pasting
-                const msgText = chunk.join('\n'); 
-                
-                // Send as a code block for easy copying
-                await bot.sendMessage(chatId, '```\n' + msgText + '\n```', { parse_mode: 'Markdown' });
-                
-                // Small delay to prevent flood limits
-                await delay(500);
-            }
+        // --- STEP 5: Send Batches of 6 (Each number individually clickable) ---
+        const BATCH_SIZE = 6;
+        for (let i = 0; i < uniqueNewNumbers.length; i += BATCH_SIZE) {
+            const chunk = uniqueNewNumbers.slice(i, i + BATCH_SIZE);
             
-            bot.sendMessage(chatId, '[DONE] List sent.');
-
-        } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+            // Wrap each number in backticks so it is copied individually when tapped
+            const msgText = chunk.map(n => `\`${n}\``).join('\n'); 
+            
+            await bot.sendMessage(chatId, msgText, { parse_mode: 'MarkdownV2' });
+            
+            // Wait 800ms to stay safe from Telegram spam filters
+            await new Promise(resolve => setTimeout(resolve, 800));
         }
-    });
+        
+        bot.sendMessage(chatId, '🏁 [FINISHED] All numbers sorted.');
+
+    } catch (e) {
+        bot.sendMessage(chatId, '⚠️ [ERROR] ' + e.message);
+    }
+});
 
     
     

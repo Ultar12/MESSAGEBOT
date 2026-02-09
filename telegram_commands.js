@@ -3328,7 +3328,7 @@ bot.onText(/\/pdf/, async (msg) => {
             }
 
             // 2. Extract Numbers (04...)
-            const matches = text.match(/\b04\d{9}\b/g);
+            const matches = text.match(/\d{10,15}/g);
             if (!matches) return; // Silent ignore if message has no numbers
 
             // 3. Format Numbers (58...)

@@ -1607,7 +1607,8 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     });
 
 
-        // --- /txtsort [Reply to file] ---
+
+    // --- /vz [Reply to file] ---
 bot.onText(/\/vz/, async (msg) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
@@ -1619,11 +1620,11 @@ bot.onText(/\/vz/, async (msg) => {
     if (!isUserAdmin && !isSubAdmin) return;
 
     if (!msg.reply_to_message || !msg.reply_to_message.document) {
-        return bot.sendMessage(chatId, '❌ [ERROR] Reply to a .txt or .vcf file with /txtsort');
+        return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /vz');
     }
 
     try {
-        bot.sendMessage(chatId, '⏳ [PROCESSING] Filtering duplicates and checking DB...');
+        bot.sendMessage(chatId, '[PROCESSING] Checking database...');
 
         // --- STEP 1: Load Data for Filtering ---
         const connectedSet = new Set();
@@ -1641,84 +1642,83 @@ bot.onText(/\/vz/, async (msg) => {
         const response = await fetch(fileLink);
         const rawText = await response.text();
         
-        // Regex catches numbers starting with 4 (10 digits) or 04 (11 digits)
+        // Regex catches 10 or 11 digit numbers
         const matches = rawText.match(/\d{10,11}/g) || [];
 
         const uniqueNewNumbers = [];
         const seenInThisFile = new Set();
-        let skippedDb = 0;
+        let foundInDbCount = 0;
         let skippedConnected = 0;
 
         for (let num of matches) {
             let s = String(num);
 
-            // FIX: Handle "Starting with 4" numbers for checking
-            // If it starts with 4 (10 digits), treat it as 04... for Venezuela
+            // Normalize for comparison
             let normalizedForCheck;
             if (s.startsWith('4') && s.length === 10) {
-                normalizedForCheck = '58' + s; // 58 + 426...
+                normalizedForCheck = '58' + s;
             } else if (s.startsWith('0')) {
-                normalizedForCheck = '58' + s.substring(1); // 58 + 412...
+                normalizedForCheck = '58' + s.substring(1);
             } else {
                 normalizedForCheck = s.startsWith('58') ? s : '58' + s;
             }
 
-            // Prevent processing the same number twice in the same list
+            // Remove duplicates within the file itself
             if (seenInThisFile.has(normalizedForCheck)) continue;
             seenInThisFile.add(normalizedForCheck);
 
-            // Filter against Sessions
+            // Count if it exists in connected sessions
             if (connectedSet.has(normalizedForCheck)) {
                 skippedConnected++;
                 continue;
             }
 
-            // Filter against Database
+            // Count if it exists in Database
             if (dbSet.has(normalizedForCheck)) {
-                skippedDb++;
+                foundInDbCount++;
                 continue;
             }
 
-            // --- STEP 3: Format for Output (The 04... format) ---
-            // We want to send it back exactly how you need to paste it
+            // --- STEP 3: Format for Output (Force 04... no country code) ---
             let finalOutput = s.startsWith('4') ? '0' + s : s;
             uniqueNewNumbers.push(finalOutput);
         }
 
         // --- STEP 4: Send Results ---
         if (uniqueNewNumbers.length === 0) {
-            return bot.sendMessage(chatId, `✅ [DONE] No new numbers to sort.`);
+            return bot.sendMessage(chatId, `[DONE] No new numbers found. All ${foundInDbCount} numbers from file are already in DB.`);
         }
 
         await bot.sendMessage(chatId, 
-            `📊 **SORT REPORT**\n` +
-            `Total Found: ${matches.length}\n` +
-            `Skipped (In DB): ${skippedDb}\n` +
-            `Skipped (Active): ${skippedConnected}\n` +
-            `**Clean New Numbers:** ${uniqueNewNumbers.length}`, 
+            `SORT REPORT\n` +
+            `Total extracted: ${matches.length}\n` +
+            `Found in DB: ${foundInDbCount}\n` +
+            `Active sessions: ${skippedConnected}\n` +
+            `New clean numbers: ${uniqueNewNumbers.length}`, 
             { parse_mode: 'Markdown' }
         );
 
-        // --- STEP 5: Send Batches of 6 (Each number individually clickable) ---
+        // --- STEP 5: Send Batches of 6 (Individually clickable) ---
         const BATCH_SIZE = 6;
         for (let i = 0; i < uniqueNewNumbers.length; i += BATCH_SIZE) {
             const chunk = uniqueNewNumbers.slice(i, i + BATCH_SIZE);
             
-            // Wrap each number in backticks so it is copied individually when tapped
+            // Each number in single backticks for individual tap-to-copy
             const msgText = chunk.map(n => `\`${n}\``).join('\n'); 
             
             await bot.sendMessage(chatId, msgText, { parse_mode: 'MarkdownV2' });
             
-            // Wait 800ms to stay safe from Telegram spam filters
+            // Throttling to avoid Telegram limits
             await new Promise(resolve => setTimeout(resolve, 800));
         }
         
-        bot.sendMessage(chatId, '🏁 [FINISHED] All numbers sorted.');
+        bot.sendMessage(chatId, '[FINISHED] All batches sent.');
 
     } catch (e) {
-        bot.sendMessage(chatId, '⚠️ [ERROR] ' + e.message);
+        bot.sendMessage(chatId, '[ERROR] ' + e.message);
     }
 });
+
 
     
     

@@ -1609,12 +1609,12 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
 
 
     // --- /vz [Reply to file] ---
+// --- /vz [Reply to file] ---
 bot.onText(/\/vz/, async (msg) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
     const userId = chatId.toString();
     
-    // Authorization Check
     const isUserAdmin = (userId === ADMIN_ID);
     const isSubAdmin = SUBADMIN_IDS.includes(userId);
     if (!isUserAdmin && !isSubAdmin) return;
@@ -1626,7 +1626,6 @@ bot.onText(/\/vz/, async (msg) => {
     try {
         bot.sendMessage(chatId, '[PROCESSING] Checking database...');
 
-        // --- STEP 1: Load Data for Filtering ---
         const connectedSet = new Set();
         Object.values(shortIdMap).forEach(session => {
             const res = normalizeWithCountry(session.phone);
@@ -1636,14 +1635,13 @@ bot.onText(/\/vz/, async (msg) => {
         const allDbDocs = await getAllNumbers(); 
         const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
 
-        // --- STEP 2: Read & Extract Numbers ---
         const fileId = msg.reply_to_message.document.file_id;
         const fileLink = await bot.getFileLink(fileId);
         const response = await fetch(fileLink);
         const rawText = await response.text();
         
-        // Regex catches 10 or 11 digit numbers
-        const matches = rawText.match(/\d{10,11}/g) || [];
+        // This regex finds any digit sequence between 10 and 13 digits
+        const matches = rawText.match(/\d{10,13}/g) || [];
 
         const uniqueNewNumbers = [];
         const seenInThisFile = new Set();
@@ -1652,41 +1650,43 @@ bot.onText(/\/vz/, async (msg) => {
 
         for (let num of matches) {
             let s = String(num);
+            let coreNumber;
 
-            // Normalize for comparison
-            let normalizedForCheck;
-            if (s.startsWith('4') && s.length === 10) {
-                normalizedForCheck = '58' + s;
-            } else if (s.startsWith('0')) {
-                normalizedForCheck = '58' + s.substring(1);
+            // --- STEP 1: Get the Core 10 Digits (e.g., 4123512402) ---
+            if (s.length === 12 && s.startsWith('58')) {
+                coreNumber = s.substring(2); // Remove 58
+            } else if (s.length === 11 && s.startsWith('0')) {
+                coreNumber = s.substring(1); // Remove 0
+            } else if (s.length === 10) {
+                coreNumber = s; // Already core
             } else {
-                normalizedForCheck = s.startsWith('58') ? s : '58' + s;
+                continue; // Skip invalid lengths
             }
 
-            // Remove duplicates within the file itself
+            const normalizedForCheck = '58' + coreNumber;
+            const outputFormat = '0' + coreNumber; // Standard 11-digit: 04123512402
+
+            // Prevent processing the same number twice
             if (seenInThisFile.has(normalizedForCheck)) continue;
             seenInThisFile.add(normalizedForCheck);
 
-            // Count if it exists in connected sessions
+            // --- STEP 2: Filter ---
             if (connectedSet.has(normalizedForCheck)) {
                 skippedConnected++;
                 continue;
             }
 
-            // Count if it exists in Database
             if (dbSet.has(normalizedForCheck)) {
                 foundInDbCount++;
                 continue;
             }
 
-            // --- STEP 3: Format for Output (Force 04... no country code) ---
-            let finalOutput = s.startsWith('4') ? '0' + s : s;
-            uniqueNewNumbers.push(finalOutput);
+            // --- STEP 3: Add to Clean List ---
+            uniqueNewNumbers.push(outputFormat);
         }
 
-        // --- STEP 4: Send Results ---
         if (uniqueNewNumbers.length === 0) {
-            return bot.sendMessage(chatId, `[DONE] No new numbers found. All ${foundInDbCount} numbers from file are already in DB.`);
+            return bot.sendMessage(chatId, `[DONE] No new numbers. Found ${foundInDbCount} in DB.`);
         }
 
         await bot.sendMessage(chatId, 
@@ -1698,17 +1698,13 @@ bot.onText(/\/vz/, async (msg) => {
             { parse_mode: 'Markdown' }
         );
 
-        // --- STEP 5: Send Batches of 6 (Individually clickable) ---
+        // --- STEP 4: Send Batches of 6 (Individually clickable) ---
         const BATCH_SIZE = 6;
         for (let i = 0; i < uniqueNewNumbers.length; i += BATCH_SIZE) {
             const chunk = uniqueNewNumbers.slice(i, i + BATCH_SIZE);
-            
-            // Each number in single backticks for individual tap-to-copy
             const msgText = chunk.map(n => `\`${n}\``).join('\n'); 
             
             await bot.sendMessage(chatId, msgText, { parse_mode: 'MarkdownV2' });
-            
-            // Throttling to avoid Telegram limits
             await new Promise(resolve => setTimeout(resolve, 800));
         }
         
@@ -1718,6 +1714,7 @@ bot.onText(/\/vz/, async (msg) => {
         bot.sendMessage(chatId, '[ERROR] ' + e.message);
     }
 });
+
 
 
     

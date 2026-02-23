@@ -2260,6 +2260,156 @@ bot.onText(/\/vz/, async (msg) => {
         }
     });
 
+        // --- /savezm : Enter Zimbabwe Save Mode ---
+    bot.onText(/\/savezm/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+
+        // Set State
+        userState[chatId] = 'SAVE_MODE_ZM';
+
+        bot.sendMessage(chatId, 
+            '🇿🇼 **ZIMBABWE SAVE MODE ACTIVE** 🇿🇼\n\n' +
+            'Forward your messages now.\n' +
+            'I will extract numbers starting with 0 and save them with the +263 country code.\n\n' +
+            'Type `STOP` or `/done` to exit this mode.',
+            { parse_mode: 'Markdown' }
+        );
+    });
+
+        // --- /zm [Reply to file] (Supports TXT and XLSX for Zimbabwe) ---
+    bot.onText(/\/zm/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt, .vcf, or .xlsx file with /zm');
+        }
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Reading file and checking database...');
+
+            // Zimbabwe Country Code
+            const TARGET_CODE = '263'; 
+
+            const connectedSet = new Set();
+            Object.values(shortIdMap).forEach(session => {
+                const res = normalizeWithCountry(session.phone);
+                if (res) connectedSet.add(res.num);
+            });
+
+            const allDbDocs = await getAllNumbers(); 
+            const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
+
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const fileName = msg.reply_to_message.document.file_name || '';
+            
+            let rawText = "";
+
+            // --- 1. HANDLE XLSX vs TXT ---
+            if (fileName.toLowerCase().endsWith('.xlsx')) {
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                
+                data.forEach(row => {
+                    if (Array.isArray(row)) {
+                        row.forEach(cell => { 
+                            if (cell) rawText += cell.toString() + '\n'; 
+                        });
+                    }
+                });
+            } else {
+                rawText = await response.text();
+            }
+            
+            // --- 2. EXTRACT NUMBERS ---
+            const matches = rawText.match(/\d{9,15}/g) || [];
+
+            const uniqueNewNumbers = [];
+            const seenInThisFile = new Set();
+            let foundInDbCount = 0;
+            let skippedConnected = 0;
+
+            for (let num of matches) {
+                let s = String(num);
+                let coreNumber;
+
+                // --- 3. STANDARDIZE FORMAT FOR ZIMBABWE ---
+                if (s.length === (TARGET_CODE.length + 9) && s.startsWith(TARGET_CODE)) {
+                    coreNumber = s.substring(TARGET_CODE.length); // Remove country code
+                } else if (s.length === 10 && s.startsWith('0')) {
+                    coreNumber = s.substring(1); // Remove 0
+                } else if (s.length === 9) {
+                    coreNumber = s; // Already core 9 digits
+                } else {
+                    continue; // Skip invalid lengths
+                }
+
+                const normalizedForCheck = TARGET_CODE + coreNumber;
+                const outputFormat = '0' + coreNumber; 
+
+                // Prevent processing the same number twice from the file
+                if (seenInThisFile.has(normalizedForCheck)) continue;
+                seenInThisFile.add(normalizedForCheck);
+
+                // --- 4. FILTER AGAINST DB AND SESSIONS ---
+                if (connectedSet.has(normalizedForCheck)) {
+                    skippedConnected++;
+                    continue;
+                }
+
+                if (dbSet.has(normalizedForCheck)) {
+                    foundInDbCount++;
+                    continue;
+                }
+
+                uniqueNewNumbers.push(outputFormat);
+            }
+
+            if (uniqueNewNumbers.length === 0) {
+                return bot.sendMessage(chatId, `[DONE] No new numbers. Found ${foundInDbCount} in DB.`);
+            }
+
+            await bot.sendMessage(chatId, 
+                `SORT REPORT\n` +
+                `Target Code: +${TARGET_CODE}\n` +
+                `Total extracted: ${matches.length}\n` +
+                `Found in DB: ${foundInDbCount}\n` +
+                `Active sessions: ${skippedConnected}\n` +
+                `New clean numbers: ${uniqueNewNumbers.length}`, 
+                { parse_mode: 'Markdown' }
+            );
+
+            // --- 5. SEND BATCHES OF 6 ---
+            const BATCH_SIZE = 6;
+            for (let i = 0; i < uniqueNewNumbers.length; i += BATCH_SIZE) {
+                const chunk = uniqueNewNumbers.slice(i, i + BATCH_SIZE);
+                const msgText = chunk.map(n => `\`${n}\``).join('\n'); 
+                
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                await delay(800);
+            }
+            
+            bot.sendMessage(chatId, '[FINISHED] All batches sent.');
+
+        } catch (e) {
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+        }
+    });
+
+
         // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
     bot.onText(/\/convert/, async (msg) => {
         deleteUserCommand(bot, msg);
@@ -3580,6 +3730,65 @@ const cleanNumbers = matches.map(n => {
 
             return; // Stop processing
         }
+
+
+                // --- 🇿🇼 SMART ZIMBABWE SAVE (Bulk Forward Support) ---
+        if (userState[chatId] === 'SAVE_MODE_ZM') {
+            
+            // Zimbabwe Country Code
+            const TARGET_CODE = '263'; 
+
+            if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
+                userState[chatId] = null;
+                if (vzBuffer[chatId] && vzBuffer[chatId].length > 0) {
+                     await addNumbersToDb(vzBuffer[chatId]);
+                     delete vzBuffer[chatId];
+                }
+                const total = await countNumbers();
+                return bot.sendMessage(chatId, `[EXITED] ZM Mode.\nTotal DB: ${total}`);
+            }
+
+            const matches = text.match(/\d{9,15}/g);
+            if (!matches) return; 
+
+            const cleanNumbers = matches.map(n => {
+                let s = String(n);
+                if (s.startsWith('0')) {
+                    // Replaces the leading 0 with 263
+                    return TARGET_CODE + s.substring(1);
+                } else if (s.startsWith(TARGET_CODE)) {
+                    // Keeps it if it already has 263
+                    return s;
+                }
+                // Adds 263 to the front if it's just the core 9 digits
+                return TARGET_CODE + s; 
+            });
+
+            if (!vzBuffer[chatId]) vzBuffer[chatId] = [];
+            vzBuffer[chatId].push(...cleanNumbers);
+
+            if (vzTimer[chatId]) clearTimeout(vzTimer[chatId]);
+
+            vzTimer[chatId] = setTimeout(async () => {
+                const finalBatch = vzBuffer[chatId];
+                const count = finalBatch.length;
+                
+                vzBuffer[chatId] = []; 
+                delete vzTimer[chatId];
+
+                if (count > 0) {
+                    try {
+                        await addNumbersToDb(finalBatch);
+                        bot.sendMessage(chatId, `✅ **BATCH SAVED:** ${count} ZM numbers.`, { parse_mode: 'Markdown' });
+                    } catch (e) {
+                        bot.sendMessage(chatId, `[ERROR] Partial save failed: ${e.message}`);
+                    }
+                }
+            }, 2000); 
+
+            return; 
+        }
+
 
         
         // CHECK: Is the user in Alarm Mode?

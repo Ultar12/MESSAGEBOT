@@ -1065,17 +1065,14 @@ bot.onText(/\/txt/, async (msg) => {
         }
     });
 
-        // --- /xl [Reply to .xlsx] ---
-    // 1. Filters Cameroon 03.
-    // 2. Filters already connected sessions.
-    // 3. Verifies WhatsApp status.
-    // 4. Sends Valid Numbers then Banned Numbers.
-    bot.onText(/\/xl/, async (msg) => {
+    
+
+        bot.onText(/\/xl/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = (SUBADMIN_IDS || []).includes(userId);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
 
         if (!isUserAdmin && !isSubAdmin) return;
 
@@ -1084,13 +1081,8 @@ bot.onText(/\/txt/, async (msg) => {
         }
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Reading Excel and verifying accounts...');
+            bot.sendMessage(chatId, '[PROCESSING] Reading Excel file...');
             
-            const activeFolders = Object.keys(clients).filter(f => clients[f]);
-            const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
-
-            if (!sock) return bot.sendMessage(chatId, '[ERROR] No WhatsApp bots connected to verify numbers.');
-
             const connectedSet = new Set();
             Object.values(shortIdMap).forEach(session => {
                 const norm = normalizeWithCountry(session.phone);
@@ -1106,92 +1098,67 @@ bot.onText(/\/txt/, async (msg) => {
             const sheet = workbook.Sheets[workbook.SheetNames[0]];
             const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }); 
 
-            const validNumbers = [];
-            const bannedNumbers = [];
-            let skippedConnected = 0;
-            let skippedCameroon03 = 0;
+            const newNumbers = new Set();
+            let skippedCount = 0;
             let totalChecked = 0;
+            let detectedCountry = "Unknown";
+            let detectedCode = "N/A";
 
-            for (const row of data) {
-                if (!Array.isArray(row)) continue;
-                for (const cell of row) {
-                    if (!cell) continue;
+            data.forEach(row => {
+                if (!Array.isArray(row)) return;
+                row.forEach(cell => {
+                    if (!cell) return;
                     totalChecked++;
-                    
                     const result = normalizeWithCountry(cell.toString());
                     if (result && result.num) {
-                        
-                        // FILTER 1: Cameroon 03 check
-                        if (result.code === '237' && result.num.startsWith('03')) {
-                            skippedCameroon03++;
-                            continue;
+                        // Capture country info from the first valid number found
+                        if (detectedCountry === "Unknown" && result.name !== "Unknown") {
+                            detectedCountry = result.name;
+                            detectedCode = result.code;
                         }
 
-                        // FILTER 2: Already connected check
                         if (connectedSet.has(result.num)) {
-                            skippedConnected++;
-                            continue;
+                            skippedCount++;
+                        } else {
+                            newNumbers.add(result.num);
                         }
-
-                        // FILTER 3: WhatsApp Ban Check
-                        try {
-                            const jid = result.code === 'N/A' ? `${result.num}@s.whatsapp.net` : `${result.code}${result.num.replace(/^0/, '')}@s.whatsapp.net`;
-                            const [check] = await sock.onWhatsApp(jid);
-                            
-                            if (check && check.exists) {
-                                validNumbers.push(result.num);
-                            } else {
-                                // Collect banned/non-existent numbers
-                                bannedNumbers.push(result.num);
-                            }
-                        } catch (err) {
-                            continue;
-                        }
-
-                        // Rate limit protection
-                        if (totalChecked % 5 === 0) await delay(250);
                     }
-                }
+                });
+            });
+
+            const uniqueList = Array.from(newNumbers);
+            const totalNew = uniqueList.length;
+
+            if (totalNew === 0) {
+                return bot.sendMessage(chatId, '[DONE] No new numbers found.\nSkipped ' + skippedCount + ' connected numbers.');
             }
 
-            // 1. Send Report
+            const batchSize = 5;
+            const totalBatches = Math.ceil(totalNew / batchSize);
+
             bot.sendMessage(chatId, 
                 '[FILTER REPORT]\n' +
-                'Total Checked: ' + totalChecked + '\n' +
-                'Connected: ' + skippedConnected + '\n' +
-                'CM 03 Removed: ' + skippedCameroon03 + '\n' +
-                'Active Found: ' + validNumbers.length + '\n' +
-                'Banned Found: ' + bannedNumbers.length
+                'Country: ' + detectedCountry + ' (+' + detectedCode + ')\n' +
+                'Input Found: ' + totalChecked + '\n' +
+                'Already Connected: ' + skippedCount + '\n' +
+                'New Numbers: ' + totalNew + '\n\n' +
+                '[SENDING] ' + totalBatches + ' batches...'
             );
 
-            // 2. Send Active Numbers
-            if (validNumbers.length > 0) {
-                await bot.sendMessage(chatId, '[LIST] ACTIVE NUMBERS');
-                for (let i = 0; i < validNumbers.length; i += 5) {
-                    const chunk = validNumbers.slice(i, i + 5);
-                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                    await delay(1000);
-                }
-            }
-
-            // 3. Send Banned Numbers
-            if (bannedNumbers.length > 0) {
-                await bot.sendMessage(chatId, '[LIST] BANNED/INVALID NUMBERS');
-                for (let i = 0; i < bannedNumbers.length; i += 5) {
-                    const chunk = bannedNumbers.slice(i, i + 5);
-                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                    await delay(1000);
-                }
+            for (let i = 0; i < totalNew; i += batchSize) {
+                const chunk = uniqueList.slice(i, i + batchSize);
+                const msgText = chunk.map(n => '`' + n + '`').join('\n');
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                await delay(1200);
             }
             
             bot.sendMessage(chatId, '[DONE] Excel processing complete.');
         } catch (e) {
-            console.error(e);
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
+
+
         // --- /svv Command: Smart Filter (Reply to DOCX, TXT, VCF) ---
     // Usage: Reply to a document (.docx, .txt, .vcf) with /svv
     bot.onText(/\/svv/, async (msg) => {

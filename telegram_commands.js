@@ -2260,7 +2260,7 @@ bot.onText(/\/vz/, async (msg) => {
         }
     });
 
-    // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
+        // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
     bot.onText(/\/convert/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2277,7 +2277,7 @@ bot.onText(/\/vz/, async (msg) => {
             const response = await fetch(fileLink);
             const fileName = msg.reply_to_message.document.file_name || '';
 
-            if (fileName.endsWith('.xlsx')) {
+            if (fileName.toLowerCase().endsWith('.xlsx')) {
                 // Convert Excel to Text
                 bot.sendMessage(chatId, '[SYSTEM] Converting XLSX to TXT...');
                 const buffer = await response.buffer();
@@ -2287,7 +2287,13 @@ bot.onText(/\/vz/, async (msg) => {
                 let textResult = [];
                 data.forEach(row => row.forEach(cell => { if(cell) textResult.push(cell.toString()); }));
                 
-                await bot.sendDocument(chatId, Buffer.from(textResult.join('\n')), { caption: '[CONVERT] XLSX to TXT complete' }, { filename: 'converted.txt' });
+                // FIXED: Added contentType: 'text/plain'
+                await bot.sendDocument(
+                    chatId, 
+                    Buffer.from(textResult.join('\n')), 
+                    { caption: '[CONVERT] XLSX to TXT complete' }, 
+                    { filename: 'converted.txt', contentType: 'text/plain' }
+                );
             } else {
                 // Convert Text to Excel
                 bot.sendMessage(chatId, '[SYSTEM] Converting TXT to XLSX...');
@@ -2299,12 +2305,19 @@ bot.onText(/\/vz/, async (msg) => {
                 XLSX.utils.book_append_sheet(workbook, worksheet, "Numbers");
                 const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
                 
-                await bot.sendDocument(chatId, buffer, { caption: '[CONVERT] TXT to XLSX complete' }, { filename: 'converted.xlsx' });
+                // FIXED: Added standard Excel contentType
+                await bot.sendDocument(
+                    chatId, 
+                    buffer, 
+                    { caption: '[CONVERT] TXT to XLSX complete' }, 
+                    { filename: 'converted.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+                );
             }
         } catch (e) {
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
+
 
 
     // 1. /set_react [group link] [emoji1] [emoji2]...

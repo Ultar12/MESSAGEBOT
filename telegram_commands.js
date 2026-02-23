@@ -643,6 +643,123 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     }
 
+    // --- /st [r | nr] : Extract Registered or Not Registered numbers from Bio Checker files (TXT & XLSX) ---
+    bot.onText(/\/st\s+(r|nr)/i, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // Authorization check
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to the checker file (.txt or .xlsx) with /st r or /st nr.');
+        }
+
+        const mode = match[1].toLowerCase(); 
+
+        try {
+            bot.sendMessage(chatId, `[PROCESSING] Extracting **${mode === 'r' ? 'REGISTERED' : 'NOT REGISTERED'}** numbers...`, { parse_mode: 'Markdown' });
+
+            // 1. Download the file
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const fileName = msg.reply_to_message.document.file_name || '';
+            
+            let rawText = "";
+
+            // 2. Handle File Formats (XLSX vs TXT)
+            if (fileName.toLowerCase().endsWith('.xlsx')) {
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                
+                // Convert Excel cells into a single searchable text block
+                data.forEach(row => {
+                    if (Array.isArray(row)) {
+                        row.forEach(cell => { 
+                            if (cell) rawText += cell.toString() + '\n'; 
+                        });
+                    }
+                });
+            } else {
+                // Handle standard .txt or .vcf
+                rawText = await response.text();
+            }
+
+            // 3. Split the document at the "Not Registered" header
+            const splitRegex = /\[\s*NOMOR TIDAK TERDAFTAR WHATSAPP.*?\]/i;
+            const splitText = rawText.split(splitRegex);
+
+            let targetText = "";
+
+            if (mode === 'r') {
+                targetText = splitText[0] || "";
+            } else if (mode === 'nr') {
+                targetText = splitText[1] || "";
+            }
+
+            if (!targetText.trim()) {
+                return bot.sendMessage(chatId, `[ERROR] Could not find any numbers for that category in this file.`);
+            }
+
+            // 4. Extract all numbers starting with a '+'
+            const matches = targetText.match(/\+\d{10,15}/g) || [];
+            
+            if (matches.length === 0) {
+                return bot.sendMessage(chatId, `[DONE] No numbers found in the ${mode.toUpperCase()} section.`);
+            }
+
+            // 5. Clean numbers and strip country code
+            const uniqueCleanedNumbers = new Set();
+            let countryPrefixDetected = "N/A";
+
+            for (let raw of matches) {
+                let cleanNum = raw.replace('+', ''); 
+                
+                const res = normalizeWithCountry(cleanNum);
+                
+                if (res && res.code && res.code !== 'N/A') {
+                    countryPrefixDetected = res.code;
+                    if (cleanNum.startsWith(res.code)) {
+                        cleanNum = cleanNum.substring(res.code.length);
+                    }
+                }
+                
+                uniqueCleanedNumbers.add(cleanNum);
+            }
+
+            const finalList = Array.from(uniqueCleanedNumbers);
+
+            bot.sendMessage(chatId, 
+                `[REPORT]\n` +
+                `Mode: ${mode === 'r' ? 'Registered ✅' : 'Not Registered ❌'}\n` +
+                `File: ${fileName}\n` +
+                `Country Code Stripped: +${countryPrefixDetected}\n` +
+                `Total Found: ${finalList.length}\n\n` +
+                `Sending batches...`
+            );
+
+            // 6. Send in clickable batches of 6
+            const BATCH_SIZE = 6;
+            for (let i = 0; i < finalList.length; i += BATCH_SIZE) {
+                const chunk = finalList.slice(i, i + BATCH_SIZE);
+                const msgText = chunk.map(n => `\`${n}\``).join('\n');
+                
+                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                await delay(1000); 
+            }
+
+            bot.sendMessage(chatId, `[COMPLETED] All ${mode.toUpperCase()} batches sent.`);
+
+        } catch (e) {
+            bot.sendMessage(chatId, `[ERROR] Processing failed: ${e.message}`);
+        }
+    });
 
 bot.onText(/\/txt/, async (msg) => {
         deleteUserCommand(bot, msg);

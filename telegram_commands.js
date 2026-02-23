@@ -1575,6 +1575,8 @@ bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
 
 bot.on('callback_query', async (callbackQuery) => {
     const data = callbackQuery.data;
+    if (!data.startsWith('bot_')) return; // Ignore other callbacks
+    
     const chatId = callbackQuery.message.chat.id;
     const [_, botType, amountStr] = data.split('_');
     const countLimit = parseInt(amountStr);
@@ -1590,6 +1592,7 @@ bot.on('callback_query', async (callbackQuery) => {
         await ensureConnected();
 
         if (botType === 'rishi') {
+            // Note: Keeping the exact text here because the userBot needs to send this exact trigger
             await userBot.sendMessage(targetBot, { message: "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫" });
             bot.sendMessage(chatId, "SENT: Get Number command. Select country manually.");
         } else {
@@ -1604,23 +1607,30 @@ bot.on('callback_query', async (callbackQuery) => {
             const res = await userBot.getMessages(targetBot, { limit: 1 });
             const text = res[0]?.message || "";
             
-            if (text.includes("Number") && text.includes("+")) {
+            // Split Detection Logic
+            if (botType === 'rishi' && text.includes("Number") && text.includes("+")) {
+                countryPrefix = getCountryPrefix(text);
+                numberVisible = true;
+            } else if (botType === 'uxotp' && text.includes("Numbers:")) {
                 countryPrefix = getCountryPrefix(text);
                 numberVisible = true;
             } else {
-                await randomDelay(2000, 4000); 
+                await randomDelay(2000, 3000); 
             }
         }
 
         bot.sendMessage(chatId, `STARTED: Detected Code +${countryPrefix}. Using anti-ban delays.`);
 
+        // Extraction Loop
         while (totalFetched < countLimit) {
             await ensureConnected();
             const response = await userBot.getMessages(targetBot, { limit: 1 });
             const currentMsg = response[0];
             const text = currentMsg.message || "";
             
-            const phoneMatches = text.match(/\+\d{10,15}/g); 
+            // Split Regex Logic
+            const regex = botType === 'rishi' ? /\+\d{10,15}/g : /\d{10,15}/g;
+            const phoneMatches = text.match(regex); 
             
             if (phoneMatches) {
                 for (let rawNum of phoneMatches) {
@@ -1631,14 +1641,16 @@ bot.on('callback_query', async (callbackQuery) => {
                         cleanNum = cleanNum.substring(countryPrefix.length);
                     }
 
-                    currentBatch.push(`\`${cleanNum}\``);
-                    totalFetched++;
+                    // Prevent grabbing the User ID if it sneaks through in UxOTP
+                    if (cleanNum !== "8400094258" && cleanNum.length >= 7) {
+                        currentBatch.push(`\`${cleanNum}\``);
+                        totalFetched++;
+                    }
 
                     if (currentBatch.length === 6) {
                         await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 5}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                         currentBatch = [];
-                        // Human pause after a batch
-                        await randomDelay(2000, 3500);
+                        await randomDelay(2000, 3500); // Batch cooling
                     }
                 }
             }
@@ -1659,12 +1671,10 @@ bot.on('callback_query', async (callbackQuery) => {
                 }
 
                 if (nextBtn) {
-                    // Small "thinking" pause before clicking
                     await randomDelay(1000, 2000); 
                     await currentMsg.click({ button: nextBtn });
                     
-                    // LONG Anti-Ban Delay (Randomized)
-                    // This is the most important part to avoid FROZEN_METHOD
+                    // LONG Anti-Ban Delay to prevent FROZEN_METHOD_INVALID
                     await randomDelay(6000, 10000); 
                 } else {
                     break; 
@@ -1680,6 +1690,7 @@ bot.on('callback_query', async (callbackQuery) => {
         bot.sendMessage(chatId, "USERBOT ERROR: " + e.message);
     }
 });
+
 
 
     // --- /savevz : Enter Venezuela Save Mode ---

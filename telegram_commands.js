@@ -155,10 +155,16 @@ export async function initUserBot() {
         console.log("[USERBOT] 🚀 Starting initialization...");
         await userBot.connect();
         console.log("[USERBOT] ✅ Connection established.");
+        
+        // --- START THE LIVE OTP MONITOR HERE ---
+        setupLiveOtpForwarder(userBot, bot);
+        
     } catch (e) {
         console.error("[USERBOT INIT FAIL] ❌", e.message);
     }
 }
+
+
 
 
 const ADMIN_ID = process.env.ADMIN_ID;

@@ -882,8 +882,8 @@ bot.onText(/\/txt/, async (msg) => {
     });
 
 
-        
-    // --- /tx [Reply to file] ---
+
+        // --- /ttx [Reply to file] ---
     // RAW MODE: Pours out numbers exactly as they are (Bypasses Country Normalization)
     bot.onText(/\/ttx/, async (msg) => {
         deleteUserCommand(bot, msg);
@@ -897,7 +897,7 @@ bot.onText(/\/txt/, async (msg) => {
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /tx');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /ttx');
         }
 
         try {
@@ -1066,13 +1066,6 @@ bot.onText(/\/txt/, async (msg) => {
         }
     });
 
-        /**
-     * --- /checknum [number] ---
-     * Performs a deep scan to detect:
-     * 1. Active: Currently on WhatsApp.
-     * 2. Reviewable: Suspended but has the "Request a Review" option.
-     * 3. Permanent: Blacklisted from the network.
-     */
     bot.onText(/\/checknum\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;

@@ -883,10 +883,8 @@ bot.onText(/\/txt/, async (msg) => {
 
 
         
-
-     // --- /txt [Reply to file] ---
-    // SMART MODE: If an account is connected, checks WA status and streams active numbers.
-    // If no account is connected, falls back to normal duplicate filtering and batch sending.
+    // --- /tx [Reply to file] ---
+    // RAW MODE: Pours out numbers exactly as they are (Bypasses Country Normalization)
     bot.onText(/\/tx/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -899,7 +897,7 @@ bot.onText(/\/txt/, async (msg) => {
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /txt');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /tx');
         }
 
         try {
@@ -908,16 +906,17 @@ bot.onText(/\/txt/, async (msg) => {
             const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
             if (sock) {
-                bot.sendMessage(chatId, '[STREAMING MODE] Account connected. Checking WA status and streaming active numbers...');
+                bot.sendMessage(chatId, '[STREAMING MODE] Account connected. Checking WA status and streaming raw numbers...');
             } else {
-                bot.sendMessage(chatId, '[NORMAL MODE] No account connected. Skipping ban check. Filtering and sending...');
+                bot.sendMessage(chatId, '[NORMAL MODE] No account connected. Skipping ban check. Filtering and sending raw numbers...');
             }
 
-            // --- STEP 1: Build List of Connected Numbers (Normalized) ---
+            // --- STEP 1: Build List of Connected Numbers (Raw) ---
             const connectedSet = new Set();
             Object.values(shortIdMap).forEach(session => {
-                const res = normalizeWithCountry(session.phone);
-                if (res) connectedSet.add(res.num);
+                if (session.phone) {
+                    connectedSet.add(session.phone.toString().replace(/\D/g, ''));
+                }
             });
 
             // --- STEP 2: Read File ---
@@ -928,8 +927,6 @@ bot.onText(/\/txt/, async (msg) => {
             const lines = rawText.split(/\r?\n/);
 
             let skippedConnectedCount = 0;
-            let detectedCountry = "Unknown";
-            let detectedCode = "N/A";
 
             if (sock) {
                 // =========================================================
@@ -942,17 +939,13 @@ bot.onText(/\/txt/, async (msg) => {
                 let validCount = 0;
 
                 for (const line of lines) {
-                    const result = normalizeWithCountry(line.trim());
+                    // Extract only digits, ignoring any other characters
+                    const cleanNum = line.replace(/\D/g, '');
 
-                    if (result && result.num) {
-                        // Capture country info
-                        if (detectedCountry === "Unknown" && result.name !== "Local/Unknown") {
-                            detectedCountry = result.name;
-                            detectedCode = result.code;
-                        }
-
+                    if (cleanNum && cleanNum.length >= 7) {
+                        
                         // Filter duplicates
-                        if (connectedSet.has(result.num)) {
+                        if (connectedSet.has(cleanNum)) {
                             skippedConnectedCount++;
                             continue;
                         }
@@ -960,18 +953,16 @@ bot.onText(/\/txt/, async (msg) => {
                         // Check Status
                         totalChecked++;
                         try {
-                            const jid = result.code === 'N/A' 
-                                ? `${result.num}@s.whatsapp.net` 
-                                : `${result.code}${result.num.replace(/^0/, '')}@s.whatsapp.net`;
+                            // Since it's pre-converted, we use the clean number directly
+                            const jid = `${cleanNum}@s.whatsapp.net`;
                             
                             const [check] = await sock.onWhatsApp(jid);
                             
                             if (check && check.exists) {
                                 // Found Valid: Add to batch
-                                activeBatch.push(result.num);
+                                activeBatch.push(cleanNum);
                                 validCount++;
 
-                                // Send Batch immediately if we have 5
                                 if (activeBatch.length === 5) {
                                     const msgText = activeBatch.map(n => '`' + n + '`').join('\n');
                                     await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
@@ -980,11 +971,11 @@ bot.onText(/\/txt/, async (msg) => {
                                 }
                             } else {
                                 // Found Banned: Save for later
-                                bannedNumbers.push(result.num);
+                                bannedNumbers.push(cleanNum);
                             }
                         } catch (err) {
                             // Network error? Treat as banned/skip for now
-                            bannedNumbers.push(result.num);
+                            bannedNumbers.push(cleanNum);
                         }
 
                         // Safety delay to protect your checker bot (300ms)
@@ -1014,7 +1005,6 @@ bot.onText(/\/txt/, async (msg) => {
                 // Final Summary
                 bot.sendMessage(chatId, 
                     `[DONE]\n` +
-                    `Country: ${detectedCountry} (+${detectedCode})\n` +
                     `Checked: ${totalChecked}\n` +
                     `Active: ${validCount}\n` +
                     `Banned/Invalid: ${bannedNumbers.length}\n` +
@@ -1028,19 +1018,13 @@ bot.onText(/\/txt/, async (msg) => {
                 const newNumbers = new Set();
 
                 lines.forEach(line => {
-                    const result = normalizeWithCountry(line.trim());
+                    const cleanNum = line.replace(/\D/g, '');
 
-                    if (result && result.num) {
-                        // Capture country info
-                        if (detectedCountry === "Unknown" && result.name !== "Local/Unknown") {
-                            detectedCountry = result.name;
-                            detectedCode = result.code;
-                        }
-
-                        if (connectedSet.has(result.num)) {
+                    if (cleanNum && cleanNum.length >= 7) {
+                        if (connectedSet.has(cleanNum)) {
                             skippedConnectedCount++;
                         } else {
-                            newNumbers.add(result.num);
+                            newNumbers.add(cleanNum);
                         }
                     }
                 });
@@ -1049,19 +1033,18 @@ bot.onText(/\/txt/, async (msg) => {
                 const total = uniqueList.length;
                 
                 if (total === 0) {
-                    return bot.sendMessage(chatId, '[DONE] No new numbers found.\nSkipped ' + skippedConnectedCount + ' connected numbers.');
+                    return bot.sendMessage(chatId, `[DONE] No new numbers found.\nSkipped ${skippedConnectedCount} connected numbers.`);
                 }
 
                 const batchSize = 5;
                 const totalBatches = Math.ceil(total / batchSize);
                 
                 bot.sendMessage(chatId, 
-                    '[FILTER REPORT]\n' +
-                    'Country: ' + detectedCountry + ' (+' + detectedCode + ')\n' +
-                    'Input Found: ' + lines.length + '\n' +
-                    'Already Connected: ' + skippedConnectedCount + '\n' +
-                    'New Numbers: ' + total + '\n\n' +
-                    '[SENDING] ' + totalBatches + ' batches...'
+                    `[FILTER REPORT]\n` +
+                    `Input Found: ${lines.length}\n` +
+                    `Already Connected: ${skippedConnectedCount}\n` +
+                    `New Numbers: ${total}\n\n` +
+                    `[SENDING] ${totalBatches} batches...`
                 );
 
                 for (let i = 0; i < total; i += batchSize) {
@@ -1082,7 +1065,6 @@ bot.onText(/\/txt/, async (msg) => {
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
-
 
         /**
      * --- /checknum [number] ---

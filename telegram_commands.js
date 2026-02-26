@@ -2908,7 +2908,7 @@ bot.onText(/\/vz/, async (msg) => {
         }, 15 * 60 * 1000);
     });
 
-    
+        // --- /sort [Reply to file] : Smart Sort by Country (Filters DB & Connected) ---
     bot.onText(/\/sort/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2920,12 +2920,30 @@ bot.onText(/\/vz/, async (msg) => {
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /sort');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .xlsx file with /sort');
         }
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Sorting numbers and preparing messages...');
+            bot.sendMessage(chatId, '[PROCESSING] Fetching Database & Sorting numbers...');
             
+            // --- 1. SMART FILTER SETUP: Get Connected and DB Numbers ---
+            const connectedSet = new Set();
+            Object.values(shortIdMap).forEach(session => {
+                const res = normalizeWithCountry(session.phone);
+                if (res) connectedSet.add(res.num);
+            });
+
+            const allDbDocs = await getAllNumbers();
+            const dbSet = new Set();
+            allDbDocs.forEach(doc => {
+                const numStr = (doc.number || doc).toString();
+                const res = normalizeWithCountry(numStr);
+                // Store normalized version so we compare apples to apples
+                if (res) dbSet.add(res.num);
+                else dbSet.add(numStr); 
+            });
+
+            // --- 2. DOWNLOAD & READ FILE ---
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
@@ -2934,7 +2952,7 @@ bot.onText(/\/vz/, async (msg) => {
             let rawNumbers = [];
 
             // Handle Excel or Text/VCF
-            if (fileName.endsWith('.xlsx')) {
+            if (fileName.toLowerCase().endsWith('.xlsx')) {
                 const buffer = await response.buffer();
                 const workbook = XLSX.read(buffer, { type: 'buffer' });
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -2949,11 +2967,20 @@ bot.onText(/\/vz/, async (msg) => {
                 rawNumbers = text.split(/\r?\n/);
             }
 
+            // --- 3. FILTER & GROUP BY COUNTRY ---
             const countryGroups = {}; // { 'Nigeria': { code: '234', nums: Set() } }
+            let skippedCount = 0;
 
             rawNumbers.forEach(line => {
                 const result = normalizeWithCountry(line.trim());
                 if (result && result.num) {
+                    
+                    // SMART CHECK: Skip if it's already in DB or connected
+                    if (connectedSet.has(result.num) || dbSet.has(result.num)) {
+                        skippedCount++;
+                        return; // Skip to next number
+                    }
+
                     const cName = result.name || 'Unknown';
                     if (!countryGroups[cName]) {
                         countryGroups[cName] = { code: result.code, nums: new Set() };
@@ -2963,10 +2990,13 @@ bot.onText(/\/vz/, async (msg) => {
             });
 
             const countriesFound = Object.keys(countryGroups);
-            if (countriesFound.length === 0) return bot.sendMessage(chatId, '[DONE] No valid numbers found.');
+            if (countriesFound.length === 0) {
+                return bot.sendMessage(chatId, `[DONE] No valid new numbers found.\nSkipped ${skippedCount} duplicates/existing numbers.`);
+            }
 
-            bot.sendMessage(chatId, '[INFO] Found ' + countriesFound.length + ' countries. Sending lists...');
+            bot.sendMessage(chatId, `[INFO] Found ${countriesFound.length} countries. Skipped ${skippedCount} existing numbers. Sending lists...`);
 
+            // --- 4. SEND BATCHES ---
             for (const country of countriesFound) {
                 const group = countryGroups[country];
                 const uniqueList = Array.from(group.nums);
@@ -2975,17 +3005,17 @@ bot.onText(/\/vz/, async (msg) => {
 
                 // Send Country Header
                 await bot.sendMessage(chatId, 
-                    '[COUNTRY: ' + country.toUpperCase() + ']\n' +
-                    'Code: +' + group.code + '\n' +
-                    'Total Unique: ' + uniqueList.length + '\n' +
-                    'Batches: ' + totalBatches,
+                    `[COUNTRY: ${country.toUpperCase()}]\n` +
+                    `Code: +${group.code}\n` +
+                    `Total Unique: ${uniqueList.length}\n` +
+                    `Batches: ${totalBatches}`,
                     { parse_mode: 'Markdown' }
                 );
 
-                // Send Numbers in Batches
+                // Send Numbers in Clickable Batches
                 for (let i = 0; i < uniqueList.length; i += batchSize) {
                     const chunk = uniqueList.slice(i, i + batchSize);
-                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
+                    const msgText = chunk.map(n => `\`${n}\``).join('\n');
                     await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
                     await delay(1200); // 1.2s delay to prevent flooding
                 }
@@ -2993,18 +3023,41 @@ bot.onText(/\/vz/, async (msg) => {
                 await delay(2000); // Extra delay between different countries
             }
 
-            bot.sendMessage(chatId, '[DONE] Sorting and sending complete.');
+            bot.sendMessage(chatId, '[DONE] Smart sorting and sending complete.');
 
         } catch (e) {
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
 
-        /**
-     * --- /check [Number] ---
-     * 🕵️ Checks if a number is active on WhatsApp or potentially banned.
-     * Uses one of your connected WhatsApp bot accounts to perform the check.
-     */
+
+        // --- /csave [Country Code] : Universal Country Save Mode ---
+    bot.onText(/\/csave\s+(\d+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+
+        const targetCode = match[1]; // Grabs the 58, 996, 263, etc.
+
+        // Set State and securely save the requested code
+        userState[chatId] = 'SAVE_MODE_CUSTOM';
+        userState[chatId + '_code'] = targetCode;
+
+        bot.sendMessage(chatId, 
+            `**UNIVERSAL SAVE MODE ACTIVE** \n\n` +
+            `**Target Code:** +${targetCode}\n\n` +
+            `Forward your messages now.\n` +
+            `I will extract numbers and format them perfectly with +${targetCode}.\n\n` +
+            `Type \`STOP\` or \`/done\` to exit this mode.`,
+            { parse_mode: 'Markdown' }
+        );
+    });
+
+
+    
+     
     bot.onText(/\/check\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -3979,6 +4032,68 @@ const cleanNumbers = matches.map(n => {
             sendMenu(bot, chatId, '[SUCCESS] Bank details saved.');
             return;
         }
+
+
+                // --- 🌍 SMART UNIVERSAL SAVE (Bulk Forward Support) ---
+        if (userState[chatId] === 'SAVE_MODE_CUSTOM') {
+            
+            // Retrieve the country code you typed when starting the command
+            const TARGET_CODE = userState[chatId + '_code']; 
+
+            if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
+                userState[chatId] = null;
+                userState[chatId + '_code'] = null; // Clean up memory
+                
+                if (vzBuffer[chatId] && vzBuffer[chatId].length > 0) {
+                     await addNumbersToDb(vzBuffer[chatId]);
+                     delete vzBuffer[chatId];
+                }
+                const total = await countNumbers();
+                return bot.sendMessage(chatId, `[EXITED] Universal Mode (+${TARGET_CODE}).\nTotal DB: ${total}`);
+            }
+
+            // Extract any sequence of digits between 7 and 15 characters
+            const matches = text.match(/\d{7,15}/g);
+            if (!matches) return; 
+
+            const cleanNumbers = matches.map(n => {
+                let s = String(n);
+                if (s.startsWith('0')) {
+                    // If it starts with 0 (like 0770106866), drop the 0 and add the country code
+                    return TARGET_CODE + s.substring(1);
+                } else if (s.startsWith(TARGET_CODE)) {
+                    // If it already perfectly starts with the country code, leave it alone
+                    return s;
+                }
+                // If it's just raw local digits, slap the country code on the front
+                return TARGET_CODE + s; 
+            });
+
+            if (!vzBuffer[chatId]) vzBuffer[chatId] = [];
+            vzBuffer[chatId].push(...cleanNumbers);
+
+            if (vzTimer[chatId]) clearTimeout(vzTimer[chatId]);
+
+            vzTimer[chatId] = setTimeout(async () => {
+                const finalBatch = vzBuffer[chatId];
+                const count = finalBatch.length;
+                
+                vzBuffer[chatId] = []; 
+                delete vzTimer[chatId];
+
+                if (count > 0) {
+                    try {
+                        await addNumbersToDb(finalBatch);
+                        bot.sendMessage(chatId, `**BATCH SAVED:** ${count} (+${TARGET_CODE}) numbers.`, { parse_mode: 'Markdown' });
+                    } catch (e) {
+                        bot.sendMessage(chatId, `[ERROR] Partial save failed: ${e.message}`);
+                    }
+                }
+            }, 2000); 
+
+            return; 
+        }
+
 
         if (userState[chatId] === 'WAITING_WITHDRAW_AMOUNT') {
             const amount = parseInt(text);

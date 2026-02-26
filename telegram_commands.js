@@ -885,7 +885,7 @@ bot.onText(/\/txt/, async (msg) => {
         
     // --- /tx [Reply to file] ---
     // RAW MODE: Pours out numbers exactly as they are (Bypasses Country Normalization)
-    bot.onText(/\/tx/, async (msg) => {
+    bot.onText(/\/ttx/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();

@@ -1276,69 +1276,106 @@ bot.onText(/\/txt/, async (msg) => {
     });
 
 
-        // --- /svv Command: Smart Filter (Reply to DOCX, TXT, VCF) ---
-    // Usage: Reply to a document (.docx, .txt, .vcf) with /svv
-    bot.onText(/\/svv/, async (msg) => {
+            // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
+    bot.onText(/\/convt/, async (msg) => {
         deleteUserCommand(bot, msg);
-        const userId = msg.chat.id.toString();
-        
-        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) {
-            return; 
-        }
         const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a document (.docx, .txt, .vcf) with /svv');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /convert');
         }
-
-        const document = msg.reply_to_message.document;
-        const fileName = document.file_name || 'file';
-        const fileExtension = path.extname(fileName).toLowerCase();
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Starting file download...');
-
-            // 1. Get Download Link and File Buffer
-            const fileId = document.file_id;
+            const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
-            
             const response = await fetch(fileLink);
-            if (!response.ok) {
-                return bot.sendMessage(chatId, `[ERROR] Failed to download file. HTTP Status: ${response.status}`);
-            }
-            const fileBuffer = await response.buffer();
-            
-            let rawText = '';
-            
-            // 2. CONVERSION LOGIC (DOCX, TXT, VCF)
-            if (fileExtension === '.docx') {
-                if (typeof mammoth?.extractRawText === 'function') {
-                    bot.sendMessage(chatId, '[CONVERTING] Converting DOCX to text...');
-                    // Use mammoth to extract text from the buffer
-                    const result = await mammoth.extractRawText({ buffer: fileBuffer });
-                    rawText = result.value;
-                } else {
-                     // Fallback if mammoth is not installed
-                     bot.sendMessage(chatId, '[ERROR] DOCX library (mammoth) is missing. Treating as raw data.');
-                     rawText = fileBuffer.toString('utf-8');
-                }
-            } else {
-                // Treats VCF, TXT, and all others as standard UTF-8 text
-                rawText = fileBuffer.toString('utf-8');
-            }
+            const fileName = msg.reply_to_message.document.file_name || '';
 
-            // 3. PROCESS NUMBERS using the shared helper function
-            if (rawText.length > 0) {
-                // Pass rawText and necessary objects to the shared processor
-                await processNumbers(rawText, chatId, shortIdMap, bot);
-            } else {
-                bot.sendMessage(chatId, '[ERROR] Converted file content was empty.');
-            }
+            if (fileName.toLowerCase().endsWith('.xlsx')) {
+                // Convert Excel to Text
+                bot.sendMessage(chatId, '[SYSTEM] Extracting numbers and converting to TXT...');
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                
+                let numbersFound = [];
+                let detectedCode = "N/A";
 
+                // Loop through every cell in the Excel sheet
+                data.forEach(row => {
+                    if (Array.isArray(row)) {
+                        row.forEach(cell => { 
+                            if(cell) {
+                                const cellStr = cell.toString();
+                                // Extract ONLY sequences of digits (ignores names, spaces, symbols)
+                                const matches = cellStr.match(/\d{7,15}/g);
+                                
+                                if (matches) {
+                                    matches.forEach(num => {
+                                        numbersFound.push(num);
+                                        
+                                        // Detect the country code from the first valid number
+                                        if (detectedCode === "N/A") {
+                                            const res = normalizeWithCountry(num);
+                                            if (res && res.code && res.code !== 'N/A') {
+                                                detectedCode = res.code;
+                                            }
+                                        }
+                                    });
+                                }
+                            } 
+                        });
+                    }
+                });
+                
+                // Format the bold text for the Telegram caption
+                const captionText = `[CONVERT] XLSX to TXT Complete\n\n` +
+                                    `**Country Code:** +${detectedCode}\n` +
+                                    `**Total Numbers:** ${numbersFound.length}`;
+
+                // Send the perfectly clean TXT file
+                await bot.sendDocument(
+                    chatId, 
+                    Buffer.from(numbersFound.join('\n')), 
+                    { 
+                        caption: captionText,
+                        parse_mode: 'Markdown' // Enables the bold text
+                    }, 
+                    { filename: 'converted_numbers.txt', contentType: 'text/plain' }
+                );
+                
+            } else {
+                // Convert Text to Excel
+                bot.sendMessage(chatId, '[SYSTEM] Converting TXT to XLSX...');
+                const text = await response.text();
+                
+                // Extract only numbers for the Excel file too to keep it clean
+                const matches = text.match(/\d{7,15}/g) || [];
+                const lines = matches.map(l => [l]);
+                
+                const worksheet = XLSX.utils.aoa_to_sheet(lines);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Numbers");
+                const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+                
+                await bot.sendDocument(
+                    chatId, 
+                    buffer, 
+                    { 
+                        caption: `[CONVERT] TXT to XLSX complete\n**Total Numbers:** ${matches.length}`, 
+                        parse_mode: 'Markdown' 
+                    }, 
+                    { filename: 'converted.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+                );
+            }
         } catch (e) {
-            bot.sendMessage(chatId, `[ERROR] Processing failed: ${e.message}`);
+            bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
+
 
 
     // --- /sendgroup [message] | [bot_count] | [group_link] ---

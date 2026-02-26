@@ -1276,7 +1276,7 @@ bot.onText(/\/txt/, async (msg) => {
     });
 
 
-            // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
+    // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
     bot.onText(/\/convt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1294,35 +1294,51 @@ bot.onText(/\/txt/, async (msg) => {
             const fileName = msg.reply_to_message.document.file_name || '';
 
             if (fileName.toLowerCase().endsWith('.xlsx')) {
-                // Convert Excel to Text
-                bot.sendMessage(chatId, '[SYSTEM] Extracting numbers and converting to TXT...');
+                // Convert Excel to Text (SMART SORT & STRIP)
+                bot.sendMessage(chatId, '[SYSTEM] Extracting, sorting by country, and stripping codes...');
                 const buffer = await response.buffer();
                 const workbook = XLSX.read(buffer, { type: 'buffer' });
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
                 const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
                 
-                let numbersFound = [];
-                let detectedCode = "N/A";
+                // Object to hold groups of numbers by their country code
+                const countryGroups = {}; 
 
-                // Loop through every cell in the Excel sheet
                 data.forEach(row => {
                     if (Array.isArray(row)) {
                         row.forEach(cell => { 
                             if(cell) {
                                 const cellStr = cell.toString();
-                                // Extract ONLY sequences of digits (ignores names, spaces, symbols)
                                 const matches = cellStr.match(/\d{7,15}/g);
                                 
                                 if (matches) {
                                     matches.forEach(num => {
-                                        numbersFound.push(num);
+                                        const res = normalizeWithCountry(num);
                                         
-                                        // Detect the country code from the first valid number
-                                        if (detectedCode === "N/A") {
-                                            const res = normalizeWithCountry(num);
-                                            if (res && res.code && res.code !== 'N/A') {
-                                                detectedCode = res.code;
+                                        if (res && res.code && res.code !== 'N/A') {
+                                            const code = res.code;
+                                            
+                                            // Strip the country code off the front of the number
+                                            let cleanNum = num;
+                                            if (cleanNum.startsWith(code)) {
+                                                cleanNum = cleanNum.substring(code.length);
                                             }
+
+                                            // Create the group if it doesn't exist yet
+                                            if (!countryGroups[code]) {
+                                                countryGroups[code] = {
+                                                    name: res.name,
+                                                    numbers: []
+                                                };
+                                            }
+                                            // Add the clean number to its specific country group
+                                            countryGroups[code].numbers.push(cleanNum);
+                                        } else {
+                                            // Fallback for completely unknown formats
+                                            if (!countryGroups['Unknown']) {
+                                                countryGroups['Unknown'] = { name: 'Unknown', numbers: [] };
+                                            }
+                                            countryGroups['Unknown'].numbers.push(num);
                                         }
                                     });
                                 }
@@ -1330,29 +1346,51 @@ bot.onText(/\/txt/, async (msg) => {
                         });
                     }
                 });
-                
-                // Format the bold text for the Telegram caption
-                const captionText = `[CONVERT] XLSX to TXT Complete\n\n` +
-                                    `**Country Code:** +${detectedCode}\n` +
-                                    `**Total Numbers:** ${numbersFound.length}`;
 
-                // Send the perfectly clean TXT file
-                await bot.sendDocument(
-                    chatId, 
-                    Buffer.from(numbersFound.join('\n')), 
-                    { 
-                        caption: captionText,
-                        parse_mode: 'Markdown' // Enables the bold text
-                    }, 
-                    { filename: 'converted_numbers.txt', contentType: 'text/plain' }
-                );
+                const codesFound = Object.keys(countryGroups);
+                if (codesFound.length === 0) {
+                    return bot.sendMessage(chatId, '[ERROR] No valid numbers found in the Excel file.');
+                }
+
+                bot.sendMessage(chatId, `[INFO] Found numbers from ${codesFound.length} different regions. Generating files...`);
+
+                // Loop through each country group and send a separate TXT file
+                for (const code of codesFound) {
+                    const group = countryGroups[code];
+                    const count = group.numbers.length;
+                    
+                    // Format the bold text for the Telegram caption
+                    let captionText = `[CONVERT] XLSX to TXT Complete\n\n`;
+                    if (code !== 'Unknown') {
+                        captionText += `**Country:** ${group.name}\n` +
+                                       `**Country Code:** +${code}\n`;
+                    } else {
+                        captionText += `**Country Code:** Unknown / Local\n`;
+                    }
+                    captionText += `**Total Numbers:** ${count}`;
+
+                    // Send the perfectly clean TXT file for this specific country
+                    await bot.sendDocument(
+                        chatId, 
+                        Buffer.from(group.numbers.join('\n')), 
+                        { 
+                            caption: captionText,
+                            parse_mode: 'Markdown' 
+                        }, 
+                        { 
+                            filename: `converted_${code === 'Unknown' ? 'unknown' : code}.txt`, 
+                            contentType: 'text/plain' 
+                        }
+                    );
+                    
+                    await delay(1000); // 1-second delay between sending files to avoid Telegram flood limits
+                }
                 
             } else {
                 // Convert Text to Excel
                 bot.sendMessage(chatId, '[SYSTEM] Converting TXT to XLSX...');
                 const text = await response.text();
                 
-                // Extract only numbers for the Excel file too to keep it clean
                 const matches = text.match(/\d{7,15}/g) || [];
                 const lines = matches.map(l => [l]);
                 
@@ -1375,6 +1413,7 @@ bot.onText(/\/txt/, async (msg) => {
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
+
 
 
 

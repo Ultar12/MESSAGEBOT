@@ -1,4 +1,5 @@
 import { TelegramClient, Api } from "telegram";
+import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
 
 import { 
@@ -47,6 +48,107 @@ async function ensureConnected() {
         await userBot.connect();
     }
 }
+
+
+
+export function setupLiveOtpForwarder(userBot, bot) {
+    console.log("[MONITOR] Starting live OTP grabber for 'Gina and WBD'...");
+
+    // Your Target Group where the styled message goes
+    const TARGET_GROUP_ID = "-1003645249777"; 
+    
+    // The ONLY group we want to spy on
+    const MONITORED_GROUP_NAME = "-1003518737176";
+
+    userBot.addEventHandler(async (event) => {
+        const message = event.message;
+        if (!message) return;
+
+        try {
+            const chat = await message.getChat();
+            if (!chat) return;
+
+            const chatTitle = chat.title || "";
+
+            // 1. FILTER: Check if the message is strictly from "Gina and WBD"
+            if (chatTitle.includes(MONITORED_GROUP_NAME)) {
+                
+                let textToSearch = message.message || "";
+                let code = null;
+
+                // 2. EXTRACTION A: Look for code in the message text (e.g., 380-132 or 545724)
+                const textCodeMatch = textToSearch.match(/\b(\d{3})[-\s]?(\d{3})\b/);
+                if (textCodeMatch) {
+                    code = textCodeMatch[1] + textCodeMatch[2]; // Merges into 6 digits
+                }
+
+                // 3. EXTRACTION B: Look for code inside the inline buttons
+                if (!code && message.replyMarkup && message.replyMarkup.rows) {
+                    for (const row of message.replyMarkup.rows) {
+                        for (const btn of row.buttons) {
+                            const btnText = btn.text || "";
+                            const btnCodeMatch = btnText.match(/\b(\d{3})[-\s]?(\d{3})\b/);
+                            if (btnCodeMatch) {
+                                code = btnCodeMatch[1] + btnCodeMatch[2];
+                                break;
+                            }
+                        }
+                        if (code) break;
+                    }
+                }
+
+                // 4. IF CODE FOUND: Build and forward the message!
+                if (code) {
+                    
+                    // Detect Platform
+                    let platform = "WhatsApp"; 
+                    if (textToSearch.toLowerCase().includes("business") || textToSearch.includes("WB")) {
+                        platform = "WhatsApp Business";
+                    }
+
+                    // Detect Country Code (e.g., #VE, #ZW)
+                    let country = "Unknown";
+                    const countryMatch = textToSearch.match(/#([A-Z]{2})/i);
+                    if (countryMatch) country = countryMatch[1].toUpperCase();
+
+                    // Detect Masked Number (Catches both 5841***4971 and 5841••••447)
+                    let maskedNumber = "Unknown";
+                    const numMatch = textToSearch.match(/\d{2,4}[*•]+\d{2,4}/);
+                    if (numMatch) maskedNumber = numMatch[0];
+
+                    // Construct the formatted message
+                    const outputText = 
+                        `**NEW OTP!**\n\n` +
+                        `**Platform:** ${platform}\n` +
+                        `**Country:** #${country}\n` +
+                        `**Number:** ${maskedNumber}\n\n` +
+                        `**Code:** \`${code}\`\n` +
+                        `*(Tap the code above to instantly copy)*`;
+
+                    // Build the buttons (Update the URL to your actual owner link!)
+                    const inlineKeyboard = [
+                        [{ text: `${code}`, callback_data: `copy_alert` }],
+                        [{ text: `Owner`, url: `https://t.me/Staries1` }] // <-- CHANGE THIS
+                    ];
+
+                    // Send to your target group
+                    await bot.sendMessage(TARGET_GROUP_ID, outputText, {
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: inlineKeyboard
+                        }
+                    });
+                    
+                    console.log(`[FORWARDED] Code ${code} sent to target group.`);
+                }
+            }
+        } catch (e) {
+            // Fails silently if a message doesn't format correctly
+            console.error("[OTP Grabber Error]:", e.message);
+        }
+    }, new NewMessage({ incoming: true })); 
+}
+
 
 export async function initUserBot() {
     try {

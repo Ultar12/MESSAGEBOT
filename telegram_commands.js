@@ -112,6 +112,25 @@ export function getDedicatedSender(activeClients) {
 }
 
 
+// To this line:
+export async function initUserBot(activeClients) {
+    try {
+        console.log("[USERBOT] Starting initialization...");
+        await userBot.connect();
+        console.log("[USERBOT] Connection established.");
+        
+        // This forces the bot to pick an account and "LOCK" it immediately on startup
+        getDedicatedSender(activeClients); 
+        
+        await setupLiveOtpForwarder(userBot, activeClients);
+        
+    } catch (e) {
+        console.error("[USERBOT INIT FAIL]", e.message);
+    }
+}
+
+
+
 // This function allows the scraper to "claim" or "reset" a bot
 
 

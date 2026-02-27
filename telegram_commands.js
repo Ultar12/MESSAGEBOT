@@ -52,125 +52,194 @@ async function ensureConnected() {
 
 
 
-export async function setupLiveOtpForwarder(userBot) {
-    console.log("[MONITOR] Locating the exact group in your chat list...");
+export function setupLiveOtpForwarder(userBot) {
+    console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
-    // 1. Initialize the specific Message Bot for sending
+    // 1. Initialize the specific Telegram Message Bot
     const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
-    const TARGET_GROUP_ID = "-1003645249777"; 
 
-    try {
-        // 2. THE BULLETPROOF FIX: Search your chat list to find the exact group entity
-        const dialogs = await userBot.getDialogs();
-        
-        // This looks for the exact ID, or the name "Gina and WBD"
-        const sourceGroup = dialogs.find(d => 
-            (d.id && d.id.toString() === "-1003518737176") || 
-            (d.title && d.title.includes("Gina and WBD"))
-        );
+    // Target Group IDs
+    const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
+    const SOURCE_GROUP_ID = "-1003518737176"; 
+    
+    // WhatsApp Target Settings
+    const WHATSAPP_TARGET_GROUP = "120363423687629090@g.us";
+    
+    // WhatsApp Group Invite Code (Extracted from your link)
+    const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
 
-        if (!sourceGroup) {
-            console.error("❌ [OTP ERROR] Could not find the source group in your UserBot's chat list! Make sure the connected account is actually inside the group.");
-            return;
-        }
+    let lastMessageId = 0;
+    const recentCodes = new Map(); // Memory Cache
 
-        console.log(`✅ [MONITOR] Attached to group: ${sourceGroup.title}. Starting polling...`);
-        let lastMessageId = 0;
+    setInterval(async () => {
+        try {
+            if (!userBot || !userBot.connected) return;
 
-        // 3. Start Polling using the exact Entity Object (Guaranteed to work)
-        setInterval(async () => {
-            try {
-                if (!userBot.connected) return;
+            const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
+            if (!messages || messages.length === 0) return;
 
-                // Pass the verified group entity instead of a raw string ID
-                const messages = await userBot.getMessages(sourceGroup.entity, { limit: 1 });
-                if (!messages || messages.length === 0) return;
+            const latestMsg = messages[0];
 
-                const latestMsg = messages[0];
+            if (lastMessageId === 0) {
+                lastMessageId = latestMsg.id;
+                return;
+            }
 
-                if (lastMessageId === 0) {
-                    lastMessageId = latestMsg.id;
-                    return;
+            if (latestMsg.id > lastMessageId) {
+                lastMessageId = latestMsg.id; 
+                
+                let textToSearch = latestMsg.message || "";
+                let replyText = "";
+
+                // Fetch the quoted replied-to message for the masked number
+                try {
+                    const replyMsg = await latestMsg.getReplyMessage();
+                    if (replyMsg && replyMsg.message) {
+                        replyText = replyMsg.message;
+                    }
+                } catch (e) { }
+
+                const combinedText = textToSearch + "\n" + replyText;
+                let code = null;
+
+                // EXTRACTION A: Text
+                const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                if (textCodeMatch) {
+                    code = textCodeMatch[1] + textCodeMatch[2];
                 }
 
-                if (latestMsg.id > lastMessageId) {
-                    lastMessageId = latestMsg.id;
-                    
-                    let textToSearch = latestMsg.message || "";
-                    let code = null;
-
-                    // EXTRACTION A: Look for code in text
-                    const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                    if (textCodeMatch) {
-                        code = textCodeMatch[1] + textCodeMatch[2];
-                    }
-
-                    // EXTRACTION B: Look for code inside inline buttons
-                    if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
-                        for (const row of latestMsg.replyMarkup.rows) {
-                            for (const btn of row.buttons) {
-                                const btnText = btn.text || "";
-                                const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                                if (btnCodeMatch) {
-                                    code = btnCodeMatch[1] + btnCodeMatch[2];
-                                    break;
-                                }
+                // EXTRACTION B: Buttons
+                if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
+                    for (const row of latestMsg.replyMarkup.rows) {
+                        for (const btn of row.buttons) {
+                            const btnText = btn.text || "";
+                            const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                            if (btnCodeMatch) {
+                                code = btnCodeMatch[1] + btnCodeMatch[2];
+                                break;
                             }
-                            if (code) break;
                         }
+                        if (code) break;
+                    }
+                }
+
+                if (code) {
+                    
+                    // SKIP DUPLICATES (2.5 seconds cache)
+                    const now = Date.now();
+                    if (recentCodes.has(code) && (now - recentCodes.get(code) < 2500)) {
+                        console.log(`[SKIP] Blocked duplicate code: ${code}`);
+                        return; 
+                    }
+                    recentCodes.set(code, now);
+                    
+                    // Clean up memory cache
+                    for (const [k, v] of recentCodes.entries()) {
+                        if (now - v > 10000) recentCodes.delete(k);
                     }
 
-                    // FORMAT AND SEND
-                    if (code) {
-                        let platform = "WhatsApp"; 
-                        if (textToSearch.toLowerCase().includes("business") || textToSearch.includes("WB")) {
-                            platform = "WhatsApp Business";
-                        }
+                    // Extract Metadata
+                    let platform = "WhatsApp"; 
+                    if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
+                        platform = "WhatsApp Business";
+                    }
 
-                        let country = "Unknown";
-                        const countryMatch = textToSearch.match(/#([a-zA-Z]{2})/i);
-                        if (countryMatch) country = countryMatch[1].toUpperCase();
+                    let country = "Unknown";
+                    const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
+                    if (countryMatch) country = countryMatch[1].toUpperCase();
 
-                        let maskedNumber = "Unknown";
-                        const numMatch = textToSearch.match(/\d{2,4}[*•]+\d{2,4}/);
-                        if (numMatch) maskedNumber = numMatch[0];
+                    let maskedNumber = "Unknown";
+                    const numMatch = combinedText.match(/\d{2,6}[*•\u2022.\-]+\d{2,6}/);
+                    if (numMatch) maskedNumber = numMatch[0];
 
-                        const outputText = 
-                            `**NEW OTP!**\n\n` +
-                            `**Platform:** ${platform}\n` +
-                            `**Country:** #${country}\n` +
-                            `**Number:** ${maskedNumber}\n\n` +
-                            `**Code:** \`${code}\`\n` +
-                            `*(Tap the code above to instantly copy)*`;
+                    // ==========================================
+                    // 1. SEND TO TELEGRAM
+                    // ==========================================
+                    const tgOutputText = 
+                        `[NEW OTP]\n\n` +
+                        `Platform: ${platform}\n` +
+                        `Country: #${country}\n` +
+                        `Number: ${maskedNumber}\n\n` +
+                        `Code: \`${code}\`\n` +
+                        `*(Tap the code above to instantly copy)*`;
 
-                        const inlineKeyboard = [
-                            [{ text: `${code}`, callback_data: `copy_alert` }],
+                    let inlineKeyboard = [
+                        [{ text: `Copy: ${code}`, copy_text: { text: code } }],
+                        [{ text: `Owner`, url: `https://t.me/Staries1` }] 
+                    ];
+
+                    try {
+                        await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
+                            parse_mode: 'Markdown',
+                            reply_markup: { inline_keyboard: inlineKeyboard }
+                        });
+                        console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
+                    } catch (err) {
+                        // Fallback for older bot library versions
+                        inlineKeyboard = [
+                            [{ text: `Copy: ${code}`, callback_data: `copy_alert` }],
                             [{ text: `Owner`, url: `https://t.me/Staries1` }] 
                         ];
-
-                        await senderBot.sendMessage(TARGET_GROUP_ID, outputText, {
+                        await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
                             parse_mode: 'Markdown',
-                            reply_markup: {
-                                inline_keyboard: inlineKeyboard
-                            }
+                            reply_markup: { inline_keyboard: inlineKeyboard }
                         });
+                        console.log(`[FORWARDED] Code ${code} sent to Telegram (Fallback).`);
+                    }
+
+                    // ==========================================
+                    // 2. SEND TO WHATSAPP (WITH AUTO-JOIN)
+                    // ==========================================
+                    const waOutputText = 
+                        `*NEW OTP*\n\n` +
+                        `*Platform:* ${platform}\n` +
+                        `*Country:* #${country}\n` +
+                        `*Number:* ${maskedNumber}\n\n` +
+                        `*Code:* *${code}*`; 
+
+                    // Find any active, connected WhatsApp bot
+                    const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                    
+                    if (activeFolders.length > 0) {
+                        const sock = clients[activeFolders[0]]; // Grab the first online bot
                         
-                        console.log(`🚀 [FORWARDED] Code ${code} grabbed and sent!`);
+                        try {
+                            // Attempt to send the message normally
+                            await sock.sendMessage(WHATSAPP_TARGET_GROUP, { text: waOutputText });
+                            console.log(`[FORWARDED] Code ${code} sent to WhatsApp Group.`);
+                            
+                        } catch (waErr) {
+                            console.log("[WA INFO] Bot is not in the group. Attempting Auto-Join...");
+                            
+                            try {
+                                if (WHATSAPP_INVITE_CODE) {
+                                    // 1. Join using the invite code
+                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
+                                    
+                                    // 2. Wait 1.5 seconds for WhatsApp servers to sync the new group
+                                    await new Promise(resolve => setTimeout(resolve, 1500)); 
+                                    
+                                    // 3. Retry sending the message
+                                    await sock.sendMessage(WHATSAPP_TARGET_GROUP, { text: waOutputText });
+                                    console.log(`[FORWARDED] Auto-Joined and sent to WhatsApp Group.`);
+                                }
+                            } catch (joinErr) {
+                                console.error("[WA ERROR] Auto-join failed. Link might be revoked.", joinErr.message);
+                            }
+                        }
+                    } else {
+                        console.log("[WA SKIP] No WhatsApp accounts currently connected to send the message.");
                     }
                 }
-            } catch (e) {
-                if (!e.message.includes("Cannot read properties")) {
-                    console.error("[OTP Grabber Error]:", e.message);
-                }
             }
-        }, 3000); 
-
-    } catch (error) {
-        console.error("❌ [OTP SETUP FATAL]:", error.message);
-    }
+        } catch (e) {
+            if (!e.message.includes("Cannot read properties")) {
+                console.error("[OTP Grabber Error]:", e.message);
+            }
+        }
+    }, 3000); 
 }
-
 
 export async function initUserBot() {
     try {

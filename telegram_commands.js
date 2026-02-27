@@ -17,6 +17,7 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit-table';
 import PDFPlain from 'pdfkit';
 import fs from 'fs'; 
+import TelegramBot from 'node-telegram-bot-api';
 import { pipeline } from 'node:stream/promises';
 import * as XLSX from 'xlsx';
 import fetch from 'node-fetch';

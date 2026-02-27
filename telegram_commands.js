@@ -1116,43 +1116,39 @@ bot.onText(/\/txt/, async (msg) => {
     });
 
 
-
-        // --- /ttx [Reply to file] ---
-    // RAW MODE: Pours out numbers exactly as they are (Bypasses Country Normalization)
+    // --- /ttx [Reply to file] ---
     bot.onText(/\/ttx/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
-        // Authorization: Allow both Admin and Subadmins
+        // 1. Authorization
         const isUserAdmin = (userId === ADMIN_ID);
         const isSubAdmin = SUBADMIN_IDS.includes(userId);
-
         if (!isUserAdmin && !isSubAdmin) return;
 
+        // 2. Validate Input
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /ttx');
         }
 
         try {
-            // Check if any WhatsApp bot is connected
-                        // Filter all folders, but EXCLUDE the dedicated OTP sender
+            // 3. Select Checker Account (Exclude the OTP Sender)
             const activeFolders = Object.keys(clients).filter(f => 
                 clients[f] && f !== currentOtpSenderId
             );
             
-            // Now 'sock' will only be a non-OTP account
+            // Get the actual socket object
             const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
             if (sock) {
-                bot.sendMessage(chatId, `[STREAMING MODE] Using account: ${activeFolders[0]}. Checking WA status...`);
+                const checkerNum = sock.user.id.split(':')[0]; 
+                bot.sendMessage(chatId, `🟢 [STREAMING MODE] Using: ${checkerNum}\nChecking WA status...`);
             } else {
-                // If the only connected account is the OTP sender, we act as if none are connected
-                bot.sendMessage(chatId, '[NORMAL MODE] No available checker account. (Dedicated OTP account is protected).');
+                bot.sendMessage(chatId, '🟡 [NORMAL MODE] No available checker account.\n(Dedicated OTP account is protected).');
             }
 
-
-            // --- STEP 1: Build List of Connected Numbers (Raw) ---
+            // 4. Build Exclusion List (Already connected numbers)
             const connectedSet = new Set();
             Object.values(shortIdMap).forEach(session => {
                 if (session.phone) {
@@ -1160,152 +1156,100 @@ bot.onText(/\/txt/, async (msg) => {
                 }
             });
 
-            // --- STEP 2: Read File ---
+            // 5. Read and Parse File
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const rawText = await response.text();
-            const lines = rawText.split(/\r?\n/);
+            
+            // Clean empty lines and spaces
+            const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length >= 7);
 
             let skippedConnectedCount = 0;
+            let activeBatch = []; 
+            const bannedNumbers = []; 
+            let totalChecked = 0;
+            let validCount = 0;
 
-            if (sock) {
-                // =========================================================
-                // BRANCH A: BOT IS CONNECTED -> PERFORM WA CHECK (STREAMING)
-                // =========================================================
-                let activeBatch = []; 
-                const bannedNumbers = []; 
-                
-                let totalChecked = 0;
-                let validCount = 0;
+            // 6. Processing Loop
+            for (const line of lines) {
+                const cleanNum = line.replace(/\D/g, '');
 
-                for (const line of lines) {
-                    // Extract only digits, ignoring any other characters
-                    const cleanNum = line.replace(/\D/g, '');
+                // Skip if connected
+                if (connectedSet.has(cleanNum)) {
+                    skippedConnectedCount++;
+                    continue;
+                }
 
-                    if (cleanNum && cleanNum.length >= 7) {
+                if (sock) {
+                    // --- BRANCH A: STREAMING CHECK ---
+                    totalChecked++;
+                    try {
+                        const jid = `${cleanNum}@s.whatsapp.net`;
+                        const [check] = await sock.onWhatsApp(jid);
                         
-                        // Filter duplicates
-                        if (connectedSet.has(cleanNum)) {
-                            skippedConnectedCount++;
-                            continue;
-                        }
+                        if (check && check.exists) {
+                            activeBatch.push(cleanNum);
+                            validCount++;
 
-                        // Check Status
-                        totalChecked++;
-                        try {
-                            // Since it's pre-converted, we use the clean number directly
-                            const jid = `${cleanNum}@s.whatsapp.net`;
-                            
-                            const [check] = await sock.onWhatsApp(jid);
-                            
-                            if (check && check.exists) {
-                                // Found Valid: Add to batch
-                                activeBatch.push(cleanNum);
-                                validCount++;
-
-                                if (activeBatch.length === 5) {
-                                    const msgText = activeBatch.map(n => '`' + n + '`').join('\n');
-                                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                                    activeBatch = []; // Clear buffer
-                                    await delay(1000); // Small delay to prevent Telegram flood
-                                }
-                            } else {
-                                // Found Banned: Save for later
-                                bannedNumbers.push(cleanNum);
+                            // Send valid numbers in small batches of 5
+                            if (activeBatch.length === 5) {
+                                await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                activeBatch = []; 
+                                await delay(1000); 
                             }
-                        } catch (err) {
-                            // Network error? Treat as banned/skip for now
+                        } else {
                             bannedNumbers.push(cleanNum);
                         }
-
-                        // Safety delay to protect your checker bot (300ms)
-                        if (totalChecked % 5 === 0) await delay(300);
+                    } catch (err) {
+                        bannedNumbers.push(cleanNum);
                     }
-                }
 
-                // Flush Remaining Active Numbers
-                if (activeBatch.length > 0) {
-                    const msgText = activeBatch.map(n => '`' + n + '`').join('\n');
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                }
-
-                // Send Banned Report (At the end)
-                if (bannedNumbers.length > 0) {
-                    await bot.sendMessage(chatId, `🔴 **[BANNED / INVALID]** (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
-                    
-                    // Send banned in batches of 10 to clear them out quickly
-                    for (let i = 0; i < bannedNumbers.length; i += 10) {
-                        const chunk = bannedNumbers.slice(i, i + 10);
-                        const msgText = chunk.map(n => '`' + n + '`').join('\n');
-                        await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                    // Protect checker bot from bans (0.5s delay every 5 checks)
+                    if (totalChecked % 5 === 0) await delay(500);
+                } else {
+                    // --- BRANCH B: RAW FILTERING (No Bot) ---
+                    activeBatch.push(cleanNum);
+                    validCount++;
+                    if (activeBatch.length === 5) {
+                        await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                        activeBatch = [];
                         await delay(800);
                     }
                 }
-
-                // Final Summary
-                bot.sendMessage(chatId, 
-                    `[DONE]\n` +
-                    `Checked: ${totalChecked}\n` +
-                    `Active: ${validCount}\n` +
-                    `Banned/Invalid: ${bannedNumbers.length}\n` +
-                    `Skipped Connected: ${skippedConnectedCount}`
-                );
-
-            } else {
-                // =========================================================
-                // BRANCH B: NO BOT CONNECTED -> BATCH SEND WITHOUT WA CHECK
-                // =========================================================
-                const newNumbers = new Set();
-
-                lines.forEach(line => {
-                    const cleanNum = line.replace(/\D/g, '');
-
-                    if (cleanNum && cleanNum.length >= 7) {
-                        if (connectedSet.has(cleanNum)) {
-                            skippedConnectedCount++;
-                        } else {
-                            newNumbers.add(cleanNum);
-                        }
-                    }
-                });
-
-                const uniqueList = Array.from(newNumbers);
-                const total = uniqueList.length;
-                
-                if (total === 0) {
-                    return bot.sendMessage(chatId, `[DONE] No new numbers found.\nSkipped ${skippedConnectedCount} connected numbers.`);
-                }
-
-                const batchSize = 5;
-                const totalBatches = Math.ceil(total / batchSize);
-                
-                bot.sendMessage(chatId, 
-                    `[FILTER REPORT]\n` +
-                    `Input Found: ${lines.length}\n` +
-                    `Already Connected: ${skippedConnectedCount}\n` +
-                    `New Numbers: ${total}\n\n` +
-                    `[SENDING] ${totalBatches} batches...`
-                );
-
-                for (let i = 0; i < total; i += batchSize) {
-                    const chunk = uniqueList.slice(i, i + batchSize);
-                    if (chunk.length === 0) continue;
-
-                    // Format with backticks for copy-on-tap
-                    const msgText = chunk.map(n => '`' + n + '`').join('\n');
-
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                    await delay(1200); // 1.2s safety delay
-                }
-                
-                bot.sendMessage(chatId, '[DONE] Batch sending complete.');
             }
 
+            // 7. Finalize and Flush
+            if (activeBatch.length > 0) {
+                await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+            }
+
+            // 8. Send Banned/Invalid Report
+            if (sock && bannedNumbers.length > 0) {
+                await bot.sendMessage(chatId, `🔴 **[BANNED / INVALID]** (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
+                
+                for (let i = 0; i < bannedNumbers.length; i += 10) {
+                    const chunk = bannedNumbers.slice(i, i + 10);
+                    await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                    await delay(800);
+                }
+            }
+
+            // 9. Summary Report
+            const summary = 
+                `✅ **TTX COMPLETE**\n\n` +
+                `Total Lines: ${lines.length}\n` +
+                `Valid/Active: ${validCount}\n` +
+                `Banned/Dead: ${bannedNumbers.length}\n` +
+                `Skipped (Connected): ${skippedConnectedCount}`;
+
+            bot.sendMessage(chatId, summary, { parse_mode: 'Markdown' });
+
         } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+            bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
         }
     });
+
 
 
     bot.onText(/\/sender/, (msg) => {

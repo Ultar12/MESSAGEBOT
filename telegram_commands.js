@@ -54,7 +54,8 @@ async function ensureConnected() {
 
 
 
-export function setupLiveOtpForwarder(userBot, activeClients) {
+
+                    export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
     const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
@@ -123,15 +124,13 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                 if (code) {
                     
-                    // SKIP DUPLICATES (30 seconds cache)
+                    // SKIP DUPLICATES (30 secs cache)
                     const now = Date.now();
                     if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) {
-                        console.log(`[SKIP] Blocked duplicate code: ${code}`);
                         return; 
                     }
                     recentCodes.set(code, now);
                     
-                    // Clean up memory cache after 60 seconds
                     for (const [k, v] of recentCodes.entries()) {
                         if (now - v > 60000) recentCodes.delete(k);
                     }
@@ -146,21 +145,27 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
                     if (countryMatch) country = countryMatch[1].toUpperCase();
 
-                    // MASKED NUMBER EXTRACTION (Bypasses Invisible Chars)
+                    // ==========================================
+                    // MASKED NUMBER EXTRACTION (FOOLPROOF FIX)
+                    // Grabs all characters after [#WP] until it hits a space or table border
+                    // ==========================================
                     let maskedNumber = "Unknown";
-                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([0-9*•\u2022\u200C\u200B-\u200D\uFEFF]+)/i);
+                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([^\s┨]+)/i);
                     
                     if (tagMatch && tagMatch[1]) {
                         maskedNumber = tagMatch[1];
                     } else {
-                        const fallbackMatch = combinedText.match(/[0-9]+[*•\u2022\u200C\u200B-\u200D\uFEFF]{2,}[0-9]+/);
+                        // Fallback just in case
+                        const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
                         if (fallbackMatch) maskedNumber = fallbackMatch[0];
                     }
 
-                    // Clean invisible zero-width chars before sending
+                    // Clean invisible zero-width chars before sending (leaves front, dots, and back)
                     maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
 
-                    // 1. SEND TO TELEGRAM
+                    // ==========================================
+                    // 1. SEND TO TELEGRAM (WITH AUTO-DELETE)
+                    // ==========================================
                     const tgOutputText = 
                         `[NEW OTP]\n\n` +
                         `Platform: ${platform}\n` +
@@ -175,23 +180,41 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     ];
 
                     try {
-                        await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
+                        const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
                             parse_mode: 'Markdown',
                             reply_markup: { inline_keyboard: inlineKeyboard }
                         });
                         console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
+
+                        // AUTO DELETE AFTER 5 MINUTES (300,000 ms)
+                        setTimeout(async () => {
+                            try {
+                                await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id);
+                                console.log(`[AUTO-DELETE] Removed Code ${code} from Telegram.`);
+                            } catch (delErr) {}
+                        }, 300000);
+
                     } catch (err) {
                         inlineKeyboard = [
                             [{ text: `Copy: ${code}`, callback_data: `copy_alert` }],
                             [{ text: `Owner`, url: `https://t.me/Staries1` }] 
                         ];
-                        await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
+                        const tgMsgFallback = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
                             parse_mode: 'Markdown',
                             reply_markup: { inline_keyboard: inlineKeyboard }
                         });
+                        
+                        // AUTO DELETE FALLBACK AFTER 5 MINUTES
+                        setTimeout(async () => {
+                            try {
+                                await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsgFallback.message_id);
+                            } catch (delErr) {}
+                        }, 300000);
                     }
 
-                    // 2. SEND TO WHATSAPP (ULTRA-ROBUST)
+                    // ==========================================
+                    // 2. SEND TO WHATSAPP 
+                    // ==========================================
                     const waOutputText = 
                         `*NEW OTP*\n\n` +
                         `*Platform:* ${platform}\n` +
@@ -210,7 +233,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         const sock = activeClients[activeFolders[0]]; 
                         
                         try {
-                            console.log("[WA DEBUG] Resolving group ID from invite link...");
                             const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
                             const realGroupJid = inviteInfo.id;
 
@@ -239,6 +261,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
         }
     }, 3000); 
 }
+
 
 export async function initUserBot(activeClients) {
     try {

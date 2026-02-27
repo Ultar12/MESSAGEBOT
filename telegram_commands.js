@@ -332,8 +332,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     }, 3000); 
 }
 
-}
-
 export async function initUserBot(activeClients) {
     try {
         console.log("[USERBOT] Starting initialization...");

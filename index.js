@@ -321,37 +321,6 @@ function formatNumberLocal(phoneNumber) {
 }
 
 
-// Function to find a new sender if the current one is gone
-export function getDedicatedSender(activeClients) {
-    // 1. If we already have a sender and they are still online, return them
-    if (currentOtpSenderId && activeClients[currentOtpSenderId]) {
-        return activeClients[currentOtpSenderId];
-    }
-
-    // 2. Otherwise, find the first available account to "Claim"
-    const availableSessions = Object.keys(activeClients).filter(id => activeClients[id]);
-    
-    if (availableSessions.length > 0) {
-        currentOtpSenderId = availableSessions[0]; // Auto-assign the first one
-        console.log(`🚀 [SYSTEM] Account ${currentOtpSenderId} has been CLAIMED as Dedicated OTP Sender.`);
-        return activeClients[currentOtpSenderId];
-    }
-
-    console.log("⚠️ [SYSTEM] No accounts available to assign as OTP Sender!");
-    return null;
-}
-
-
-// This function allows the scraper to "claim" or "reset" a bot
-export function updateOtpSender(id) {
-    currentOtpSenderId = id;
-    if (id) {
-        console.log(`🔒 [SYSTEM] ${id} is now the LOCKED OTP Sender.`);
-    } else {
-        console.log(`🔓 [SYSTEM] OTP Sender reset. Searching for new candidate...`);
-    }
-}
-
 
 
 // --- HELPER: Chunks an array into smaller arrays of a specified size ---

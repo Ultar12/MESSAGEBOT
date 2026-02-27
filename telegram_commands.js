@@ -258,13 +258,36 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                         // Telegram Send
                         try {
-                            const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, design.replace('${code}', `\`${code}\``), {
-                                parse_mode: 'Markdown',
-                                disable_web_page_preview: true,
-                                reply_markup: { inline_keyboard: [[{ text: `Copy: ${code}`, copy_text: { text: code } }], [{ text: `Owner`, url: `https://t.me/Staries1` }]] }
-                            });
-                            setTimeout(async () => { try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} }, 300000);
-                        } catch (err) {}
+    // We replace the placeholder with the formatted code
+    const formattedText = design.replace('CODE_PLACEHOLDER', `\`${code}\``);
+
+    const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, formattedText, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: { 
+            inline_keyboard: [
+                [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
+                [{ text: `Owner`, url: `https://t.me/Staries1` }]
+            ] 
+        }
+    });
+
+    console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
+
+    // AUTO DELETE AFTER 5 MINUTES
+    setTimeout(async () => { 
+        try { 
+            await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); 
+        } catch (e) {
+            console.error("Auto-delete failed:", e.message);
+        } 
+    }, 300000);
+
+} catch (err) {
+    // IMPORTANT: This will now tell you in Heroku logs WHY it failed
+    console.error("❌ [TG SEND ERROR]:", err.message);
+}
+
 
                         // WhatsApp Send
                         const sock = getDedicatedSender(activeClients); 

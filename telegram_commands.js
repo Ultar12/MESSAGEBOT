@@ -176,16 +176,19 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     // Clean invisible zero-width chars before sending (leaves front, dots, and back)
                     maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
 
-                    // ==========================================
-                    // 1. SEND TO TELEGRAM (WITH AUTO-DELETE)
+                                        // ==========================================
+                    // 1. SEND TO TELEGRAM (ASCII DESIGN + AUTO-DELETE)
                     // ==========================================
                     const tgOutputText = 
-                        `[NEW OTP]\n\n` +
-                        `Platform: ${platform}\n` +
-                        `Country: ${fullCountry} ${flagEmoji}\n` +
-                        `Number: ${maskedNumber}\n\n` +
-                        `Code: \`${code}\`\n` +
-                        `*(Tap the code above to instantly copy)*`;
+                        `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
+                        `┃❃╭──────────────\n` +
+                        `┃❃│ Platform : ${platform}\n` +
+                        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+                        `┃❃│ Number   : ${maskedNumber}\n` +
+                        `┃❃│ Code     : \`${code}\`\n` +
+                        `┃❃│ Num Bot  : t.me/UltMessagingbot\n` +
+                        `┃❃╰───────────────\n` +
+                        `╰═════════════════⊷`;
 
                     let inlineKeyboard = [
                         [{ text: `Copy: ${code}`, copy_text: { text: code } }],
@@ -195,6 +198,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     try {
                         const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
                             parse_mode: 'Markdown',
+                            disable_web_page_preview: true, // Prevents a massive link preview card from popping up
                             reply_markup: { inline_keyboard: inlineKeyboard }
                         });
                         console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
@@ -213,6 +217,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         ];
                         const tgMsgFallback = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
                             parse_mode: 'Markdown',
+                            disable_web_page_preview: true,
                             reply_markup: { inline_keyboard: inlineKeyboard }
                         });
                         
@@ -223,11 +228,12 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         }, 300000);
                     }
 
+
                     // ==========================================
                     // 2. SEND TO WHATSAPP (ASCII DESIGN)
                     // ==========================================
                     const waOutputText = 
-                        `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══⊷\n` +
+                        `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
                         `┃❃╭──────────────\n` +
                         `┃❃│ Platform : ${platform}\n` +
                         `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +

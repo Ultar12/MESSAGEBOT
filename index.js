@@ -18,8 +18,9 @@ import http from 'http';
 import { Boom } from '@hapi/boom';
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs, initUserBot 
 } from './telegram_commands.js';
+
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
     getShortId, saveShortId, deleteShortId, awardHourlyPoints, deductOnDisconnect, deleteUserAccount, setAntiMsgStatus, updateConnectionTime, saveVerificationData

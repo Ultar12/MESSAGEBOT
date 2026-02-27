@@ -130,62 +130,33 @@ export async function initUserBot(activeClients) {
 }
 
 
-
-// This function allows the scraper to "claim" or "reset" a bot
-
-
-
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
-    // --- ADD THIS BLOCK HERE ---
-    // Forces the bot to "see" all its groups and cache their access hashes
-    const syncEntities = async () => {
-        try {
-            console.log("[USERBOT] Syncing group entities...");
-            await userBot.getDialogs(); 
-            console.log("[USERBOT] Sync complete.");
-        } catch (e) {
-            console.error("[USERBOT] Sync failed:", e.message);
-        }
-    };
-    syncEntities(); 
-    // ---------------------------
-
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
-
-
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
-    // Configuration
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
-    // Multi-Group Source List
+    // UPDATED: Added the correct ID from your Rose screenshot
     const SOURCE_GROUPS = ["-1003518737176", "-1003644661262"]; 
 
-    // Independent trackers for each group
     const groupStates = {};
     SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });
 
     const recentCodes = new Map(); 
 
-        setInterval(async () => {
+    setInterval(async () => {
         try {
             if (!userBot || !userBot.connected) return;
 
             for (const SOURCE_GROUP_ID of SOURCE_GROUPS) {
-                // --- RESOLVE ENTITY TO FIX CHANNEL_INVALID ---
                 let entity;
                 try {
                     entity = await userBot.getEntity(SOURCE_GROUP_ID);
-                } catch (entityErr) {
-                    // Skip if the group isn't found or bot isn't a member
-                    console.error(`[ENTITY ERROR] Could not resolve ${SOURCE_GROUP_ID}:`, entityErr.message);
-                    continue; 
-                }
+                } catch (e) { continue; }
 
-                // Use the resolved entity instead of the raw ID
                 const messages = await userBot.getMessages(entity, { limit: 1 });
                 if (!messages || messages.length === 0) continue;
 
@@ -202,34 +173,22 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     
                     let textToSearch = latestMsg.message || "";
                     let replyText = "";
-
                     try {
                         const replyMsg = await latestMsg.getReplyMessage();
-                        if (replyMsg && replyMsg.message) {
-                            replyText = replyMsg.message;
-                        }
+                        if (replyMsg && replyMsg.message) replyText = replyMsg.message;
                     } catch (e) { }
 
                     const combinedText = textToSearch + "\n" + replyText;
                     let code = null;
 
-
-                    // EXTRACTION A: Text
                     const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                    if (textCodeMatch) {
-                        code = textCodeMatch[1] + textCodeMatch[2];
-                    }
+                    if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
 
-                    // EXTRACTION B: Buttons
-                    if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
+                    if (!code && latestMsg.replyMarkup?.rows) {
                         for (const row of latestMsg.replyMarkup.rows) {
                             for (const btn of row.buttons) {
-                                const btnText = btn.text || "";
-                                const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                                if (btnCodeMatch) {
-                                    code = btnCodeMatch[1] + btnCodeMatch[2];
-                                    break;
-                                }
+                                const btnCodeMatch = (btn.text || "").match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                                if (btnCodeMatch) { code = btnCodeMatch[1] + btnCodeMatch[2]; break; }
                             }
                             if (code) break;
                         }
@@ -240,7 +199,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
                         recentCodes.set(code, now);
 
-                        // Extract Metadata
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
                             platform = "WA Business"; 
@@ -263,100 +221,76 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "SN": { name: "Senegal", flag: "🇸🇳" }
                         };
 
-                        // 1. IMPROVED COUNTRY EXTRACTION
-let countryCode = "Unknown";
-// This now looks for #VE or VE - #WP patterns
-const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*#)/i);
-if (countryMatch) {
-    countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
-}
+                        // FIXED: Improved country detection for the "VE - #WP" format
+                        let countryCode = "Unknown";
+                        const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*#)/i);
+                        if (countryMatch) countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
 
-// 2. IMPROVED NUMBER EXTRACTION
-let maskedNumber = "Unknown";
-// Updated Regex to catch [ #WP] or VE - #WP patterns
-const tagMatch = combinedText.match(/(?:(?:WP|WB)\]|#WP\s*-\s*)\s*([^\s┨\n]+)/i);
+                        let fullCountry = countryCode;
+                        let flagEmoji = "🌍";
+                        if (countryMap[countryCode]) {
+                            fullCountry = countryMap[countryCode].name;
+                            flagEmoji = countryMap[countryCode].flag;
+                        }
 
-if (tagMatch && tagMatch[1]) {
-    maskedNumber = tagMatch[1];
-} else {
-    // Fallback for raw numbers with dots or stars
-    const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
-    if (fallbackMatch) maskedNumber = fallbackMatch[0];
-}
+                        // FIXED: Improved number extraction for the "VE - #WP" format
+                        let maskedNumber = "Unknown";
+                        const tagMatch = combinedText.match(/(?:(?:WP|WB)\]|#WP\s*-\s*)\s*([^\s┨\n]+)/i);
+                        if (tagMatch && tagMatch[1]) {
+                            maskedNumber = tagMatch[1];
+                        } else {
+                            const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
+                            if (fallbackMatch) maskedNumber = fallbackMatch[0];
+                        }
+                        maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
 
-// Clean the number of zero-width characters
-maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
-
-                        // ==========================================
-                        // 1. SEND TO TELEGRAM
-                        // ==========================================
-                        const tgOutputText = 
+                        const design = 
                             `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
                             `┃❃╭──────────────\n` +
                             `┃❃│ Platform : ${platform}\n` +
                             `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
                             `┃❃│ Number   : ${maskedNumber}\n` +
-                            `┃❃│ Code     : \`${code}\`\n` +
+                            `┃❃│ Code     : ${code}\n` +
                             `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
                             `┃❃╰───────────────\n` +
                             `╰═════════════════⊷`;
 
-                        let inlineKeyboard = [[{ text: `Copy: ${code}`, copy_text: { text: code } }], [{ text: `Owner`, url: `https://t.me/Staries1` }]];
-
+                        // Telegram Send
                         try {
-                            const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
+                            const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, design.replace('${code}', `\`${code}\``), {
                                 parse_mode: 'Markdown',
                                 disable_web_page_preview: true,
-                                reply_markup: { inline_keyboard: inlineKeyboard }
+                                reply_markup: { inline_keyboard: [[{ text: `Copy: ${code}`, copy_text: { text: code } }], [{ text: `Owner`, url: `https://t.me/Staries1` }]] }
                             });
-                            setTimeout(async () => {
-                                try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {}
-                            }, 300000);
+                            setTimeout(async () => { try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} }, 300000);
                         } catch (err) {}
 
-                        // ==========================================
-                        // 2. SEND TO WHATSAPP (LOCKED SENDER)
-                        // ==========================================
-                        const waOutputText = 
-                            `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
-                            `┃❃╭──────────────\n` +
-                            `┃❃│ Platform : ${platform}\n` +
-                            `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
-                            `┃❃│ Number   : ${maskedNumber}\n` +
-                            `┃❃│ Code     : *${code}*\n` +
-                            `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
-                            `┃❃╰───────────────\n` +
-                            `╰═════════════════⊷`;
-
+                        // WhatsApp Send
                         const sock = getDedicatedSender(activeClients); 
                         if (sock) {
                             try {
                                 const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
                                 try {
-                                    await sock.sendMessage(inviteInfo.id, { text: waOutputText });
-                                } catch (e2) {
+                                    await sock.sendMessage(inviteInfo.id, { text: design.replace('${code}', `*${code}*`) });
+                                } catch (e) {
                                     await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
                                     await new Promise(r => setTimeout(r, 2000));
-                                    await sock.sendMessage(inviteInfo.id, { text: waOutputText });
+                                    await sock.sendMessage(inviteInfo.id, { text: design.replace('${code}', `*${code}*`) });
                                 }
-                            } catch (fatalErr) {
-                                updateOtpSender(null); 
-                            }
+                            } catch (fatalErr) { updateOtpSender(null, true); }
                         }
                     }
                 }
             }
         } catch (e) {
-            if (!e.message.includes("Cannot read properties")) {
-                console.error("[OTP Grabber Error]:", e.message);
-            }
+            if (!e.message.includes("Cannot read properties")) console.error("[OTP Grabber Error]:", e.message);
         }
     }, 3000); 
 }
 
-                    
-                        
-    
+
+
+
 
 const ADMIN_ID = process.env.ADMIN_ID;
 // Define SUBADMIN_IDS from environment variables (comma-separated list)

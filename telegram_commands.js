@@ -276,10 +276,17 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
         reply_markup: { 
-            inline_keyboard: [
-                [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
-                [{ text: `Owner`, url: `https://t.me/Staries1` }]
-            ] 
+    inline_keyboard: [
+        // Line 1: Full width Copy button
+        [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
+        // Line 2: Owner and Channel on the same line
+        [
+            { text: `Owner`, url: `https://t.me/Staries1` },
+            { text: `Channel`, url: `https://t.me/+P6_COkj786YwMWI9` }
+        ]
+    ] 
+}
+
         }
     });
 

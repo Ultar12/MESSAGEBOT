@@ -154,12 +154,23 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
     const recentCodes = new Map(); 
 
-    setInterval(async () => {
+        setInterval(async () => {
         try {
             if (!userBot || !userBot.connected) return;
 
             for (const SOURCE_GROUP_ID of SOURCE_GROUPS) {
-                const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
+                // --- RESOLVE ENTITY TO FIX CHANNEL_INVALID ---
+                let entity;
+                try {
+                    entity = await userBot.getEntity(SOURCE_GROUP_ID);
+                } catch (entityErr) {
+                    // Skip if the group isn't found or bot isn't a member
+                    console.error(`[ENTITY ERROR] Could not resolve ${SOURCE_GROUP_ID}:`, entityErr.message);
+                    continue; 
+                }
+
+                // Use the resolved entity instead of the raw ID
+                const messages = await userBot.getMessages(entity, { limit: 1 });
                 if (!messages || messages.length === 0) continue;
 
                 const latestMsg = messages[0];
@@ -185,6 +196,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                     const combinedText = textToSearch + "\n" + replyText;
                     let code = null;
+
 
                     // EXTRACTION A: Text
                     const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);

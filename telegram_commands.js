@@ -135,41 +135,59 @@ async function ensureConnected() {
                         if (now - v > 60000) recentCodes.delete(k);
                     }
 
-                    // Extract Metadata
+                                        // Extract Metadata
                     let platform = "WhatsApp"; 
                     if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
-                        platform = "WhatsApp Business";
+                        platform = "WA Business"; // Shortened to fit the design box better
                     }
 
-                    let country = "Unknown";
-                    const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
-                    if (countryMatch) country = countryMatch[1].toUpperCase();
+                    // Map 2-letter codes to Full Names and Flags
+                    const countryMap = {
+                        "VE": { name: "Venezuela", flag: "🇻🇪" },
+                        "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
+                        "NG": { name: "Nigeria", flag: "🇳🇬" },
+                        "ID": { name: "Indonesia", flag: "🇮🇩" },
+                        "BR": { name: "Brazil", flag: "🇧🇷" },
+                        "RU": { name: "Russia", flag: "🇷🇺" },
+                        "ZA": { name: "South Africa", flag: "🇿🇦" },
+                        "PH": { name: "Philippines", flag: "🇵🇭" },
+                        "VN": { name: "Vietnam", flag: "🇻🇳" },
+                        "US": { name: "United States", flag: "🇺🇸" },
+                        "GB": { name: "United Kingdom", flag: "🇬🇧" }
+                    };
 
-                    // ==========================================
-                    // MASKED NUMBER EXTRACTION (FOOLPROOF FIX)
-                    // Grabs all characters after [#WP] until it hits a space or table border
-                    // ==========================================
+                    let countryCode = "Unknown";
+                    const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
+                    if (countryMatch) countryCode = countryMatch[1].toUpperCase();
+
+                    let fullCountry = countryCode;
+                    let flagEmoji = "🌍";
+                    if (countryMap[countryCode]) {
+                        fullCountry = countryMap[countryCode].name;
+                        flagEmoji = countryMap[countryCode].flag;
+                    }
+
+                    // MASKED NUMBER EXTRACTION (Bypasses Invisible Chars)
                     let maskedNumber = "Unknown";
-                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([^\s┨]+)/i);
+                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([0-9*•\u2022\u200C\u200B-\u200D\uFEFF]+)/i);
                     
                     if (tagMatch && tagMatch[1]) {
                         maskedNumber = tagMatch[1];
                     } else {
-                        // Fallback just in case
-                        const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
+                        const fallbackMatch = combinedText.match(/[0-9]+[*•\u2022\u200C\u200B-\u200D\uFEFF]{2,}[0-9]+/);
                         if (fallbackMatch) maskedNumber = fallbackMatch[0];
                     }
 
-                    // Clean invisible zero-width chars before sending (leaves front, dots, and back)
+                    // Clean invisible zero-width chars before sending
                     maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
 
                     // ==========================================
-                    // 1. SEND TO TELEGRAM (WITH AUTO-DELETE)
+                    // 1. SEND TO TELEGRAM
                     // ==========================================
                     const tgOutputText = 
                         `[NEW OTP]\n\n` +
                         `Platform: ${platform}\n` +
-                        `Country: #${country}\n` +
+                        `Country: ${fullCountry} ${flagEmoji}\n` +
                         `Number: ${maskedNumber}\n\n` +
                         `Code: \`${code}\`\n` +
                         `*(Tap the code above to instantly copy)*`;
@@ -186,11 +204,10 @@ async function ensureConnected() {
                         });
                         console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
 
-                        // AUTO DELETE AFTER 5 MINUTES (300,000 ms)
+                        // AUTO DELETE AFTER 5 MINUTES
                         setTimeout(async () => {
                             try {
                                 await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id);
-                                console.log(`[AUTO-DELETE] Removed Code ${code} from Telegram.`);
                             } catch (delErr) {}
                         }, 300000);
 
@@ -204,23 +221,25 @@ async function ensureConnected() {
                             reply_markup: { inline_keyboard: inlineKeyboard }
                         });
                         
-                        // AUTO DELETE FALLBACK AFTER 5 MINUTES
                         setTimeout(async () => {
-                            try {
-                                await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsgFallback.message_id);
-                            } catch (delErr) {}
+                            try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsgFallback.message_id); } catch (e) {}
                         }, 300000);
                     }
 
                     // ==========================================
-                    // 2. SEND TO WHATSAPP 
+                    // 2. SEND TO WHATSAPP (ULTRA-ROBUST DESIGN)
                     // ==========================================
+                    // Designed using the requested Levanter ASCII Box format
                     const waOutputText = 
-                        `*NEW OTP*\n\n` +
-                        `*Platform:* ${platform}\n` +
-                        `*Country:* #${country}\n` +
-                        `*Number:* ${maskedNumber}\n\n` +
-                        `*Code:* *${code}*`; 
+                        `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══⊷\n` +
+                        `┃❃╭──────────────\n` +
+                        `┃❃│ Platform : ${platform}\n` +
+                        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+                        `┃❃│ Number   : ${maskedNumber}\n` +
+                        `┃❃│ Code     : *${code}*\n` +
+                        `┃❃│ Num Bot  : t.me/UltMessagingbot\n` +
+                        `┃❃╰───────────────\n` +
+                        `╰═════════════════⊷`;
 
                     if (!activeClients) {
                         console.error("[WA ERROR] activeClients was not passed to the function!");
@@ -233,6 +252,7 @@ async function ensureConnected() {
                         const sock = activeClients[activeFolders[0]]; 
                         
                         try {
+                            console.log("[WA DEBUG] Resolving group ID from invite link...");
                             const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
                             const realGroupJid = inviteInfo.id;
 
@@ -252,15 +272,6 @@ async function ensureConnected() {
                     } else {
                         console.log("[WA SKIP] No WhatsApp accounts are currently connected to send.");
                     }
-                }
-            }
-        } catch (e) {
-            if (!e.message.includes("Cannot read properties")) {
-                console.error("[OTP Grabber Error]:", e.message);
-            }
-        }
-    }, 3000); 
-}
 
 
 export async function initUserBot(activeClients) {

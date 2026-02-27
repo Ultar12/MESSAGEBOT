@@ -8,7 +8,9 @@ export async function startSmsScraper(activeClients, telegramBot, targetGroupId)
 
     const browser = await puppeteer.launch({
     headless: true,
-    executablePath: '/app/.project/src/.cache/puppeteer/chrome/linux-145.0.7632.77/chrome-linux64/chrome' || process.env.PUPPETEER_EXECUTABLE_PATH,
+    // On Heroku with the official Chrome buildpack, 
+    // the path is usually provided by GOOGLE_CHROME_BIN
+    executablePath: process.env.GOOGLE_CHROME_BIN || null,
     args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -16,6 +18,7 @@ export async function startSmsScraper(activeClients, telegramBot, targetGroupId)
         '--single-process'
     ]
 });
+
 
 
     const page = await browser.newPage();

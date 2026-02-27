@@ -18,7 +18,7 @@ import http from 'http';
 import { Boom } from '@hapi/boom';
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, reactionConfigs 
+    setupTelegramCommands, userMessageCache, userState, reactionConfigs, initUserBot 
 } from './telegram_commands.js';
 
 import { 

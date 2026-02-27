@@ -169,7 +169,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     if (tagMatch && tagMatch[1]) {
                         maskedNumber = tagMatch[1];
                     } else {
-                        // Fallback just in case
                         const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
                         if (fallbackMatch) maskedNumber = fallbackMatch[0];
                     }
@@ -278,7 +277,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     }, 3000); 
 }
 
-async function initUserBot(activeClients) {
+export async function initUserBot(activeClients) {
     try {
         console.log("[USERBOT] Starting initialization...");
         await userBot.connect();
@@ -290,8 +289,6 @@ async function initUserBot(activeClients) {
         console.error("[USERBOT INIT FAIL]", e.message);
     }
 }
-
-
 
 
 

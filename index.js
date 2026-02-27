@@ -838,7 +838,7 @@ async function boot() {
     startSmsScraper(clients, notificationBot, "-1003645249777");
 
     console.log(`[BOOT] All systems (Bots + Scraper) ready`);
-}
+
     
     // --- THIS IS THE MISSING LINE ---
     // Start the Telegram UserBot and the OTP Monitor

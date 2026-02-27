@@ -349,7 +349,6 @@ export async function initUserBot(activeClients) {
     }
 }
 
-}
 
 
 

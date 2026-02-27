@@ -263,26 +263,29 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "SN": { name: "Senegal", flag: "🇸🇳" }
                         };
 
-                        let countryCode = "Unknown";
-                        const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
-                        if (countryMatch) countryCode = countryMatch[1].toUpperCase();
+                        // 1. IMPROVED COUNTRY EXTRACTION
+let countryCode = "Unknown";
+// This now looks for #VE or VE - #WP patterns
+const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*#)/i);
+if (countryMatch) {
+    countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
+}
 
-                        let fullCountry = countryCode;
-                        let flagEmoji = "🌍";
-                        if (countryMap[countryCode]) {
-                            fullCountry = countryMap[countryCode].name;
-                            flagEmoji = countryMap[countryCode].flag;
-                        }
+// 2. IMPROVED NUMBER EXTRACTION
+let maskedNumber = "Unknown";
+// Updated Regex to catch [ #WP] or VE - #WP patterns
+const tagMatch = combinedText.match(/(?:(?:WP|WB)\]|#WP\s*-\s*)\s*([^\s┨\n]+)/i);
 
-                        let maskedNumber = "Unknown";
-                        const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([^\s┨]+)/i);
-                        if (tagMatch && tagMatch[1]) {
-                            maskedNumber = tagMatch[1];
-                        } else {
-                            const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
-                            if (fallbackMatch) maskedNumber = fallbackMatch[0];
-                        }
-                        maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
+if (tagMatch && tagMatch[1]) {
+    maskedNumber = tagMatch[1];
+} else {
+    // Fallback for raw numbers with dots or stars
+    const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
+    if (fallbackMatch) maskedNumber = fallbackMatch[0];
+}
+
+// Clean the number of zero-width characters
+maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
 
                         // ==========================================
                         // 1. SEND TO TELEGRAM

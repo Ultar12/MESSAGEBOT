@@ -52,43 +52,54 @@ async function ensureConnected() {
 
 
 export function setupLiveOtpForwarder(userBot) {
-    console.log("[MONITOR] Starting live OTP grabber...");
+    console.log("[MONITOR] Starting active OTP Polling (UX Bot Method)...");
 
-    // 1. Initialize the EXACT bot token you requested just for sending
-    // Note: This bot MUST be an Admin in the TARGET_GROUP_ID to send messages!
+    // 1. Initialize the specific Message Bot
     const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
+    // We assume TelegramBot is already imported at the top of your index.js
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
-    // 2. Set exact group IDs as strings
     const TARGET_GROUP_ID = "-1003645249777"; 
     const SOURCE_GROUP_ID = "-1003518737176"; 
 
-    userBot.addEventHandler(async (event) => {
-        const message = event.message;
-        if (!message) return;
+    // Keep track of the last message we saw so we don't send duplicates
+    let lastMessageId = 0;
 
+    // 2. Start the Loop: Check the group every 3 seconds
+    setInterval(async () => {
         try {
-            const chat = await message.getChat();
-            if (!chat) return;
+            // Don't run if UserBot disconnected
+            if (!userBot || !userBot.connected) return;
 
-            // Safely extract the GramJS BigInt Chat ID to a standard string
-            const chatIdStr = chat.id ? chat.id.toString() : "";
+            // 3. Forcefully grab the absolute latest message in the group
+            const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
+            if (!messages || messages.length === 0) return;
 
-            // 3. FILTER: Check if the message is from the exact Source Group ID
-            if (chatIdStr === SOURCE_GROUP_ID) {
+            const latestMsg = messages[0];
+
+            // If this is the very first time the loop runs, just save the ID and skip
+            // (This prevents the bot from forwarding an old message when you first restart the server)
+            if (lastMessageId === 0) {
+                lastMessageId = latestMsg.id;
+                return;
+            }
+
+            // 4. If the message is NEW, process it!
+            if (latestMsg.id > lastMessageId) {
+                lastMessageId = latestMsg.id; // Update immediately
                 
-                let textToSearch = message.message || "";
+                let textToSearch = latestMsg.message || "";
                 let code = null;
 
-                // 4. EXTRACTION A: Look for code in text (e.g., 380-132 or 545724)
+                // EXTRACTION A: Look for code in text
                 const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
                 if (textCodeMatch) {
-                    code = textCodeMatch[1] + textCodeMatch[2]; // Merges into 6 digits
+                    code = textCodeMatch[1] + textCodeMatch[2];
                 }
 
-                // 5. EXTRACTION B: Look for code inside the inline buttons
-                if (!code && message.replyMarkup && message.replyMarkup.rows) {
-                    for (const row of message.replyMarkup.rows) {
+                // EXTRACTION B: Look for code inside the inline buttons
+                if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
+                    for (const row of latestMsg.replyMarkup.rows) {
                         for (const btn of row.buttons) {
                             const btnText = btn.text || "";
                             const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
@@ -101,26 +112,21 @@ export function setupLiveOtpForwarder(userBot) {
                     }
                 }
 
-                // 6. IF CODE FOUND: Build and forward the message!
+                // 5. FORMAT AND SEND
                 if (code) {
-                    
-                    // Detect Platform
                     let platform = "WhatsApp"; 
                     if (textToSearch.toLowerCase().includes("business") || textToSearch.includes("WB")) {
                         platform = "WhatsApp Business";
                     }
 
-                    // Detect Country Code (e.g., #VE, #ZW)
                     let country = "Unknown";
                     const countryMatch = textToSearch.match(/#([a-zA-Z]{2})/i);
                     if (countryMatch) country = countryMatch[1].toUpperCase();
 
-                    // Detect Masked Number (Catches both 5841***4971 and 5841••••447)
                     let maskedNumber = "Unknown";
                     const numMatch = textToSearch.match(/\d{2,4}[*•]+\d{2,4}/);
                     if (numMatch) maskedNumber = numMatch[0];
 
-                    // Construct the formatted message
                     const outputText = 
                         `**NEW OTP!**\n\n` +
                         `**Platform:** ${platform}\n` +
@@ -129,13 +135,11 @@ export function setupLiveOtpForwarder(userBot) {
                         `**Code:** \`${code}\`\n` +
                         `*(Tap the code above to instantly copy)*`;
 
-                    // Build the buttons exactly as requested
                     const inlineKeyboard = [
                         [{ text: `${code}`, callback_data: `copy_alert` }],
                         [{ text: `Owner`, url: `https://t.me/Staries1` }] 
                     ];
 
-                    // Send via the SPECIFIC bot token
                     await senderBot.sendMessage(TARGET_GROUP_ID, outputText, {
                         parse_mode: 'Markdown',
                         reply_markup: {
@@ -143,15 +147,17 @@ export function setupLiveOtpForwarder(userBot) {
                         }
                     });
                     
-                    console.log(`[FORWARDED] Code ${code} sent to target group via Message Bot.`);
+                    console.log(`[FORWARDED] New Code (${code}) sent via Polling Method!`);
                 }
             }
         } catch (e) {
-            console.error("[OTP Grabber Error]:", e.message);
+            // Silently catch errors if the group is empty or network blips
+            if (!e.message.includes("Cannot read properties")) {
+                console.error("[OTP Grabber Error]:", e.message);
+            }
         }
-    }, new NewMessage({ incoming: true })); 
+    }, 3000); // <-- Runs every 3 seconds, just like a human refreshing the chat
 }
-
 
 export async function initUserBot() {
     try {

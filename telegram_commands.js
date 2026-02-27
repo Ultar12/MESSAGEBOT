@@ -264,7 +264,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
                             `┃❃│ Number   : ${maskedNumber}\n` +
                             `┃❃│ Code     : ${code}\n` +
-                            `┃❃│ File Group  : https://t.me/+P6_COkj786YwMWI9\n` +
+                            `┃❃│ File Grp : t.me/+P6_COkj786YwMWI9\n` +
                             `┃❃╰───────────────\n` +
                             `╰═════════════════⊷`;
 

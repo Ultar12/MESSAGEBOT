@@ -1141,14 +1141,21 @@ bot.onText(/\/txt/, async (msg) => {
 
         try {
             // Check if any WhatsApp bot is connected
-            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                        // Filter all folders, but EXCLUDE the dedicated OTP sender
+            const activeFolders = Object.keys(clients).filter(f => 
+                clients[f] && f !== currentOtpSenderId
+            );
+            
+            // Now 'sock' will only be a non-OTP account
             const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
             if (sock) {
-                bot.sendMessage(chatId, '[STREAMING MODE] Account connected. Checking WA status and streaming raw numbers...');
+                bot.sendMessage(chatId, `[STREAMING MODE] Using account: ${activeFolders[0]}. Checking WA status...`);
             } else {
-                bot.sendMessage(chatId, '[NORMAL MODE] No account connected. Skipping ban check. Filtering and sending raw numbers...');
+                // If the only connected account is the OTP sender, we act as if none are connected
+                bot.sendMessage(chatId, '[NORMAL MODE] No available checker account. (Dedicated OTP account is protected).');
             }
+
 
             // --- STEP 1: Build List of Connected Numbers (Raw) ---
             const connectedSet = new Set();

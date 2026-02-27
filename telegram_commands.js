@@ -173,18 +173,23 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                     // Map 2-letter codes to Full Names and Flags
                     const countryMap = {
-                        "VE": { name: "Venezuela", flag: "🇻🇪" },
-                        "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
-                        "NG": { name: "Nigeria", flag: "🇳🇬" },
-                        "ID": { name: "Indonesia", flag: "🇮🇩" },
-                        "BR": { name: "Brazil", flag: "🇧🇷" },
-                        "RU": { name: "Russia", flag: "🇷🇺" },
-                        "ZA": { name: "South Africa", flag: "🇿🇦" },
-                        "PH": { name: "Philippines", flag: "🇵🇭" },
-                        "VN": { name: "Vietnam", flag: "🇻🇳" },
-                        "US": { name: "United States", flag: "🇺🇸" },
-                        "GB": { name: "United Kingdom", flag: "🇬🇧" }
-                    };
+    "VE": { name: "Venezuela", flag: "🇻🇪" },
+    "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
+    "NG": { name: "Nigeria", flag: "🇳🇬" },
+    "ID": { name: "Indonesia", flag: "🇮🇩" },
+    "BR": { name: "Brazil", flag: "🇧🇷" },
+    "RU": { name: "Russia", flag: "🇷🇺" },
+    "ZA": { name: "South Africa", flag: "🇿🇦" },
+    "PH": { name: "Philippines", flag: "🇵🇭" },
+    "VN": { name: "Vietnam", flag: "🇻🇳" },
+    "US": { name: "United States", flag: "🇺🇸" },
+    "GB": { name: "United Kingdom", flag: "🇬🇧" },
+    "BF": { name: "Burkina Faso", flag: "🇧🇫" },
+    "KG": { name: "Kyrgyzstan", flag: "🇰🇬" },
+    "SN": { name: "Senegal", flag: "🇸🇳" }
+};
+
+
 
                     let countryCode = "Unknown";
                     const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);

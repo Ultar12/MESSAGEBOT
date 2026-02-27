@@ -53,7 +53,7 @@ async function ensureConnected() {
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
-    const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
+    const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
     // Target Group IDs
@@ -186,7 +186,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
                         `┃❃│ Number   : ${maskedNumber}\n` +
                         `┃❃│ Code     : \`${code}\`\n` +
-                        `┃❃│ Num Bot  : t.me/UltMessagingbot\n` +
+                        `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
                         `┃❃╰───────────────\n` +
                         `╰═════════════════⊷`;
 
@@ -239,7 +239,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
                         `┃❃│ Number   : ${maskedNumber}\n` +
                         `┃❃│ Code     : *${code}*\n` +
-                        `┃❃│ Num Bot  : t.me/UltMessagingbot\n` +
+                        `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
                         `┃❃╰───────────────\n` +
                         `╰═════════════════⊷`;
 

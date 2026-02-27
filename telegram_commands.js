@@ -1352,6 +1352,27 @@ bot.onText(/\/txt/, async (msg) => {
         }
     });
 
+
+    bot.onText(/\/sender/, (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (!currentOtpSenderId || !clients[currentOtpSenderId]) {
+        return bot.sendMessage(chatId, "⚠️ No account is currently locked as the OTP Sender.");
+    }
+
+    const sock = clients[currentOtpSenderId];
+    const number = sock.user.id.split(':')[0]; // Extracts the number from the session data
+
+    const statusMsg = 
+        `*DEDICATED OTP SENDER*\n\n` +
+        `*Number:* +${number}\n` +
+        `*Session:* \`${currentOtpSenderId}\`\n` +
+        `*Status:* Active & Connected`;
+
+    bot.sendMessage(chatId, statusMsg, { parse_mode: 'Markdown' });
+});
+
+
     bot.onText(/\/checknum\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;

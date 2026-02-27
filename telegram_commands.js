@@ -52,37 +52,69 @@ async function ensureConnected() {
 
 export let currentOtpSenderId = null;
 
-// This function allows the scraper to "claim" or "reset" a bot
-export function updateOtpSender(id) {
+// Add this at the top of your file with your other variables
+const failedAccounts = new Set();
+
+/**
+ * Updates the current OTP sender and tracks failures.
+ * @param {string|null} id - The session ID to lock.
+ * @param {boolean} wasError - If true, the account is blacklisted from being picked again.
+ */
+export function updateOtpSender(id, wasError = false) {
+    if (wasError && currentOtpSenderId) {
+        failedAccounts.add(currentOtpSenderId);
+        console.log(`🚫 [BLACKLIST] ${currentOtpSenderId} added to failed list.`);
+    }
+    
     currentOtpSenderId = id;
+    
     if (id) {
         console.log(`🔒 [SYSTEM] ${id} is now the LOCKED OTP Sender.`);
     } else {
         console.log(`🔓 [SYSTEM] OTP Sender reset. Searching for new candidate...`);
     }
-
 }
 
-
-// Function to find a new sender if the current one is gone
+/**
+ * Finds and locks a dedicated sender, skipping any that have previously failed.
+ */
 export function getDedicatedSender(activeClients) {
     // 1. If we already have a sender and they are still online, return them
     if (currentOtpSenderId && activeClients[currentOtpSenderId]) {
         return activeClients[currentOtpSenderId];
     }
 
-    // 2. Otherwise, find the first available account to "Claim"
-    const availableSessions = Object.keys(activeClients).filter(id => activeClients[id]);
+    // 2. Find first available account that is NOT in the failed list
+    const availableSessions = Object.keys(activeClients).filter(id => 
+        activeClients[id] && !failedAccounts.has(id)
+    );
     
     if (availableSessions.length > 0) {
-        currentOtpSenderId = availableSessions[0]; // Auto-assign the first one
+        currentOtpSenderId = availableSessions[0]; 
         console.log(`🚀 [SYSTEM] Account ${currentOtpSenderId} has been CLAIMED as Dedicated OTP Sender.`);
         return activeClients[currentOtpSenderId];
+    }
+
+    // 3. Fallback: If ALL accounts have failed, clear the blacklist and try again
+    if (failedAccounts.size > 0) {
+        console.log("🔄 [SYSTEM] All accounts failed once. Clearing blacklist to retry...");
+        failedAccounts.clear();
+        
+        const retrySessions = Object.keys(activeClients).filter(id => activeClients[id]);
+        if (retrySessions.length > 0) {
+            currentOtpSenderId = retrySessions[0];
+            return activeClients[currentOtpSenderId];
+        }
     }
 
     console.log("⚠️ [SYSTEM] No accounts available to assign as OTP Sender!");
     return null;
 }
+
+
+// This function allows the scraper to "claim" or "reset" a bot
+
+
 
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
@@ -90,237 +122,177 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
-    // Target Group IDs
+    // Configuration
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
-    const SOURCE_GROUP_ID = "-1003518737176"; 
-    
-    // WhatsApp Group Invite Code
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
+    
+    // Multi-Group Source List
+    const SOURCE_GROUPS = ["-1003518737176", "-1002201279811"]; 
 
-    let lastMessageId = 0;
+    // Independent trackers for each group
+    const groupStates = {};
+    SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });
+
     const recentCodes = new Map(); 
 
     setInterval(async () => {
         try {
             if (!userBot || !userBot.connected) return;
 
-            const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
-            if (!messages || messages.length === 0) return;
+            for (const SOURCE_GROUP_ID of SOURCE_GROUPS) {
+                const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
+                if (!messages || messages.length === 0) continue;
 
-            const latestMsg = messages[0];
+                const latestMsg = messages[0];
+                const state = groupStates[SOURCE_GROUP_ID];
 
-            if (lastMessageId === 0) {
-                lastMessageId = latestMsg.id;
-                return;
-            }
-
-            if (latestMsg.id > lastMessageId) {
-                lastMessageId = latestMsg.id; 
-                
-                let textToSearch = latestMsg.message || "";
-                let replyText = "";
-
-                try {
-                    const replyMsg = await latestMsg.getReplyMessage();
-                    if (replyMsg && replyMsg.message) {
-                        replyText = replyMsg.message;
-                    }
-                } catch (e) { }
-
-                const combinedText = textToSearch + "\n" + replyText;
-                let code = null;
-
-                // EXTRACTION A: Text
-                const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                if (textCodeMatch) {
-                    code = textCodeMatch[1] + textCodeMatch[2];
+                if (state.lastMessageId === 0) {
+                    state.lastMessageId = latestMsg.id;
+                    continue;
                 }
 
-                // EXTRACTION B: Buttons
-                if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
-                    for (const row of latestMsg.replyMarkup.rows) {
-                        for (const btn of row.buttons) {
-                            const btnText = btn.text || "";
-                            const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                            if (btnCodeMatch) {
-                                code = btnCodeMatch[1] + btnCodeMatch[2];
-                                break;
-                            }
-                        }
-                        if (code) break;
-                    }
-                }
-
-                if (code) {
+                if (latestMsg.id > state.lastMessageId) {
+                    state.lastMessageId = latestMsg.id; 
                     
-                    // SKIP DUPLICATES (30 secs cache)
-                    const now = Date.now();
-                    if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) {
-                        return; 
-                    }
-                    recentCodes.set(code, now);
-                    
-                    for (const [k, v] of recentCodes.entries()) {
-                        if (now - v > 60000) recentCodes.delete(k);
-                    }
-
-                    // Extract Metadata
-                    let platform = "WhatsApp"; 
-                    if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
-                        platform = "WA Business"; 
-                    }
-
-                    // Map 2-letter codes to Full Names and Flags
-                    const countryMap = {
-    "VE": { name: "Venezuela", flag: "🇻🇪" },
-    "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
-    "NG": { name: "Nigeria", flag: "🇳🇬" },
-    "ID": { name: "Indonesia", flag: "🇮🇩" },
-    "BR": { name: "Brazil", flag: "🇧🇷" },
-    "RU": { name: "Russia", flag: "🇷🇺" },
-    "ZA": { name: "South Africa", flag: "🇿🇦" },
-    "PH": { name: "Philippines", flag: "🇵🇭" },
-    "VN": { name: "Vietnam", flag: "🇻🇳" },
-    "US": { name: "United States", flag: "🇺🇸" },
-    "GB": { name: "United Kingdom", flag: "🇬🇧" },
-    "BF": { name: "Burkina Faso", flag: "🇧🇫" },
-    "KG": { name: "Kyrgyzstan", flag: "🇰🇬" },
-    "SN": { name: "Senegal", flag: "🇸🇳" }
-};
-
-
-
-                    let countryCode = "Unknown";
-                    const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
-                    if (countryMatch) countryCode = countryMatch[1].toUpperCase();
-
-                    let fullCountry = countryCode;
-                    let flagEmoji = "🌍";
-                    if (countryMap[countryCode]) {
-                        fullCountry = countryMap[countryCode].name;
-                        flagEmoji = countryMap[countryCode].flag;
-                    }
-
-                    // MASKED NUMBER EXTRACTION (Bypasses Invisible Chars)
-                    let maskedNumber = "Unknown";
-                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([^\s┨]+)/i);
-                    
-                    if (tagMatch && tagMatch[1]) {
-                        maskedNumber = tagMatch[1];
-                    } else {
-                        const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
-                        if (fallbackMatch) maskedNumber = fallbackMatch[0];
-                    }
-
-                    // Clean invisible zero-width chars before sending (leaves front, dots, and back)
-                    maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
-
-                                        // ==========================================
-                    // 1. SEND TO TELEGRAM (ASCII DESIGN + AUTO-DELETE)
-                    // ==========================================
-                    const tgOutputText = 
-                        `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
-                        `┃❃╭──────────────\n` +
-                        `┃❃│ Platform : ${platform}\n` +
-                        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
-                        `┃❃│ Number   : ${maskedNumber}\n` +
-                        `┃❃│ Code     : \`${code}\`\n` +
-                        `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
-                        `┃❃╰───────────────\n` +
-                        `╰═════════════════⊷`;
-
-                    let inlineKeyboard = [
-                        [{ text: `Copy: ${code}`, copy_text: { text: code } }],
-                        [{ text: `Owner`, url: `https://t.me/Staries1` }] 
-                    ];
+                    let textToSearch = latestMsg.message || "";
+                    let replyText = "";
 
                     try {
-                        const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
-                            parse_mode: 'Markdown',
-                            disable_web_page_preview: true, // Prevents a massive link preview card from popping up
-                            reply_markup: { inline_keyboard: inlineKeyboard }
-                        });
-                        console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
+                        const replyMsg = await latestMsg.getReplyMessage();
+                        if (replyMsg && replyMsg.message) {
+                            replyText = replyMsg.message;
+                        }
+                    } catch (e) { }
 
-                        // AUTO DELETE AFTER 5 MINUTES (300,000 ms)
-                        setTimeout(async () => {
-                            try {
-                                await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id);
-                            } catch (delErr) {}
-                        }, 300000);
+                    const combinedText = textToSearch + "\n" + replyText;
+                    let code = null;
 
-                    } catch (err) {
-                        inlineKeyboard = [
-                            [{ text: `Copy: ${code}`, callback_data: `copy_alert` }],
-                            [{ text: `Owner`, url: `https://t.me/Staries1` }] 
-                        ];
-                        const tgMsgFallback = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
-                            parse_mode: 'Markdown',
-                            disable_web_page_preview: true,
-                            reply_markup: { inline_keyboard: inlineKeyboard }
-                        });
-                        
-                        setTimeout(async () => {
-                            try {
-                                await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsgFallback.message_id);
-                            } catch (delErr) {}
-                        }, 300000);
+                    // EXTRACTION A: Text
+                    const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                    if (textCodeMatch) {
+                        code = textCodeMatch[1] + textCodeMatch[2];
                     }
 
-
-                    // ==========================================
-                    // 2. SEND TO WHATSAPP (ASCII DESIGN)
-                    // ==========================================
-                                        // ==========================================
-                    // 2. SEND TO WHATSAPP (AUTO-ASSIGNED DEDICATED SENDER)
-                    // ==========================================
-                    const waOutputText = 
-                        `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
-                        `┃❃╭──────────────\n` +
-                        `┃❃│ Platform : ${platform}\n` +
-                        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
-                        `┃❃│ Number   : ${maskedNumber}\n` +
-                        `┃❃│ Code     : *${code}*\n` +
-                        `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
-                        `┃❃╰───────────────\n` +
-                        `╰═════════════════⊷`;
-
-                    if (!activeClients) {
-                        console.error("[WA ERROR] activeClients was not passed to the function!");
-                        return;
-                    }
-
-                    // Use the helper to get the LOCKED account
-                    const sock = getDedicatedSender(activeClients); 
-                    
-                    if (sock) {
-                        try {
-                            const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
-                            const realGroupJid = inviteInfo.id;
-
-                            try {
-                                await sock.sendMessage(realGroupJid, { text: waOutputText });
-                                console.log(`[FORWARDED] Sent via Dedicated Account (${currentOtpSenderId})`);
-                            } catch (e2) {
-                                // If sending fails, the account might be banned or restricted
-                                console.log("[WA DEBUG] Send failed. Attempting auto-join or reset...");
-                                
-                                try {
-                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    await sock.sendMessage(realGroupJid, { text: waOutputText });
-                                    console.log(`[FORWARDED] Auto-Joined & Sent!`);
-                                } catch (joinErr) {
-                                    console.log("[CRITICAL] Dedicated account failed. Clearing lock for next attempt.");
-                                    updateOtpSender(null); // Reset global ID so a new bot is picked next loop
+                    // EXTRACTION B: Buttons
+                    if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
+                        for (const row of latestMsg.replyMarkup.rows) {
+                            for (const btn of row.buttons) {
+                                const btnText = btn.text || "";
+                                const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                                if (btnCodeMatch) {
+                                    code = btnCodeMatch[1] + btnCodeMatch[2];
+                                    break;
                                 }
                             }
-                        } catch (fatalErr) {
-                            console.error("[WA ERROR] Dedicated account error:", fatalErr.message);
-                            updateOtpSender(null); // Reset on fatal error
+                            if (code) break;
                         }
-                    } else {
-                        console.log("[WA SKIP] No WhatsApp accounts available to LOCK as sender.");
+                    }
+
+                    if (code) {
+                        const now = Date.now();
+                        if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
+                        recentCodes.set(code, now);
+
+                        // Extract Metadata
+                        let platform = "WhatsApp"; 
+                        if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
+                            platform = "WA Business"; 
+                        }
+
+                        const countryMap = {
+                            "VE": { name: "Venezuela", flag: "🇻🇪" },
+                            "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
+                            "NG": { name: "Nigeria", flag: "🇳🇬" },
+                            "ID": { name: "Indonesia", flag: "🇮🇩" },
+                            "BR": { name: "Brazil", flag: "🇧🇷" },
+                            "RU": { name: "Russia", flag: "🇷🇺" },
+                            "ZA": { name: "South Africa", flag: "🇿🇦" },
+                            "PH": { name: "Philippines", flag: "🇵🇭" },
+                            "VN": { name: "Vietnam", flag: "🇻🇳" },
+                            "US": { name: "United States", flag: "🇺🇸" },
+                            "GB": { name: "United Kingdom", flag: "🇬🇧" },
+                            "BF": { name: "Burkina Faso", flag: "🇧🇫" },
+                            "KG": { name: "Kyrgyzstan", flag: "🇰🇬" },
+                            "SN": { name: "Senegal", flag: "🇸🇳" }
+                        };
+
+                        let countryCode = "Unknown";
+                        const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
+                        if (countryMatch) countryCode = countryMatch[1].toUpperCase();
+
+                        let fullCountry = countryCode;
+                        let flagEmoji = "🌍";
+                        if (countryMap[countryCode]) {
+                            fullCountry = countryMap[countryCode].name;
+                            flagEmoji = countryMap[countryCode].flag;
+                        }
+
+                        let maskedNumber = "Unknown";
+                        const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([^\s┨]+)/i);
+                        if (tagMatch && tagMatch[1]) {
+                            maskedNumber = tagMatch[1];
+                        } else {
+                            const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
+                            if (fallbackMatch) maskedNumber = fallbackMatch[0];
+                        }
+                        maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
+
+                        // ==========================================
+                        // 1. SEND TO TELEGRAM
+                        // ==========================================
+                        const tgOutputText = 
+                            `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
+                            `┃❃╭──────────────\n` +
+                            `┃❃│ Platform : ${platform}\n` +
+                            `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+                            `┃❃│ Number   : ${maskedNumber}\n` +
+                            `┃❃│ Code     : \`${code}\`\n` +
+                            `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
+                            `┃❃╰───────────────\n` +
+                            `╰═════════════════⊷`;
+
+                        let inlineKeyboard = [[{ text: `Copy: ${code}`, copy_text: { text: code } }], [{ text: `Owner`, url: `https://t.me/Staries1` }]];
+
+                        try {
+                            const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, tgOutputText, {
+                                parse_mode: 'Markdown',
+                                disable_web_page_preview: true,
+                                reply_markup: { inline_keyboard: inlineKeyboard }
+                            });
+                            setTimeout(async () => {
+                                try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {}
+                            }, 300000);
+                        } catch (err) {}
+
+                        // ==========================================
+                        // 2. SEND TO WHATSAPP (LOCKED SENDER)
+                        // ==========================================
+                        const waOutputText = 
+                            `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
+                            `┃❃╭──────────────\n` +
+                            `┃❃│ Platform : ${platform}\n` +
+                            `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+                            `┃❃│ Number   : ${maskedNumber}\n` +
+                            `┃❃│ Code     : *${code}*\n` +
+                            `┃❃│ Num Bot  : t.me/ultarotpbot\n` +
+                            `┃❃╰───────────────\n` +
+                            `╰═════════════════⊷`;
+
+                        const sock = getDedicatedSender(activeClients); 
+                        if (sock) {
+                            try {
+                                const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
+                                try {
+                                    await sock.sendMessage(inviteInfo.id, { text: waOutputText });
+                                } catch (e2) {
+                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    await sock.sendMessage(inviteInfo.id, { text: waOutputText });
+                                }
+                            } catch (fatalErr) {
+                                updateOtpSender(null); 
+                            }
+                        }
                     }
                 }
             }
@@ -332,25 +304,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     }, 3000); 
 }
 
-export async function initUserBot(activeClients) {
-    try {
-        console.log("[USERBOT] Starting initialization...");
-        await userBot.connect();
-        console.log("[USERBOT] Connection established.");
-        
-        // --- ADD THIS LINE HERE ---
-        // This forces the bot to pick an account and "LOCK" it immediately on startup
-        getDedicatedSender(activeClients); 
-        
-        await setupLiveOtpForwarder(userBot, activeClients);
-        
-    } catch (e) {
-        console.error("[USERBOT INIT FAIL]", e.message);
-    }
-}
-
-
-
+                    
+                        
+    
 
 const ADMIN_ID = process.env.ADMIN_ID;
 // Define SUBADMIN_IDS from environment variables (comma-separated list)

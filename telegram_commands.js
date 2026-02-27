@@ -50,8 +50,7 @@ async function ensureConnected() {
     }
 }
 
-// Add this at the top of index.js
- let currentOtpSenderId = null;
+export let currentOtpSenderId = null;
 
 // This function allows the scraper to "claim" or "reset" a bot
 export function updateOtpSender(id) {
@@ -272,6 +271,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     // ==========================================
                     // 2. SEND TO WHATSAPP (ASCII DESIGN)
                     // ==========================================
+                                        // ==========================================
+                    // 2. SEND TO WHATSAPP (AUTO-ASSIGNED DEDICATED SENDER)
+                    // ==========================================
                     const waOutputText = 
                         `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
                         `┃❃╭──────────────\n` +
@@ -288,30 +290,37 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         return;
                     }
 
-                    const activeFolders = Object.keys(activeClients).filter(f => activeClients[f]);
+                    // Use the helper to get the LOCKED account
+                    const sock = getDedicatedSender(activeClients); 
                     
-                    if (activeFolders.length > 0) {
-                        const sock = activeClients[activeFolders[0]]; 
-                        
+                    if (sock) {
                         try {
                             const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
                             const realGroupJid = inviteInfo.id;
 
                             try {
                                 await sock.sendMessage(realGroupJid, { text: waOutputText });
-                                console.log(`[FORWARDED] Sent perfectly to WA Group.`);
+                                console.log(`[FORWARDED] Sent via Dedicated Account (${currentOtpSenderId})`);
                             } catch (e2) {
-                                console.log("[WA DEBUG] Not in group. Auto-joining...");
-                                await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                await new Promise(r => setTimeout(r, 2000));
-                                await sock.sendMessage(realGroupJid, { text: waOutputText });
-                                console.log(`[FORWARDED] Auto-Joined & Sent to WA!`);
+                                // If sending fails, the account might be banned or restricted
+                                console.log("[WA DEBUG] Send failed. Attempting auto-join or reset...");
+                                
+                                try {
+                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    await sock.sendMessage(realGroupJid, { text: waOutputText });
+                                    console.log(`[FORWARDED] Auto-Joined & Sent!`);
+                                } catch (joinErr) {
+                                    console.log("[CRITICAL] Dedicated account failed. Clearing lock for next attempt.");
+                                    updateOtpSender(null); // Reset global ID so a new bot is picked next loop
+                                }
                             }
                         } catch (fatalErr) {
-                            console.error("[WA ERROR] WhatsApp failed:", fatalErr.message);
+                            console.error("[WA ERROR] Dedicated account error:", fatalErr.message);
+                            updateOtpSender(null); // Reset on fatal error
                         }
                     } else {
-                        console.log("[WA SKIP] No WhatsApp accounts are currently connected to send.");
+                        console.log("[WA SKIP] No WhatsApp accounts available to LOCK as sender.");
                     }
                 }
             }
@@ -323,17 +332,25 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     }, 3000); 
 }
 
+}
+
 export async function initUserBot(activeClients) {
     try {
         console.log("[USERBOT] Starting initialization...");
         await userBot.connect();
         console.log("[USERBOT] Connection established.");
         
+        // --- ADD THIS LINE HERE ---
+        // This forces the bot to pick an account and "LOCK" it immediately on startup
+        getDedicatedSender(activeClients); 
+        
         await setupLiveOtpForwarder(userBot, activeClients);
         
     } catch (e) {
         console.error("[USERBOT INIT FAIL]", e.message);
     }
+}
+
 }
 
 

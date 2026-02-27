@@ -829,7 +829,10 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 async function boot() {
     await initDb(); 
     
-    // NOTE: This now captures a no-op function, ensuring no accidental calls to old logic.
+    // --- THIS IS THE MISSING LINE ---
+    // Start the Telegram UserBot and the OTP Monitor
+    await initUserBot(); 
+    
     setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
 
     const savedSessions = await getAllSessions(null);

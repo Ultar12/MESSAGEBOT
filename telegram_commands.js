@@ -50,6 +50,19 @@ async function ensureConnected() {
     }
 }
 
+// Add this at the top of index.js
+ let currentOtpSenderId = null;
+
+// This function allows the scraper to "claim" or "reset" a bot
+export function updateOtpSender(id) {
+    currentOtpSenderId = id;
+    if (id) {
+        console.log(`🔒 [SYSTEM] ${id} is now the LOCKED OTP Sender.`);
+    } else {
+        console.log(`🔓 [SYSTEM] OTP Sender reset. Searching for new candidate...`);
+    }
+}
+
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 

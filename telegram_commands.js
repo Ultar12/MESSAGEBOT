@@ -50,7 +50,7 @@ async function ensureConnected() {
     }
 }
 
-function setupLiveOtpForwarder(userBot, activeClients) {
+export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
     const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";

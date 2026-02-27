@@ -51,14 +51,17 @@ async function ensureConnected() {
 
 
 
-export function setupLiveOtpForwarder(userBot, bot) {
+export function setupLiveOtpForwarder(userBot) {
     console.log("[MONITOR] Starting live OTP grabber...");
 
-    // Your Target Group where the styled message goes (Bot must be admin here!)
+    // 1. Initialize the EXACT bot token you requested just for sending
+    // Note: This bot MUST be an Admin in the TARGET_GROUP_ID to send messages!
+    const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
+    const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
+
+    // 2. Set exact group IDs as strings
     const TARGET_GROUP_ID = "-1003645249777"; 
-    
-    // The Source Group ID to monitor (Stripped of the -100 for GramJS compatibility)
-    const SOURCE_GROUP_ID = -1003518737176; 
+    const SOURCE_GROUP_ID = "-1003518737176"; 
 
     userBot.addEventHandler(async (event) => {
         const message = event.message;
@@ -68,28 +71,27 @@ export function setupLiveOtpForwarder(userBot, bot) {
             const chat = await message.getChat();
             if (!chat) return;
 
-            // Extract the Chat ID safely as a string
+            // Safely extract the GramJS BigInt Chat ID to a standard string
             const chatIdStr = chat.id ? chat.id.toString() : "";
 
-            // 1. FILTER: Check if the message is from the specific group ID
-            // GramJS drops the "-100" from supergroup IDs, so we check the core numbers
-            if (chatIdStr.includes(SOURCE_GROUP_ID)) {
+            // 3. FILTER: Check if the message is from the exact Source Group ID
+            if (chatIdStr === SOURCE_GROUP_ID) {
                 
                 let textToSearch = message.message || "";
                 let code = null;
 
-                // 2. EXTRACTION A: Look for code in the message text (e.g., 380-132 or 545724)
-                const textCodeMatch = textToSearch.match(/\b(\d{3})[-\s]?(\d{3})\b/);
+                // 4. EXTRACTION A: Look for code in text (e.g., 380-132 or 545724)
+                const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
                 if (textCodeMatch) {
                     code = textCodeMatch[1] + textCodeMatch[2]; // Merges into 6 digits
                 }
 
-                // 3. EXTRACTION B: Look for code inside the inline buttons
+                // 5. EXTRACTION B: Look for code inside the inline buttons
                 if (!code && message.replyMarkup && message.replyMarkup.rows) {
                     for (const row of message.replyMarkup.rows) {
                         for (const btn of row.buttons) {
                             const btnText = btn.text || "";
-                            const btnCodeMatch = btnText.match(/\b(\d{3})[-\s]?(\d{3})\b/);
+                            const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
                             if (btnCodeMatch) {
                                 code = btnCodeMatch[1] + btnCodeMatch[2];
                                 break;
@@ -99,7 +101,7 @@ export function setupLiveOtpForwarder(userBot, bot) {
                     }
                 }
 
-                // 4. IF CODE FOUND: Build and forward the message!
+                // 6. IF CODE FOUND: Build and forward the message!
                 if (code) {
                     
                     // Detect Platform
@@ -110,7 +112,7 @@ export function setupLiveOtpForwarder(userBot, bot) {
 
                     // Detect Country Code (e.g., #VE, #ZW)
                     let country = "Unknown";
-                    const countryMatch = textToSearch.match(/#([A-Z]{2})/i);
+                    const countryMatch = textToSearch.match(/#([a-zA-Z]{2})/i);
                     if (countryMatch) country = countryMatch[1].toUpperCase();
 
                     // Detect Masked Number (Catches both 5841***4971 and 5841••••447)
@@ -127,25 +129,24 @@ export function setupLiveOtpForwarder(userBot, bot) {
                         `**Code:** \`${code}\`\n` +
                         `*(Tap the code above to instantly copy)*`;
 
-                    // Build the buttons matching your exact request
+                    // Build the buttons exactly as requested
                     const inlineKeyboard = [
                         [{ text: `${code}`, callback_data: `copy_alert` }],
                         [{ text: `Owner`, url: `https://t.me/Staries1` }] 
                     ];
 
-                    // Send to your target group
-                    await bot.sendMessage(TARGET_GROUP_ID, outputText, {
+                    // Send via the SPECIFIC bot token
+                    await senderBot.sendMessage(TARGET_GROUP_ID, outputText, {
                         parse_mode: 'Markdown',
                         reply_markup: {
                             inline_keyboard: inlineKeyboard
                         }
                     });
                     
-                    console.log(`[FORWARDED] Code ${code} sent to target group.`);
+                    console.log(`[FORWARDED] Code ${code} sent to target group via Message Bot.`);
                 }
             }
         } catch (e) {
-            // Fails silently if a message doesn't format correctly
             console.error("[OTP Grabber Error]:", e.message);
         }
     }, new NewMessage({ incoming: true })); 
@@ -159,12 +160,14 @@ export async function initUserBot() {
         console.log("[USERBOT] ✅ Connection established.");
         
         // --- START THE LIVE OTP MONITOR HERE ---
-        setupLiveOtpForwarder(userBot, bot);
+        // Notice we removed 'bot' from here so it doesn't crash!
+        setupLiveOtpForwarder(userBot);
         
     } catch (e) {
         console.error("[USERBOT INIT FAIL] ❌", e.message);
     }
 }
+
 
 
 

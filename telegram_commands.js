@@ -237,19 +237,6 @@ export function setupLiveOtpForwarder(userBot) {
     }, 3000); 
 }
 
-export async function initUserBot() {
-    try {
-        console.log("[USERBOT] Starting initialization...");
-        await userBot.connect();
-        console.log("[USERBOT] Connection established.");
-        
-        // Start the monitor loop
-        await setupLiveOtpForwarder(userBot);
-        
-    } catch (e) {
-        console.error("[USERBOT INIT FAIL]", e.message);
-    }
-}
 
 export async function initUserBot() {
     try {

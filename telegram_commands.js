@@ -1156,6 +1156,8 @@ bot.onText(/\/txt/, async (msg) => {
     });
 
 
+    
+
     // --- /ttx [Reply to file] ---
     bot.onText(/\/ttx/, async (msg) => {
         deleteUserCommand(bot, msg);
@@ -1215,6 +1217,10 @@ bot.onText(/\/txt/, async (msg) => {
             for (const line of lines) {
                 const cleanNum = line.replace(/\D/g, '');
 
+                // --- 🐛 THE BUG FIX ---
+                // If the line was just text/symbols, cleanNum becomes empty. We MUST skip it!
+                if (!cleanNum || cleanNum.length < 7) continue;
+
                 // Skip if connected
                 if (connectedSet.has(cleanNum)) {
                     skippedConnectedCount++;
@@ -1270,15 +1276,18 @@ bot.onText(/\/txt/, async (msg) => {
                 
                 for (let i = 0; i < bannedNumbers.length; i += 10) {
                     const chunk = bannedNumbers.slice(i, i + 10);
-                    await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                    await delay(800);
+                    // Double check to prevent Telegram crash on empty chunks
+                    if (chunk.length > 0) {
+                        await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                        await delay(800);
+                    }
                 }
             }
 
             // 9. Summary Report
             const summary = 
-                `✅ **TTX COMPLETE**\n\n` +
-                `Total Lines: ${lines.length}\n` +
+                `**TTX COMPLETE**\n\n` +
+                `Total Lines Processed: ${totalChecked}\n` +
                 `Valid/Active: ${validCount}\n` +
                 `Banned/Dead: ${bannedNumbers.length}\n` +
                 `Skipped (Connected): ${skippedConnectedCount}`;

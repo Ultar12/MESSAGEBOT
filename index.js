@@ -30,6 +30,7 @@ import {
 } from './db.js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+let currentOtpSenderId = null; 
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
@@ -318,6 +319,28 @@ function formatNumberLocal(phoneNumber) {
     // Default to returning the cleaned number
     return num; 
 }
+
+
+// Function to find a new sender if the current one is gone
+function getDedicatedSender(activeClients) {
+    // 1. If we already have a sender and they are still online, return them
+    if (currentOtpSenderId && activeClients[currentOtpSenderId]) {
+        return activeClients[currentOtpSenderId];
+    }
+
+    // 2. Otherwise, find the first available account to "Claim"
+    const availableSessions = Object.keys(activeClients).filter(id => activeClients[id]);
+    
+    if (availableSessions.length > 0) {
+        currentOtpSenderId = availableSessions[0]; // Auto-assign the first one
+        console.log(`🚀 [SYSTEM] Account ${currentOtpSenderId} has been CLAIMED as Dedicated OTP Sender.`);
+        return activeClients[currentOtpSenderId];
+    }
+
+    console.log("⚠️ [SYSTEM] No accounts available to assign as OTP Sender!");
+    return null;
+}
+
 
 // --- HELPER: Chunks an array into smaller arrays of a specified size ---
 function chunkArray(array, size) {

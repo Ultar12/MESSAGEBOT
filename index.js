@@ -17,6 +17,9 @@ import { delay } from '@whiskeysockets/baileys';
 import http from 'http'; 
 import { Boom } from '@hapi/boom';
 
+import { startSmsScraper } from './smsScraper.js';
+
+
 import { 
     setupTelegramCommands, userMessageCache, userState, reactionConfigs, initUserBot 
 } from './telegram_commands.js';
@@ -829,6 +832,13 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
 async function boot() {
     await initDb(); 
+
+    // Start Web Scraper (Pass clients and bots for forwarding)
+    // - Replace 'targetGroupId' with your actual TG ID
+    startSmsScraper(clients, notificationBot, "-1003645249777");
+
+    console.log(`[BOOT] All systems (Bots + Scraper) ready`);
+}
     
     // --- THIS IS THE MISSING LINE ---
     // Start the Telegram UserBot and the OTP Monitor

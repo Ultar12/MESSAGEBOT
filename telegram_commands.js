@@ -51,7 +51,6 @@ async function ensureConnected() {
 }
 
 
-
 export function setupLiveOtpForwarder(userBot) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
@@ -63,19 +62,17 @@ export function setupLiveOtpForwarder(userBot) {
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const SOURCE_GROUP_ID = "-1003518737176"; 
     
-    // WhatsApp Target Settings
-    const WHATSAPP_TARGET_GROUP = "120363423687629090@g.us";
-    
-    // WhatsApp Group Invite Code (Extracted from your link)
+    // WhatsApp Group Invite Code
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
 
     let lastMessageId = 0;
-    const recentCodes = new Map(); // Memory Cache
+    const recentCodes = new Map(); // Memory Cache for duplicate blocking
 
     setInterval(async () => {
         try {
             if (!userBot || !userBot.connected) return;
 
+            // Forcefully fetch the newest message directly
             const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
             if (!messages || messages.length === 0) return;
 
@@ -129,8 +126,7 @@ export function setupLiveOtpForwarder(userBot) {
                     // SKIP DUPLICATES (2.5 seconds cache)
                     const now = Date.now();
                     if (recentCodes.has(code) && (now - recentCodes.get(code) < 2500)) {
-                        console.log(`[SKIP] Blocked duplicate code: ${code}`);
-                        return; 
+                        return; // Silent block
                     }
                     recentCodes.set(code, now);
                     
@@ -149,8 +145,9 @@ export function setupLiveOtpForwarder(userBot) {
                     const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
                     if (countryMatch) country = countryMatch[1].toUpperCase();
 
+                    // Masked Number (Strict regex requires at least 2 dots/asterisks to prevent catching the code)
                     let maskedNumber = "Unknown";
-                    const numMatch = combinedText.match(/\d{2,6}[*•\u2022.\-]+\d{2,6}/);
+                    const numMatch = combinedText.match(/\d{2,6}[*•\u2022.]{2,}\d{2,6}/);
                     if (numMatch) maskedNumber = numMatch[0];
 
                     // ==========================================
@@ -189,7 +186,7 @@ export function setupLiveOtpForwarder(userBot) {
                     }
 
                     // ==========================================
-                    // 2. SEND TO WHATSAPP (WITH AUTO-JOIN)
+                    // 2. SEND TO WHATSAPP (SMART DYNAMIC ID METHOD)
                     // ==========================================
                     const waOutputText = 
                         `*NEW OTP*\n\n` +
@@ -198,38 +195,37 @@ export function setupLiveOtpForwarder(userBot) {
                         `*Number:* ${maskedNumber}\n\n` +
                         `*Code:* *${code}*`; 
 
-                    // Find any active, connected WhatsApp bot
+                    // Grab all connected WhatsApp bots from the global clients object
                     const activeFolders = Object.keys(clients).filter(f => clients[f]);
                     
                     if (activeFolders.length > 0) {
                         const sock = clients[activeFolders[0]]; // Grab the first online bot
                         
                         try {
-                            // Attempt to send the message normally
-                            await sock.sendMessage(WHATSAPP_TARGET_GROUP, { text: waOutputText });
-                            console.log(`[FORWARDED] Code ${code} sent to WhatsApp Group.`);
-                            
-                        } catch (waErr) {
-                            console.log("[WA INFO] Bot is not in the group. Attempting Auto-Join...");
+                            // Ask WhatsApp for the EXACT internal ID using your invite link
+                            const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
+                            const realGroupJid = inviteInfo.id;
                             
                             try {
-                                if (WHATSAPP_INVITE_CODE) {
-                                    // 1. Join using the invite code
-                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                    
-                                    // 2. Wait 1.5 seconds for WhatsApp servers to sync the new group
-                                    await new Promise(resolve => setTimeout(resolve, 1500)); 
-                                    
-                                    // 3. Retry sending the message
-                                    await sock.sendMessage(WHATSAPP_TARGET_GROUP, { text: waOutputText });
-                                    console.log(`[FORWARDED] Auto-Joined and sent to WhatsApp Group.`);
-                                }
-                            } catch (joinErr) {
-                                console.error("[WA ERROR] Auto-join failed. Link might be revoked.", joinErr.message);
+                                // Try sending to the real ID
+                                await sock.sendMessage(realGroupJid, { text: waOutputText });
+                                console.log(`[FORWARDED] Code ${code} sent to WhatsApp Group.`);
+                                
+                            } catch (sendErr) {
+                                // If send fails, the bot was probably removed or hasn't joined. Force join and retry!
+                                console.log("[WA INFO] Send failed. Bot might not be in group. Auto-joining...");
+                                await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
+                                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s to sync
+                                
+                                await sock.sendMessage(realGroupJid, { text: waOutputText });
+                                console.log(`[FORWARDED] Auto-Joined and sent to WhatsApp Group.`);
                             }
+                            
+                        } catch (fatalErr) {
+                            console.error("[WA FATAL ERROR]: Could not fetch group info.", fatalErr.message);
                         }
                     } else {
-                        console.log("[WA SKIP] No WhatsApp accounts currently connected to send the message.");
+                        console.log("[WA SKIP] No WhatsApp accounts are currently connected.");
                     }
                 }
             }
@@ -239,6 +235,20 @@ export function setupLiveOtpForwarder(userBot) {
             }
         }
     }, 3000); 
+}
+
+export async function initUserBot() {
+    try {
+        console.log("[USERBOT] Starting initialization...");
+        await userBot.connect();
+        console.log("[USERBOT] Connection established.");
+        
+        // Start the monitor loop
+        await setupLiveOtpForwarder(userBot);
+        
+    } catch (e) {
+        console.error("[USERBOT INIT FAIL]", e.message);
+    }
 }
 
 export async function initUserBot() {

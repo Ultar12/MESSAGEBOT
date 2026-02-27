@@ -162,7 +162,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
     // Multi-Group Source List
-    const SOURCE_GROUPS = ["-1003518737176", "-1002201279811"]; 
+    const SOURCE_GROUPS = ["-1003518737176", "-1003644661262"]; 
 
     // Independent trackers for each group
     const groupStates = {};

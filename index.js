@@ -322,7 +322,7 @@ function formatNumberLocal(phoneNumber) {
 
 
 // Function to find a new sender if the current one is gone
-function getDedicatedSender(activeClients) {
+export function getDedicatedSender(activeClients) {
     // 1. If we already have a sender and they are still online, return them
     if (currentOtpSenderId && activeClients[currentOtpSenderId]) {
         return activeClients[currentOtpSenderId];
@@ -340,6 +340,18 @@ function getDedicatedSender(activeClients) {
     console.log("⚠️ [SYSTEM] No accounts available to assign as OTP Sender!");
     return null;
 }
+
+
+// This function allows the scraper to "claim" or "reset" a bot
+export function updateOtpSender(id) {
+    currentOtpSenderId = id;
+    if (id) {
+        console.log(`🔒 [SYSTEM] ${id} is now the LOCKED OTP Sender.`);
+    } else {
+        console.log(`🔓 [SYSTEM] OTP Sender reset. Searching for new candidate...`);
+    }
+}
+
 
 
 // --- HELPER: Chunks an array into smaller arrays of a specified size ---

@@ -51,10 +51,12 @@ async function ensureConnected() {
 }
 
 
-export function setupLiveOtpForwarder(userBot) {
+
+
+
+export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
-    // 1. Initialize the specific Telegram Message Bot
     const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
@@ -66,13 +68,12 @@ export function setupLiveOtpForwarder(userBot) {
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
 
     let lastMessageId = 0;
-    const recentCodes = new Map(); // Memory Cache for duplicate blocking
+    const recentCodes = new Map(); 
 
     setInterval(async () => {
         try {
             if (!userBot || !userBot.connected) return;
 
-            // Forcefully fetch the newest message directly
             const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
             if (!messages || messages.length === 0) return;
 
@@ -89,7 +90,6 @@ export function setupLiveOtpForwarder(userBot) {
                 let textToSearch = latestMsg.message || "";
                 let replyText = "";
 
-                // Fetch the quoted replied-to message for the masked number
                 try {
                     const replyMsg = await latestMsg.getReplyMessage();
                     if (replyMsg && replyMsg.message) {
@@ -123,16 +123,17 @@ export function setupLiveOtpForwarder(userBot) {
 
                 if (code) {
                     
-                    // SKIP DUPLICATES (2.5 seconds cache)
+                    // SKIP DUPLICATES (30 seconds cache)
                     const now = Date.now();
-                    if (recentCodes.has(code) && (now - recentCodes.get(code) < 2500)) {
-                        return; // Silent block
+                    if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) {
+                        console.log(`[SKIP] Blocked duplicate code: ${code}`);
+                        return; 
                     }
                     recentCodes.set(code, now);
                     
-                    // Clean up memory cache
+                    // Clean up memory cache after 60 seconds
                     for (const [k, v] of recentCodes.entries()) {
-                        if (now - v > 10000) recentCodes.delete(k);
+                        if (now - v > 60000) recentCodes.delete(k);
                     }
 
                     // Extract Metadata
@@ -145,14 +146,21 @@ export function setupLiveOtpForwarder(userBot) {
                     const countryMatch = combinedText.match(/#([a-zA-Z]{2})/i);
                     if (countryMatch) country = countryMatch[1].toUpperCase();
 
-                    // Masked Number (Strict regex requires at least 2 dots/asterisks to prevent catching the code)
+                    // MASKED NUMBER EXTRACTION (Bypasses Invisible Chars)
                     let maskedNumber = "Unknown";
-                    const numMatch = combinedText.match(/\d{2,6}[*•\u2022.]{2,}\d{2,6}/);
-                    if (numMatch) maskedNumber = numMatch[0];
+                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([0-9*•\u2022\u200C\u200B-\u200D\uFEFF]+)/i);
+                    
+                    if (tagMatch && tagMatch[1]) {
+                        maskedNumber = tagMatch[1];
+                    } else {
+                        const fallbackMatch = combinedText.match(/[0-9]+[*•\u2022\u200C\u200B-\u200D\uFEFF]{2,}[0-9]+/);
+                        if (fallbackMatch) maskedNumber = fallbackMatch[0];
+                    }
 
-                    // ==========================================
+                    // Clean invisible zero-width chars before sending
+                    maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
+
                     // 1. SEND TO TELEGRAM
-                    // ==========================================
                     const tgOutputText = 
                         `[NEW OTP]\n\n` +
                         `Platform: ${platform}\n` +
@@ -173,7 +181,6 @@ export function setupLiveOtpForwarder(userBot) {
                         });
                         console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
                     } catch (err) {
-                        // Fallback for older bot library versions
                         inlineKeyboard = [
                             [{ text: `Copy: ${code}`, callback_data: `copy_alert` }],
                             [{ text: `Owner`, url: `https://t.me/Staries1` }] 
@@ -182,12 +189,9 @@ export function setupLiveOtpForwarder(userBot) {
                             parse_mode: 'Markdown',
                             reply_markup: { inline_keyboard: inlineKeyboard }
                         });
-                        console.log(`[FORWARDED] Code ${code} sent to Telegram (Fallback).`);
                     }
 
-                    // ==========================================
-                    // 2. SEND TO WHATSAPP (SMART DYNAMIC ID METHOD)
-                    // ==========================================
+                    // 2. SEND TO WHATSAPP (ULTRA-ROBUST)
                     const waOutputText = 
                         `*NEW OTP*\n\n` +
                         `*Platform:* ${platform}\n` +
@@ -195,37 +199,36 @@ export function setupLiveOtpForwarder(userBot) {
                         `*Number:* ${maskedNumber}\n\n` +
                         `*Code:* *${code}*`; 
 
-                    // Grab all connected WhatsApp bots from the global clients object
-                    const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                    if (!activeClients) {
+                        console.error("[WA ERROR] activeClients was not passed to the function!");
+                        return;
+                    }
+
+                    const activeFolders = Object.keys(activeClients).filter(f => activeClients[f]);
                     
                     if (activeFolders.length > 0) {
-                        const sock = clients[activeFolders[0]]; // Grab the first online bot
+                        const sock = activeClients[activeFolders[0]]; 
                         
                         try {
-                            // Ask WhatsApp for the EXACT internal ID using your invite link
+                            console.log("[WA DEBUG] Resolving group ID from invite link...");
                             const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
                             const realGroupJid = inviteInfo.id;
-                            
+
                             try {
-                                // Try sending to the real ID
                                 await sock.sendMessage(realGroupJid, { text: waOutputText });
-                                console.log(`[FORWARDED] Code ${code} sent to WhatsApp Group.`);
-                                
-                            } catch (sendErr) {
-                                // If send fails, the bot was probably removed or hasn't joined. Force join and retry!
-                                console.log("[WA INFO] Send failed. Bot might not be in group. Auto-joining...");
+                                console.log(`[FORWARDED] Sent perfectly to WA Group: ${realGroupJid}`);
+                            } catch (e2) {
+                                console.log("[WA DEBUG] Not in group. Auto-joining...");
                                 await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s to sync
-                                
+                                await new Promise(r => setTimeout(r, 2000));
                                 await sock.sendMessage(realGroupJid, { text: waOutputText });
-                                console.log(`[FORWARDED] Auto-Joined and sent to WhatsApp Group.`);
+                                console.log(`[FORWARDED] Auto-Joined & Sent to WA!`);
                             }
-                            
                         } catch (fatalErr) {
-                            console.error("[WA FATAL ERROR]: Could not fetch group info.", fatalErr.message);
+                            console.error("[WA ERROR] WhatsApp failed:", fatalErr.message);
                         }
                     } else {
-                        console.log("[WA SKIP] No WhatsApp accounts are currently connected.");
+                        console.log("[WA SKIP] No WhatsApp accounts are currently connected to send.");
                     }
                 }
             }
@@ -237,21 +240,20 @@ export function setupLiveOtpForwarder(userBot) {
     }, 3000); 
 }
 
-
-export async function initUserBot() {
+export async function initUserBot(activeClients) {
     try {
-        console.log("[USERBOT] 🚀 Starting initialization...");
+        console.log("[USERBOT] Starting initialization...");
         await userBot.connect();
-        console.log("[USERBOT] ✅ Connection established.");
+        console.log("[USERBOT] Connection established.");
         
-        // --- START THE LIVE OTP MONITOR HERE ---
-        // Notice the 'await' added here!
-        await setupLiveOtpForwarder(userBot);
+        // Pass the clients list into the monitor!
+        await setupLiveOtpForwarder(userBot, activeClients);
         
     } catch (e) {
-        console.error("[USERBOT INIT FAIL] ❌", e.message);
+        console.error("[USERBOT INIT FAIL]", e.message);
     }
 }
+
 
 
 

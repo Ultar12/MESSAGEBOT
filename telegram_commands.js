@@ -287,7 +287,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     ] 
 }
 
-        }
     });
 
     console.log(`[FORWARDED] Code ${code} sent to Telegram.`);

@@ -50,12 +50,7 @@ async function ensureConnected() {
     }
 }
 
-
-
-
-
-
-                    export function setupLiveOtpForwarder(userBot, activeClients) {
+function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
     const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
@@ -135,10 +130,10 @@ async function ensureConnected() {
                         if (now - v > 60000) recentCodes.delete(k);
                     }
 
-                                        // Extract Metadata
+                    // Extract Metadata
                     let platform = "WhatsApp"; 
                     if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
-                        platform = "WA Business"; // Shortened to fit the design box better
+                        platform = "WA Business"; 
                     }
 
                     // Map 2-letter codes to Full Names and Flags
@@ -169,20 +164,21 @@ async function ensureConnected() {
 
                     // MASKED NUMBER EXTRACTION (Bypasses Invisible Chars)
                     let maskedNumber = "Unknown";
-                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([0-9*•\u2022\u200C\u200B-\u200D\uFEFF]+)/i);
+                    const tagMatch = combinedText.match(/\[#(?:WP|WB)\]\s*([^\s┨]+)/i);
                     
                     if (tagMatch && tagMatch[1]) {
                         maskedNumber = tagMatch[1];
                     } else {
-                        const fallbackMatch = combinedText.match(/[0-9]+[*•\u2022\u200C\u200B-\u200D\uFEFF]{2,}[0-9]+/);
+                        // Fallback just in case
+                        const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
                         if (fallbackMatch) maskedNumber = fallbackMatch[0];
                     }
 
-                    // Clean invisible zero-width chars before sending
+                    // Clean invisible zero-width chars before sending (leaves front, dots, and back)
                     maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
 
                     // ==========================================
-                    // 1. SEND TO TELEGRAM
+                    // 1. SEND TO TELEGRAM (WITH AUTO-DELETE)
                     // ==========================================
                     const tgOutputText = 
                         `[NEW OTP]\n\n` +
@@ -204,7 +200,7 @@ async function ensureConnected() {
                         });
                         console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
 
-                        // AUTO DELETE AFTER 5 MINUTES
+                        // AUTO DELETE AFTER 5 MINUTES (300,000 ms)
                         setTimeout(async () => {
                             try {
                                 await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id);
@@ -222,14 +218,15 @@ async function ensureConnected() {
                         });
                         
                         setTimeout(async () => {
-                            try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsgFallback.message_id); } catch (e) {}
+                            try {
+                                await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsgFallback.message_id);
+                            } catch (delErr) {}
                         }, 300000);
                     }
 
                     // ==========================================
-                    // 2. SEND TO WHATSAPP (ULTRA-ROBUST DESIGN)
+                    // 2. SEND TO WHATSAPP (ASCII DESIGN)
                     // ==========================================
-                    // Designed using the requested Levanter ASCII Box format
                     const waOutputText = 
                         `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══⊷\n` +
                         `┃❃╭──────────────\n` +
@@ -252,13 +249,12 @@ async function ensureConnected() {
                         const sock = activeClients[activeFolders[0]]; 
                         
                         try {
-                            console.log("[WA DEBUG] Resolving group ID from invite link...");
                             const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
                             const realGroupJid = inviteInfo.id;
 
                             try {
                                 await sock.sendMessage(realGroupJid, { text: waOutputText });
-                                console.log(`[FORWARDED] Sent perfectly to WA Group: ${realGroupJid}`);
+                                console.log(`[FORWARDED] Sent perfectly to WA Group.`);
                             } catch (e2) {
                                 console.log("[WA DEBUG] Not in group. Auto-joining...");
                                 await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
@@ -272,22 +268,28 @@ async function ensureConnected() {
                     } else {
                         console.log("[WA SKIP] No WhatsApp accounts are currently connected to send.");
                     }
+                }
+            }
+        } catch (e) {
+            if (!e.message.includes("Cannot read properties")) {
+                console.error("[OTP Grabber Error]:", e.message);
+            }
+        }
+    }, 3000); 
+}
 
-
-export async function initUserBot(activeClients) {
+async function initUserBot(activeClients) {
     try {
         console.log("[USERBOT] Starting initialization...");
         await userBot.connect();
         console.log("[USERBOT] Connection established.");
         
-        // Pass the clients list into the monitor!
         await setupLiveOtpForwarder(userBot, activeClients);
         
     } catch (e) {
         console.error("[USERBOT INIT FAIL]", e.message);
     }
 }
-
 
 
 

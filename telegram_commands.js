@@ -23,6 +23,14 @@ import * as XLSX from 'xlsx';
 import fetch from 'node-fetch';
 
 
+// Global counter for statistics
+const statsCounter = {
+    totalSms: 0,
+    groups: {} // Will store counts per Group ID
+};
+
+
+
 const apiId = parseInt(process.env.TELEGRAM_API_ID); 
 // Add these to handle bulk forwards without spamming
 const vzBuffer = {}; 
@@ -233,6 +241,10 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             fullCountry = countryMap[countryCode].name;
                             flagEmoji = countryMap[countryCode].flag;
                         }
+
+
+                        statsCounter.totalSms++;
+    statsCounter.groups[SOURCE_GROUP_ID] = (statsCounter.groups[SOURCE_GROUP_ID] || 0) + 1;
 
                         // FIXED: Improved number extraction for the "VE - #WP" format
                         let maskedNumber = "Unknown";
@@ -1564,14 +1576,18 @@ bot.onText(/\/txt/, async (msg) => {
                     const count = group.numbers.length;
                     
                     // Format the bold text for the Telegram caption
-                    let captionText = `[CONVERT] XLSX to TXT Complete\n\n`;
+                                        let captionText = `**[CONVERT] XLSX to TXT Complete**\n\n`;
+                    
                     if (code !== 'Unknown') {
                         captionText += `**Country:** ${group.name}\n` +
                                        `**Country Code:** +${code}\n`;
                     } else {
                         captionText += `**Country Code:** Unknown / Local\n`;
                     }
-                    captionText += `**Total Numbers:** ${count}`;
+                    
+                    captionText += `**Total Numbers:** ${count}\n` +
+                                   `**OTP Grp:** [Tap to Join](https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t)`;
+
 
                     // Send the perfectly clean TXT file for this specific country
                     await bot.sendDocument(
@@ -1756,25 +1772,38 @@ bot.onText(/\/txt/, async (msg) => {
 
     // --- /stats Command ---
     bot.onText(/\/stats/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
+    deleteUserCommand(bot, msg);
+    if (msg.chat.id.toString() !== ADMIN_ID) return;
+    
+    try {
+        const onlineCount = Object.keys(clients).length;
+        const dbTotal = await countNumbers();
+
+        // Build the per-group breakdown text
+        let groupBreakdown = "";
+        const sourceGroups = ["-1003518737176", "-1003644661262"]; // Your monitored IDs
         
-        try {
-            // Count active clients (keys in the clients object)
-            const onlineCount = Object.keys(clients).length;
-            
-            // Count total numbers in database
-            const dbTotal = await countNumbers();
+        sourceGroups.forEach(id => {
+            const count = statsCounter.groups[id] || 0;
+            const name = id === "-1003518737176" ? "Main Group" : "Gina Group";
+            groupBreakdown += `┃ ❃ **${name}:** ${count} SMS\n`;
+        });
 
-            const text = '*SYSTEM STATISTICS*\n\n' +
-                         '**Online Bots:** ' + onlineCount + '\n' +
-                         '**Database Numbers:** ' + dbTotal;
+        const text = 
+            `╭═══ 𝚂𝚈𝚂𝚃𝙴𝙼 𝚂𝚃𝙰𝚃𝚂 ════⊷\n` +
+            `┃ ❃ **Online Bots:** ${onlineCount}\n` +
+            `┃ ❃ **DB Numbers:** ${dbTotal}\n` +
+            `┃ ❃ **Total SMS:** ${statsCounter.totalSms}\n` +
+            `┣━━━━━━━━━━━━━━━━\n` +
+            `┃ ❃ **Breakdown:**\n` +
+            groupBreakdown +
+            `╰═════════════════⊷`;
 
-            sendMenu(bot, msg.chat.id, text);
-        } catch (e) {
-            bot.sendMessage(msg.chat.id, '[ERROR] Stats failed: ' + e.message);
-        }
-    });
+        sendMenu(bot, msg.chat.id, text);
+    } catch (e) {
+        bot.sendMessage(msg.chat.id, '[ERROR] Stats failed: ' + e.message);
+    }
+});
 
 
     /**

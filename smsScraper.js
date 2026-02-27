@@ -7,14 +7,16 @@ export async function startSmsScraper(activeClients, telegramBot, targetGroupId)
     console.log("[SCRAPER] Initializing Time SMS Monitor...");
 
     const browser = await puppeteer.launch({
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--single-process'
-        ]
-    });
+    headless: true,
+    executablePath: '/app/.project/src/.cache/puppeteer/chrome/linux-145.0.7632.77/chrome-linux64/chrome' || process.env.PUPPETEER_EXECUTABLE_PATH,
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--single-process'
+    ]
+});
+
 
     const page = await browser.newPage();
 

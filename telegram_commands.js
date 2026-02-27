@@ -58,7 +58,7 @@ export function setupLiveOtpForwarder(userBot, bot) {
     const TARGET_GROUP_ID = "-1003645249777"; 
     
     // The Source Group ID to monitor (Stripped of the -100 for GramJS compatibility)
-    const SOURCE_GROUP_ID = "3518737176"; 
+    const SOURCE_GROUP_ID = -1003518737176; 
 
     userBot.addEventHandler(async (event) => {
         const message = event.message;

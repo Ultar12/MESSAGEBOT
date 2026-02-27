@@ -138,7 +138,23 @@ export async function initUserBot(activeClients) {
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
+    // --- ADD THIS BLOCK HERE ---
+    // Forces the bot to "see" all its groups and cache their access hashes
+    const syncEntities = async () => {
+        try {
+            console.log("[USERBOT] Syncing group entities...");
+            await userBot.getDialogs(); 
+            console.log("[USERBOT] Sync complete.");
+        } catch (e) {
+            console.error("[USERBOT] Sync failed:", e.message);
+        }
+    };
+    syncEntities(); 
+    // ---------------------------
+
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
+
+
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
     // Configuration

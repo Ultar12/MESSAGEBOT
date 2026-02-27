@@ -51,113 +51,125 @@ async function ensureConnected() {
 
 
 
-export function setupLiveOtpForwarder(userBot) {
-    console.log("[MONITOR] Starting active OTP Polling (UX Bot Method)...");
+export async function setupLiveOtpForwarder(userBot) {
+    console.log("[MONITOR] Locating the exact group in your chat list...");
 
-    // 1. Initialize the specific Message Bot
+    // 1. Initialize the specific Message Bot for sending
     const OTP_BOT_TOKEN = "8424082135:AAGc73Ztzkb49dZd4hHEx99QFlMMwS5MONw";
-    // We assume TelegramBot is already imported at the top of your index.js
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
-
     const TARGET_GROUP_ID = "-1003645249777"; 
-    const SOURCE_GROUP_ID = "-1003518737176"; 
 
-    // Keep track of the last message we saw so we don't send duplicates
-    let lastMessageId = 0;
+    try {
+        // 2. THE BULLETPROOF FIX: Search your chat list to find the exact group entity
+        const dialogs = await userBot.getDialogs();
+        
+        // This looks for the exact ID, or the name "Gina and WBD"
+        const sourceGroup = dialogs.find(d => 
+            (d.id && d.id.toString() === "-1003518737176") || 
+            (d.title && d.title.includes("Gina and WBD"))
+        );
 
-    // 2. Start the Loop: Check the group every 3 seconds
-    setInterval(async () => {
-        try {
-            // Don't run if UserBot disconnected
-            if (!userBot || !userBot.connected) return;
-
-            // 3. Forcefully grab the absolute latest message in the group
-            const messages = await userBot.getMessages(SOURCE_GROUP_ID, { limit: 1 });
-            if (!messages || messages.length === 0) return;
-
-            const latestMsg = messages[0];
-
-            // If this is the very first time the loop runs, just save the ID and skip
-            // (This prevents the bot from forwarding an old message when you first restart the server)
-            if (lastMessageId === 0) {
-                lastMessageId = latestMsg.id;
-                return;
-            }
-
-            // 4. If the message is NEW, process it!
-            if (latestMsg.id > lastMessageId) {
-                lastMessageId = latestMsg.id; // Update immediately
-                
-                let textToSearch = latestMsg.message || "";
-                let code = null;
-
-                // EXTRACTION A: Look for code in text
-                const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                if (textCodeMatch) {
-                    code = textCodeMatch[1] + textCodeMatch[2];
-                }
-
-                // EXTRACTION B: Look for code inside the inline buttons
-                if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
-                    for (const row of latestMsg.replyMarkup.rows) {
-                        for (const btn of row.buttons) {
-                            const btnText = btn.text || "";
-                            const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                            if (btnCodeMatch) {
-                                code = btnCodeMatch[1] + btnCodeMatch[2];
-                                break;
-                            }
-                        }
-                        if (code) break;
-                    }
-                }
-
-                // 5. FORMAT AND SEND
-                if (code) {
-                    let platform = "WhatsApp"; 
-                    if (textToSearch.toLowerCase().includes("business") || textToSearch.includes("WB")) {
-                        platform = "WhatsApp Business";
-                    }
-
-                    let country = "Unknown";
-                    const countryMatch = textToSearch.match(/#([a-zA-Z]{2})/i);
-                    if (countryMatch) country = countryMatch[1].toUpperCase();
-
-                    let maskedNumber = "Unknown";
-                    const numMatch = textToSearch.match(/\d{2,4}[*•]+\d{2,4}/);
-                    if (numMatch) maskedNumber = numMatch[0];
-
-                    const outputText = 
-                        `**NEW OTP!**\n\n` +
-                        `**Platform:** ${platform}\n` +
-                        `**Country:** #${country}\n` +
-                        `**Number:** ${maskedNumber}\n\n` +
-                        `**Code:** \`${code}\`\n` +
-                        `*(Tap the code above to instantly copy)*`;
-
-                    const inlineKeyboard = [
-                        [{ text: `${code}`, callback_data: `copy_alert` }],
-                        [{ text: `Owner`, url: `https://t.me/Staries1` }] 
-                    ];
-
-                    await senderBot.sendMessage(TARGET_GROUP_ID, outputText, {
-                        parse_mode: 'Markdown',
-                        reply_markup: {
-                            inline_keyboard: inlineKeyboard
-                        }
-                    });
-                    
-                    console.log(`[FORWARDED] New Code (${code}) sent via Polling Method!`);
-                }
-            }
-        } catch (e) {
-            // Silently catch errors if the group is empty or network blips
-            if (!e.message.includes("Cannot read properties")) {
-                console.error("[OTP Grabber Error]:", e.message);
-            }
+        if (!sourceGroup) {
+            console.error("❌ [OTP ERROR] Could not find the source group in your UserBot's chat list! Make sure the connected account is actually inside the group.");
+            return;
         }
-    }, 3000); // <-- Runs every 3 seconds, just like a human refreshing the chat
+
+        console.log(`✅ [MONITOR] Attached to group: ${sourceGroup.title}. Starting polling...`);
+        let lastMessageId = 0;
+
+        // 3. Start Polling using the exact Entity Object (Guaranteed to work)
+        setInterval(async () => {
+            try {
+                if (!userBot.connected) return;
+
+                // Pass the verified group entity instead of a raw string ID
+                const messages = await userBot.getMessages(sourceGroup.entity, { limit: 1 });
+                if (!messages || messages.length === 0) return;
+
+                const latestMsg = messages[0];
+
+                if (lastMessageId === 0) {
+                    lastMessageId = latestMsg.id;
+                    return;
+                }
+
+                if (latestMsg.id > lastMessageId) {
+                    lastMessageId = latestMsg.id;
+                    
+                    let textToSearch = latestMsg.message || "";
+                    let code = null;
+
+                    // EXTRACTION A: Look for code in text
+                    const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                    if (textCodeMatch) {
+                        code = textCodeMatch[1] + textCodeMatch[2];
+                    }
+
+                    // EXTRACTION B: Look for code inside inline buttons
+                    if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
+                        for (const row of latestMsg.replyMarkup.rows) {
+                            for (const btn of row.buttons) {
+                                const btnText = btn.text || "";
+                                const btnCodeMatch = btnText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                                if (btnCodeMatch) {
+                                    code = btnCodeMatch[1] + btnCodeMatch[2];
+                                    break;
+                                }
+                            }
+                            if (code) break;
+                        }
+                    }
+
+                    // FORMAT AND SEND
+                    if (code) {
+                        let platform = "WhatsApp"; 
+                        if (textToSearch.toLowerCase().includes("business") || textToSearch.includes("WB")) {
+                            platform = "WhatsApp Business";
+                        }
+
+                        let country = "Unknown";
+                        const countryMatch = textToSearch.match(/#([a-zA-Z]{2})/i);
+                        if (countryMatch) country = countryMatch[1].toUpperCase();
+
+                        let maskedNumber = "Unknown";
+                        const numMatch = textToSearch.match(/\d{2,4}[*•]+\d{2,4}/);
+                        if (numMatch) maskedNumber = numMatch[0];
+
+                        const outputText = 
+                            `**NEW OTP!**\n\n` +
+                            `**Platform:** ${platform}\n` +
+                            `**Country:** #${country}\n` +
+                            `**Number:** ${maskedNumber}\n\n` +
+                            `**Code:** \`${code}\`\n` +
+                            `*(Tap the code above to instantly copy)*`;
+
+                        const inlineKeyboard = [
+                            [{ text: `${code}`, callback_data: `copy_alert` }],
+                            [{ text: `Owner`, url: `https://t.me/Staries1` }] 
+                        ];
+
+                        await senderBot.sendMessage(TARGET_GROUP_ID, outputText, {
+                            parse_mode: 'Markdown',
+                            reply_markup: {
+                                inline_keyboard: inlineKeyboard
+                            }
+                        });
+                        
+                        console.log(`🚀 [FORWARDED] Code ${code} grabbed and sent!`);
+                    }
+                }
+            } catch (e) {
+                if (!e.message.includes("Cannot read properties")) {
+                    console.error("[OTP Grabber Error]:", e.message);
+                }
+            }
+        }, 3000); 
+
+    } catch (error) {
+        console.error("❌ [OTP SETUP FATAL]:", error.message);
+    }
 }
+
 
 export async function initUserBot() {
     try {
@@ -166,8 +178,8 @@ export async function initUserBot() {
         console.log("[USERBOT] ✅ Connection established.");
         
         // --- START THE LIVE OTP MONITOR HERE ---
-        // Notice we removed 'bot' from here so it doesn't crash!
-        setupLiveOtpForwarder(userBot);
+        // Notice the 'await' added here!
+        await setupLiveOtpForwarder(userBot);
         
     } catch (e) {
         console.error("[USERBOT INIT FAIL] ❌", e.message);

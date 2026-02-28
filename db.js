@@ -83,6 +83,17 @@ export async function initDb() {
             );
         `);
 
+                // 6. STATISTICS TABLE
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS daily_stats (
+                date DATE DEFAULT CURRENT_DATE,
+                group_id TEXT,
+                sms_count INTEGER DEFAULT 0,
+                PRIMARY KEY (date, group_id)
+            );
+        `);
+
+
         // --- SAFE MIGRATIONS (Ensure columns exist for old DBs) ---
         const migrations = [
             `ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS antimsg BOOLEAN DEFAULT FALSE`,
@@ -106,6 +117,50 @@ export async function initDb() {
         client.release();
     }
 }
+
+
+// ================= DAILY STATISTICS =================
+
+export async function incrementDailyStat(groupId) {
+    try {
+        // This query inserts a new row for today's date if it doesn't exist, 
+        // or increments the counter if it already exists for that group today.
+        await pool.query(
+            `INSERT INTO daily_stats (date, group_id, sms_count) 
+             VALUES (CURRENT_DATE, $1, 1) 
+             ON CONFLICT (date, group_id) 
+             DO UPDATE SET sms_count = daily_stats.sms_count + 1`,
+            [groupId]
+        );
+    } catch (e) {
+        console.error('[DB] Increment Stat Error:', e.message);
+    }
+}
+
+export async function getTodayStats() {
+    try {
+        // Fetch only the stats for the current day
+        const res = await pool.query('SELECT group_id, sms_count FROM daily_stats WHERE date = CURRENT_DATE');
+        
+        const stats = {
+            total: 0,
+            groups: {}
+        };
+        
+        // Loop through the results and build the object
+        res.rows.forEach(row => {
+            const count = parseInt(row.sms_count);
+            stats.groups[row.group_id] = count;
+            stats.total += count;
+        });
+        
+        return stats;
+    } catch (e) {
+        console.error('[DB] Get Stats Error:', e.message);
+        return { total: 0, groups: {} };
+    }
+}
+
 
 // ================= SESSIONS =================
 

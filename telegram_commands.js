@@ -3,7 +3,7 @@ import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
 
 import { 
-    getAllSessions, getAllNumbers, countNumbers, deleteNumbers, clearAllNumbers,
+    getAllSessions, getAllNumbers, incrementDailyStat, getTodayStats, countNumbers, deleteNumbers, clearAllNumbers,
     getUser, createUser, getEarningsStats, getReferrals, updateBank, createWithdrawal,
     setAntiMsgStatus, addNumbersToDb, getShortId, checkNumberInDb,
     getTodayEarnings, getYesterdayEarnings, getWithdrawalHistory, getEarningsHistory,
@@ -243,8 +243,21 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         }
 
 
-                        statsCounter.totalSms++;
-    statsCounter.groups[SOURCE_GROUP_ID] = (statsCounter.groups[SOURCE_GROUP_ID] || 0) + 1;
+                                            if (code) {
+                        const now = Date.now();
+                        if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
+                        recentCodes.set(code, now);
+
+                        // ✅ NEW: Save to Database instead of memory
+                        try {
+                            await incrementDailyStat(SOURCE_GROUP_ID);
+                        } catch (dbErr) {
+                            console.error("[STATS ERROR]", dbErr.message);
+                        }
+
+                        let platform = "WhatsApp"; 
+                        // ... rest of your formatting and sending logic ...
+
 
                         // FIXED: Improved number extraction for the "VE - #WP" format
                         let maskedNumber = "Unknown";

@@ -213,11 +213,12 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
                         recentCodes.set(code, now);
 
-                        // ✅ NEW: Save to Database instead of memory
+                        // ✅ DATABASE STATS (Fixed Syntax)
                         try {
                             await incrementDailyStat(SOURCE_GROUP_ID);
                         } catch (dbErr) {
                             console.error("[STATS ERROR]", dbErr.message);
+                        }
                         
 
                         let platform = "WhatsApp"; 

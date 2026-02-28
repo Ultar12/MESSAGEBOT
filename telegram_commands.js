@@ -1130,35 +1130,10 @@ bot.onText(/\/txt/, async (msg) => {
         }
     });  
      
-
-    // 2. LOGOUT SINGLE
-    bot.onText(/\/logout\s+(\S+)/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
-        
-        const targetId = match[1];
-        if (!targetId || !shortIdMap[targetId]) return sendMenu(bot, msg.chat.id, '[ERROR] Invalid ID: ' + targetId);
-
-        const sessionData = shortIdMap[targetId];
-        const sock = clients[sessionData.folder];
-
-        if (!sock) return sendMenu(bot, msg.chat.id, '[ERROR] Client ' + targetId + ' is not connected.');
-
-        try {
-            bot.sendMessage(msg.chat.id, '[LOGOUT] ' + targetId + ' (+' + sessionData.phone + ')\nUnlinking companion devices...');
-            
-            const kicked = await performLogoutSequence(sock, targetId, bot, msg.chat.id);
-            
-            sendMenu(bot, msg.chat.id, '[SUCCESS] Logout complete for ' + targetId + '.');
-        } catch (e) {
-            bot.sendMessage(msg.chat.id, '[ERROR] Logout failed: ' + e.message);
-        }
-    });
-
-
     
 
     // --- /ttx [Reply to file] ---
+       // --- /ttx [Reply to file] ---
     bot.onText(/\/ttx/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1174,131 +1149,27 @@ bot.onText(/\/txt/, async (msg) => {
             return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /ttx');
         }
 
-        try {
-            // 3. Select Checker Account (Exclude the OTP Sender)
-            const activeFolders = Object.keys(clients).filter(f => 
-                clients[f] && f !== currentOtpSenderId
-            );
-            
-            // Get the actual socket object
-            const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
+        // 3. Save the File ID temporarily in userState
+        userState[chatId + '_ttx_file'] = msg.reply_to_message.document.file_id;
 
-            if (sock) {
-                const checkerNum = sock.user.id.split(':')[0]; 
-                bot.sendMessage(chatId, `🟢 [STREAMING MODE] Using: ${checkerNum}\nChecking WA status...`);
-            } else {
-                bot.sendMessage(chatId, '🟡 [NORMAL MODE] No available checker account.\n(Dedicated OTP account is protected).');
-            }
-
-            // 4. Build Exclusion List (Already connected numbers)
-            const connectedSet = new Set();
-            Object.values(shortIdMap).forEach(session => {
-                if (session.phone) {
-                    connectedSet.add(session.phone.toString().replace(/\D/g, ''));
-                }
-            });
-
-            // 5. Read and Parse File
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileLink = await bot.getFileLink(fileId);
-            const response = await fetch(fileLink);
-            const rawText = await response.text();
-            
-            // Clean empty lines and spaces
-            const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length >= 7);
-
-            let skippedConnectedCount = 0;
-            let activeBatch = []; 
-            const bannedNumbers = []; 
-            let totalChecked = 0;
-            let validCount = 0;
-
-            // 6. Processing Loop
-            for (const line of lines) {
-                const cleanNum = line.replace(/\D/g, '');
-
-                // --- 🐛 THE BUG FIX ---
-                // If the line was just text/symbols, cleanNum becomes empty. We MUST skip it!
-                if (!cleanNum || cleanNum.length < 7) continue;
-
-                // Skip if connected
-                if (connectedSet.has(cleanNum)) {
-                    skippedConnectedCount++;
-                    continue;
-                }
-
-                if (sock) {
-                    // --- BRANCH A: STREAMING CHECK ---
-                    totalChecked++;
-                    try {
-                        const jid = `${cleanNum}@s.whatsapp.net`;
-                        const [check] = await sock.onWhatsApp(jid);
-                        
-                        if (check && check.exists) {
-                            activeBatch.push(cleanNum);
-                            validCount++;
-
-                            // Send valid numbers in small batches of 5
-                            if (activeBatch.length === 5) {
-                                await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                                activeBatch = []; 
-                                await delay(1000); 
-                            }
-                        } else {
-                            bannedNumbers.push(cleanNum);
-                        }
-                    } catch (err) {
-                        bannedNumbers.push(cleanNum);
-                    }
-
-                    // Protect checker bot from bans (0.5s delay every 5 checks)
-                    if (totalChecked % 5 === 0) await delay(500);
-                } else {
-                    // --- BRANCH B: RAW FILTERING (No Bot) ---
-                    activeBatch.push(cleanNum);
-                    validCount++;
-                    if (activeBatch.length === 5) {
-                        await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                        activeBatch = [];
-                        await delay(800);
-                    }
+        // 4. Send the Mode Selection Menu
+        bot.sendMessage(chatId, 
+            `**Select TTX Processing Mode:**\n\n` +
+            `**Streaming Mode:** Deep checks numbers on WhatsApp to see if they are active.\n` +
+            `**Normal Mode:** Only filters out DB duplicates and connected accounts.\n\n` +
+            `*Note: Cross-country formatting is enabled automatically.*`, 
+            {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'Streaming Mode (Check WA)', callback_data: 'ttx_stream' }],
+                        [{ text: 'Normal Mode (Filter Only)', callback_data: 'ttx_normal' }],
+                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                    ]
                 }
             }
-
-            // 7. Finalize and Flush
-            if (activeBatch.length > 0) {
-                await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-            }
-
-            // 8. Send Banned/Invalid Report
-            if (sock && bannedNumbers.length > 0) {
-                await bot.sendMessage(chatId, `🔴 **[BANNED / INVALID]** (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
-                
-                for (let i = 0; i < bannedNumbers.length; i += 10) {
-                    const chunk = bannedNumbers.slice(i, i + 10);
-                    // Double check to prevent Telegram crash on empty chunks
-                    if (chunk.length > 0) {
-                        await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                        await delay(800);
-                    }
-                }
-            }
-
-            // 9. Summary Report
-            const summary = 
-                `**TTX COMPLETE**\n\n` +
-                `Total Lines Processed: ${totalChecked}\n` +
-                `Valid/Active: ${validCount}\n` +
-                `Banned/Dead: ${bannedNumbers.length}\n` +
-                `Skipped (Connected): ${skippedConnectedCount}`;
-
-            bot.sendMessage(chatId, summary, { parse_mode: 'Markdown' });
-
-        } catch (e) {
-            bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
-        }
+        );
     });
-
 
 
     bot.onText(/\/sender/, (msg) => {
@@ -1414,7 +1285,10 @@ bot.onText(/\/txt/, async (msg) => {
 
     
 
-        bot.onText(/\/xl/, async (msg) => {
+        
+
+        // --- /xl [Reply to file] ---
+    bot.onText(/\/xl/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
@@ -1427,229 +1301,86 @@ bot.onText(/\/txt/, async (msg) => {
             return bot.sendMessage(chatId, '[ERROR] Reply to an .xlsx file with /xl');
         }
 
+        const fileName = msg.reply_to_message.document.file_name || '';
+        if (!fileName.toLowerCase().endsWith('.xlsx')) {
+            return bot.sendMessage(chatId, '[ERROR] The /xl command only works with .xlsx files.');
+        }
+
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Reading Excel file...');
-            
-            const connectedSet = new Set();
-            Object.values(shortIdMap).forEach(session => {
-                const norm = normalizeWithCountry(session.phone);
-                if (norm) connectedSet.add(norm.num);
-            });
+            bot.sendMessage(chatId, '[ANALYZING] Reading Excel file to map countries...');
 
             const fileId = msg.reply_to_message.document.file_id;
+            
+            // Store file ID temporarily so we can process it later
+            userState[chatId + '_xl_file'] = fileId;
+
+            // 1. Download and read Excel file
             const fileLink = await bot.getFileLink(fileId);
             const response = await fetch(fileLink);
             const buffer = await response.buffer();
-
             const workbook = XLSX.read(buffer, { type: 'buffer' });
             const sheet = workbook.Sheets[workbook.SheetNames[0]];
             const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }); 
 
-            const newNumbers = new Set();
-            let skippedCount = 0;
+            // 2. Group numbers by country
+            const countrySummary = {};
             let totalChecked = 0;
-            let detectedCountry = "Unknown";
-            let detectedCode = "N/A";
 
             data.forEach(row => {
                 if (!Array.isArray(row)) return;
                 row.forEach(cell => {
                     if (!cell) return;
-                    totalChecked++;
-                    const result = normalizeWithCountry(cell.toString());
-                    if (result && result.num) {
-                        // Capture country info from the first valid number found
-                        if (detectedCountry === "Unknown" && result.name !== "Unknown") {
-                            detectedCountry = result.name;
-                            detectedCode = result.code;
-                        }
-
-                        if (connectedSet.has(result.num)) {
-                            skippedCount++;
-                        } else {
-                            newNumbers.add(result.num);
-                        }
+                    
+                    const cellStr = cell.toString();
+                    const matches = cellStr.match(/\d{7,15}/g); // Extract raw digits
+                    
+                    if (matches) {
+                        matches.forEach(num => {
+                            totalChecked++;
+                            const res = normalizeWithCountry(num);
+                            if (res && res.code) {
+                                const code = res.code;
+                                if (!countrySummary[code]) {
+                                    countrySummary[code] = { name: res.name, count: 0 };
+                                }
+                                countrySummary[code].count++;
+                            }
+                        });
                     }
                 });
             });
 
-            const uniqueList = Array.from(newNumbers);
-            const totalNew = uniqueList.length;
-
-            if (totalNew === 0) {
-                return bot.sendMessage(chatId, '[DONE] No new numbers found.\nSkipped ' + skippedCount + ' connected numbers.');
+            const codesFound = Object.keys(countrySummary);
+            if (codesFound.length === 0) {
+                return bot.sendMessage(chatId, '[ERROR] No valid numbers found in the file.');
             }
 
-            const batchSize = 5;
-            const totalBatches = Math.ceil(totalNew / batchSize);
+            // 3. Build Interactive Buttons for each country found
+            const inlineKeyboard = [];
+            codesFound.forEach(code => {
+                const name = countrySummary[code].name;
+                const count = countrySummary[code].count;
+                inlineKeyboard.push([{ 
+                    text: `${name} (+${code}) - ${count} nums`, 
+                    callback_data: `xl_c_${code}` 
+                }]);
+            });
+            inlineKeyboard.push([{ text: 'Cancel', callback_data: 'cancel_action' }]);
 
             bot.sendMessage(chatId, 
-                '[FILTER REPORT]\n' +
-                'Country: ' + detectedCountry + ' (+' + detectedCode + ')\n' +
-                'Input Found: ' + totalChecked + '\n' +
-                'Already Connected: ' + skippedCount + '\n' +
-                'New Numbers: ' + totalNew + '\n\n' +
-                '[SENDING] ' + totalBatches + ' batches...'
+                `**FILE ANALYSIS COMPLETE**\n\n` +
+                `**Total Scanned:** ${totalChecked}\n` +
+                `**Regions Detected:** ${codesFound.length}\n\n` +
+                `Please select which country you want to extract and process:`, 
+                { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } }
             );
 
-            for (let i = 0; i < totalNew; i += batchSize) {
-                const chunk = uniqueList.slice(i, i + batchSize);
-                const msgText = chunk.map(n => '`' + n + '`').join('\n');
-                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                await delay(1200);
-            }
-            
-            bot.sendMessage(chatId, '[DONE] Excel processing complete.');
         } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+            bot.sendMessage(chatId, `[ERROR] ${e.message}`);
         }
     });
 
-
-    // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
-    bot.onText(/\/convt/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
-
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /convert');
-        }
-
-        try {
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileLink = await bot.getFileLink(fileId);
-            const response = await fetch(fileLink);
-            const fileName = msg.reply_to_message.document.file_name || '';
-
-            if (fileName.toLowerCase().endsWith('.xlsx')) {
-                // Convert Excel to Text (SMART SORT & STRIP)
-                bot.sendMessage(chatId, '[SYSTEM] Extracting, sorting by country, and stripping codes...');
-                const buffer = await response.buffer();
-                const workbook = XLSX.read(buffer, { type: 'buffer' });
-                const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
                 
-                // Object to hold groups of numbers by their country code
-                const countryGroups = {}; 
-
-                data.forEach(row => {
-                    if (Array.isArray(row)) {
-                        row.forEach(cell => { 
-                            if(cell) {
-                                const cellStr = cell.toString();
-                                const matches = cellStr.match(/\d{7,15}/g);
-                                
-                                if (matches) {
-                                    matches.forEach(num => {
-                                        const res = normalizeWithCountry(num);
-                                        
-                                        if (res && res.code && res.code !== 'N/A') {
-                                            const code = res.code;
-                                            
-                                            // Strip the country code off the front of the number
-                                            let cleanNum = num;
-                                            if (cleanNum.startsWith(code)) {
-                                                cleanNum = cleanNum.substring(code.length);
-                                            }
-
-                                            // Create the group if it doesn't exist yet
-                                            if (!countryGroups[code]) {
-                                                countryGroups[code] = {
-                                                    name: res.name,
-                                                    numbers: []
-                                                };
-                                            }
-                                            // Add the clean number to its specific country group
-                                            countryGroups[code].numbers.push(cleanNum);
-                                        } else {
-                                            // Fallback for completely unknown formats
-                                            if (!countryGroups['Unknown']) {
-                                                countryGroups['Unknown'] = { name: 'Unknown', numbers: [] };
-                                            }
-                                            countryGroups['Unknown'].numbers.push(num);
-                                        }
-                                    });
-                                }
-                            } 
-                        });
-                    }
-                });
-
-                const codesFound = Object.keys(countryGroups);
-                if (codesFound.length === 0) {
-                    return bot.sendMessage(chatId, '[ERROR] No valid numbers found in the Excel file.');
-                }
-
-                bot.sendMessage(chatId, `[INFO] Found numbers from ${codesFound.length} different regions. Generating files...`);
-
-                // Loop through each country group and send a separate TXT file
-                for (const code of codesFound) {
-                    const group = countryGroups[code];
-                    const count = group.numbers.length;
-                    
-                    // Format the bold text for the Telegram caption
-                                        let captionText = `**[CONVERT] XLSX to TXT Complete**\n\n`;
-                    
-                    if (code !== 'Unknown') {
-                        captionText += `**Country:** ${group.name}\n` +
-                                       `**Country Code:** +${code}\n`;
-                    } else {
-                        captionText += `**Country Code:** Unknown / Local\n`;
-                    }
-                    
-                    captionText += `**Total Numbers:** ${count}\n` +
-                                   `**OTP Grp:** [Tap to Join](https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t)`;
-
-
-                    // Send the perfectly clean TXT file for this specific country
-                    await bot.sendDocument(
-                        chatId, 
-                        Buffer.from(group.numbers.join('\n')), 
-                        { 
-                            caption: captionText,
-                            parse_mode: 'Markdown' 
-                        }, 
-                        { 
-                            filename: `converted_${code === 'Unknown' ? 'unknown' : code}.txt`, 
-                            contentType: 'text/plain' 
-                        }
-                    );
-                    
-                    await delay(1000); // 1-second delay between sending files to avoid Telegram flood limits
-                }
-                
-            } else {
-                // Convert Text to Excel
-                bot.sendMessage(chatId, '[SYSTEM] Converting TXT to XLSX...');
-                const text = await response.text();
-                
-                const matches = text.match(/\d{7,15}/g) || [];
-                const lines = matches.map(l => [l]);
-                
-                const worksheet = XLSX.utils.aoa_to_sheet(lines);
-                const workbook = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(workbook, worksheet, "Numbers");
-                const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-                
-                await bot.sendDocument(
-                    chatId, 
-                    buffer, 
-                    { 
-                        caption: `[CONVERT] TXT to XLSX complete\n**Total Numbers:** ${matches.length}`, 
-                        parse_mode: 'Markdown' 
-                    }, 
-                    { filename: 'converted.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
-                );
-            }
-        } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
-        }
-    });
-
-
-
 
     // --- /sendgroup [message] | [bot_count] | [group_link] ---
     // Executes a message send job across X bots with a 3-second delay between each bot.
@@ -4635,6 +4366,145 @@ const cleanNumbers = matches.map(n => {
             return sendMenu(bot, chatId, 'Cancelled.');
         }
 
+
+                // --- TTX MODE SELECTION LOGIC ---
+        if (data === 'ttx_stream' || data === 'ttx_normal') {
+            await bot.answerCallbackQuery(query.id);
+            await bot.deleteMessage(chatId, query.message.message_id);
+
+            const fileId = userState[chatId + '_ttx_file'];
+            if (!fileId) return bot.sendMessage(chatId, '[ERROR] File expired or lost. Please reply to the file with /ttx again.');
+            
+            // Clear the stored file
+            userState[chatId + '_ttx_file'] = null;
+
+            const isStreaming = data === 'ttx_stream';
+
+            try {
+                // Determine socket if streaming
+                let sock = null;
+                if (isStreaming) {
+                    const activeFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId);
+                    sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
+                    
+                    if (sock) {
+                        const checkerNum = sock.user.id.split(':')[0]; 
+                        bot.sendMessage(chatId, `[STREAMING MODE] Using: ${checkerNum}\nChecking WA status...`);
+                    } else {
+                        return bot.sendMessage(chatId, '[ERROR] No checker account available for Streaming Mode.');
+                    }
+                } else {
+                    bot.sendMessage(chatId, '[NORMAL MODE] Filtering numbers without WA check...');
+                }
+
+                // Build DB and Session Exclusion List
+                const connectedSet = new Set();
+                Object.values(shortIdMap).forEach(session => {
+                    if (session.phone) connectedSet.add(session.phone.toString().replace(/\D/g, ''));
+                });
+                
+                const allDbDocs = await getAllNumbers(); 
+                const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString().replace(/\D/g, '')));
+
+                // Download File
+                const fileLink = await bot.getFileLink(fileId);
+                const response = await fetch(fileLink);
+                const rawText = await response.text();
+                const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length >= 7);
+
+                let skippedConnectedCount = 0;
+                let activeBatch = []; 
+                const bannedNumbers = []; 
+                let totalChecked = 0;
+                let validCount = 0;
+
+                for (const line of lines) {
+                    // --- THE CROSS-COUNTRY FIX ---
+                    // Use your custom normalizer to force the international code
+                    const res = normalizeWithCountry(line);
+                    if (!res || !res.num) continue; 
+
+                    // Create the full international number (e.g., 234802...)
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+
+                    if (connectedSet.has(fullPhone) || dbSet.has(fullPhone)) {
+                        skippedConnectedCount++;
+                        continue;
+                    }
+
+                    if (isStreaming && sock) {
+                        totalChecked++;
+                        try {
+                            const jid = `${fullPhone}@s.whatsapp.net`;
+                            
+                            // ANTI-FREEZE: 5 Second Timeout per number
+                            const checkPromise = sock.onWhatsApp(jid);
+                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
+                            
+                            const [check] = await Promise.race([checkPromise, timeoutPromise]);
+                            
+                            if (check && check.exists) {
+                                activeBatch.push(fullPhone);
+                                validCount++;
+                                if (activeBatch.length === 5) {
+                                    await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                    activeBatch = []; 
+                                    await delay(1000); 
+                                }
+                            } else {
+                                bannedNumbers.push(fullPhone);
+                            }
+                        } catch (err) {
+                            bannedNumbers.push(fullPhone); // If it times out or errors, throw it in the dead pile
+                        }
+
+                        if (totalChecked % 5 === 0) await delay(500); // Anti-ban delay
+
+                    } else {
+                        // Normal Mode just outputs the clean, formatted numbers
+                        activeBatch.push(fullPhone);
+                        validCount++;
+                        if (activeBatch.length === 5) {
+                            await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                            activeBatch = [];
+                            await delay(800);
+                        }
+                    }
+                }
+
+                // Flush remaining
+                if (activeBatch.length > 0) {
+                    await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                }
+
+                // Banned Report
+                if (isStreaming && sock && bannedNumbers.length > 0) {
+                    await bot.sendMessage(chatId, `**[BANNED / DEAD]** (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
+                    for (let i = 0; i < bannedNumbers.length; i += 10) {
+                        const chunk = bannedNumbers.slice(i, i + 10);
+                        if (chunk.length > 0) {
+                            await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                            await delay(800);
+                        }
+                    }
+                }
+
+                bot.sendMessage(chatId, 
+                    `**TTX COMPLETE**\n\n` +
+                    `Total Checked: ${isStreaming ? totalChecked : validCount}\n` +
+                    `Valid/Active: ${validCount}\n` +
+                    (isStreaming ? `Banned/Dead: ${bannedNumbers.length}\n` : '') +
+                    `Skipped (Duplicates/DB): ${skippedConnectedCount}`, 
+                    { parse_mode: 'Markdown' }
+                );
+
+            } catch (e) {
+                bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
+            }
+            return;
+        }
+
+
         // Handle QR cancel
         if (data === 'cancel_qr') {
             userState[chatId] = null;
@@ -4689,6 +4559,200 @@ const cleanNumbers = matches.map(n => {
                 }
             });
         }
+
+
+                // --- XL COMMAND: COUNTRY SELECTION ---
+        if (data.startsWith('xl_c_')) {
+            const countryCode = data.replace('xl_c_', '');
+            userState[chatId + '_xl_country'] = countryCode;
+
+            await bot.answerCallbackQuery(query.id);
+            await bot.editMessageText(
+                `🌍 **Country Selected: +${countryCode}**\n\n` +
+                `How do you want to process these numbers?`, 
+                {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: '🟢 Streaming Mode (Check WA)', callback_data: 'xl_mode_stream' }],
+                            [{ text: '🟡 Normal Mode (Filter Only)', callback_data: 'xl_mode_normal' }],
+                            [{ text: '❌ Cancel', callback_data: 'cancel_action' }]
+                        ]
+                    }
+                }
+            );
+            return;
+        }
+
+        // --- XL COMMAND: MODE SELECTION & EXECUTION ---
+        if (data === 'xl_mode_stream' || data === 'xl_mode_normal') {
+            await bot.answerCallbackQuery(query.id);
+            await bot.deleteMessage(chatId, query.message.message_id);
+
+            const fileId = userState[chatId + '_xl_file'];
+            const targetCountryCode = userState[chatId + '_xl_country'];
+            
+            if (!fileId || !targetCountryCode) {
+                return bot.sendMessage(chatId, '[ERROR] Session expired. Please reply to the file with /xl again.');
+            }
+
+            // Clear state so it doesn't get stuck
+            userState[chatId + '_xl_file'] = null;
+            userState[chatId + '_xl_country'] = null;
+
+            const isStreaming = data === 'xl_mode_stream';
+
+            try {
+                // Determine socket if streaming
+                let sock = null;
+                if (isStreaming) {
+                    const activeFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId);
+                    sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
+                    
+                    if (sock) {
+                        const checkerNum = sock.user.id.split(':')[0]; 
+                        bot.sendMessage(chatId, `[STREAMING MODE: +${targetCountryCode}]\nUsing: ${checkerNum}\nChecking WA status...`);
+                    } else {
+                        return bot.sendMessage(chatId, '[ERROR] No checker account available for Streaming Mode.');
+                    }
+                } else {
+                    bot.sendMessage(chatId, `[NORMAL MODE: +${targetCountryCode}]\nFiltering numbers without WA check...`);
+                }
+
+                // Exclusion sets for Database & Connected Sessions
+                const connectedSet = new Set();
+                Object.values(shortIdMap).forEach(session => {
+                    const norm = normalizeWithCountry(session.phone);
+                    if (norm) connectedSet.add(norm.num);
+                });
+                
+                const allDbDocs = await getAllNumbers(); 
+                const dbSet = new Set(allDbDocs.map(doc => {
+                    const norm = normalizeWithCountry((doc.number || doc).toString());
+                    return norm ? norm.num : String(doc.number || doc);
+                }));
+
+                // Download & parse Excel again to process just the requested country
+                const fileLink = await bot.getFileLink(fileId);
+                const response = await fetch(fileLink);
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const excelData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+                let activeBatch = []; 
+                const bannedNumbers = []; 
+                let totalProcessed = 0;
+                let validCount = 0;
+                let skippedCount = 0;
+
+                // Loop through Excel Data
+                for (const row of excelData) {
+                    if (!Array.isArray(row)) continue;
+                    
+                    for (const cell of row) {
+                        if (!cell) continue;
+                        
+                        const cellStr = cell.toString();
+                        const matches = cellStr.match(/\d{7,15}/g) || [];
+                        
+                        for (const rawNum of matches) {
+                            const res = normalizeWithCountry(rawNum);
+                            
+                            // 1. SKIP INVALID NUMBERS
+                            if (!res || !res.num) continue;
+                            
+                            // 2. SKIP IF IT DOES NOT MATCH THE BUTTON YOU CLICKED
+                            if (res.code !== targetCountryCode) continue;
+
+                            // Format correctly (e.g., 234...)
+                            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+
+                            // 3. FILTER DB AND CONNECTED
+                            if (connectedSet.has(fullPhone) || dbSet.has(fullPhone)) {
+                                skippedCount++;
+                                continue;
+                            }
+
+                            // 4. EXECUTE CHOSEN MODE
+                            if (isStreaming && sock) {
+                                totalProcessed++;
+                                try {
+                                    const jid = `${fullPhone}@s.whatsapp.net`;
+                                    
+                                    // ANTI-FREEZE: 5 Second Timeout per number
+                                    const checkPromise = sock.onWhatsApp(jid);
+                                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
+                                    
+                                    const [check] = await Promise.race([checkPromise, timeoutPromise]);
+                                    
+                                    if (check && check.exists) {
+                                        activeBatch.push(fullPhone);
+                                        validCount++;
+                                        if (activeBatch.length === 5) {
+                                            await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                            activeBatch = []; 
+                                            await delay(1000); 
+                                        }
+                                    } else {
+                                        bannedNumbers.push(fullPhone);
+                                    }
+                                } catch (err) {
+                                    bannedNumbers.push(fullPhone);
+                                }
+
+                                if (totalProcessed % 5 === 0) await delay(500); // Anti-ban delay
+
+                            } else {
+                                // NORMAL MODE
+                                activeBatch.push(fullPhone);
+                                validCount++;
+                                if (activeBatch.length === 5) {
+                                    await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                    activeBatch = [];
+                                    await delay(800);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Flush remaining numbers
+                if (activeBatch.length > 0) {
+                    await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                }
+
+                // Print Banned Report
+                if (isStreaming && sock && bannedNumbers.length > 0) {
+                    await bot.sendMessage(chatId, `**[BANNED / DEAD]** (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
+                    for (let i = 0; i < bannedNumbers.length; i += 10) {
+                        const chunk = bannedNumbers.slice(i, i + 10);
+                        if (chunk.length > 0) {
+                            await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                            await delay(800);
+                        }
+                    }
+                }
+
+                // Final Summary
+                bot.sendMessage(chatId, 
+                    `**XL PROCESS COMPLETE**\n\n` +
+                    `Target: +${targetCountryCode}\n` +
+                    `Total Checked: ${isStreaming ? totalProcessed : validCount}\n` +
+                    `Valid/Active: ${validCount}\n` +
+                    (isStreaming ? `Banned/Dead: ${bannedNumbers.length}\n` : '') +
+                    `Skipped (Duplicates/DB): ${skippedCount}`, 
+                    { parse_mode: 'Markdown' }
+                );
+
+            } catch (e) {
+                bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
+            }
+            return;
+        }
+
 
         // Handle withdrawal approval
         if (data.startsWith('approve_')) {

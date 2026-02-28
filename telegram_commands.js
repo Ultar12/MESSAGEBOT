@@ -137,17 +137,26 @@ export async function initUserBot(activeClients) {
     }
 }
 
-
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
+
+    // --- CRITICAL: Sync entities to prevent CHANNEL_INVALID errors ---
+    const syncEntities = async () => {
+        try {
+            console.log("[USERBOT] Syncing group entities...");
+            await userBot.getDialogs(); 
+            console.log("[USERBOT] Sync complete.");
+        } catch (e) {
+            console.error("[USERBOT] Sync failed:", e.message);
+        }
+    };
+    syncEntities(); 
 
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
-    
-    // UPDATED: Added the correct ID from your Rose screenshot
     const SOURCE_GROUPS = ["-1003518737176", "-1003644661262"]; 
 
     const groupStates = {};
@@ -207,19 +216,12 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
                         recentCodes.set(code, now);
 
-
-                   if (code) {
-                        const now = Date.now();
-                        if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
-                        recentCodes.set(code, now);
-
                         // ✅ DATABASE STATS (Fixed Syntax)
                         try {
                             await incrementDailyStat(SOURCE_GROUP_ID);
                         } catch (dbErr) {
                             console.error("[STATS ERROR]", dbErr.message);
                         }
-                        
 
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
@@ -244,7 +246,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "SN": { name: "Senegal", flag: "🇸🇳" }
                         };
 
-                        // FIXED: Improved country detection for the "VE - #WP" format
                         let countryCode = "Unknown";
                         const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*#)/i);
                         if (countryMatch) countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
@@ -256,8 +257,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             flagEmoji = countryMap[countryCode].flag;
                         }
 
-
-                        // FIXED: Improved number extraction for the "VE - #WP" format
                         let maskedNumber = "Unknown";
                         const tagMatch = combinedText.match(/(?:(?:WP|WB)\]|#WP\s*-\s*)\s*([^\s┨\n]+)/i);
                         if (tagMatch && tagMatch[1]) {
@@ -268,66 +267,59 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         }
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
 
+                        // --- DESIGN: Safely using CODE_FIX ---
                         const design = 
                             `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
                             `┃❃╭──────────────\n` +
                             `┃❃│ Platform : ${platform}\n` +
                             `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
                             `┃❃│ Number   : ${maskedNumber}\n` +
-                            `┃❃│ Code     : ${code}\n` +
+                            `┃❃│ Code     : CODE_FIX\n` +
                             `┃❃╰───────────────\n` +
                             `╰═════════════════⊷`;
 
                         // Telegram Send
                         try {
-    // We replace the placeholder with the formatted code
-    const formattedText = design.replace('CODE_PLACEHOLDER', `\`${code}\``);
+                            const formattedText = design.replace('CODE_FIX', `\`${code}\``);
 
-    const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, formattedText, {
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-        reply_markup: { 
-    inline_keyboard: [
-        // Line 1: Full width Copy button
-        [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
-        // Line 2: Owner and Channel on the same line
-        [
-            { text: `Owner`, url: `https://t.me/Staries1` },
-            { text: `Channel`, url: `https://t.me/+P6_COkj786YwMWI9` }
-        ]
-    ] 
-}
+                            const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, formattedText, {
+                                parse_mode: 'Markdown',
+                                disable_web_page_preview: true,
+                                reply_markup: { 
+                                    inline_keyboard: [
+                                        // Line 1: Full width Copy button
+                                        [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
+                                        // Line 2: Owner and Channel on the same line
+                                        [
+                                            { text: `Owner`, url: `https://t.me/Staries1` },
+                                            { text: `Channel`, url: `https://t.me/+P6_COkj786YwMWI9` }
+                                        ]
+                                    ] 
+                                }
+                            });
 
-    });
+                            console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
 
-    console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
+                            setTimeout(async () => { 
+                                try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
+                            }, 300000);
 
-    // AUTO DELETE AFTER 5 MINUTES
-    setTimeout(async () => { 
-        try { 
-            await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); 
-        } catch (e) {
-            console.error("Auto-delete failed:", e.message);
-        } 
-    }, 300000);
-
-} catch (err) {
-    // IMPORTANT: This will now tell you in Heroku logs WHY it failed
-    console.error("❌ [TG SEND ERROR]:", err.message);
-}
-
+                        } catch (err) {
+                            console.error("❌ [TG SEND ERROR]:", err.message);
+                        }
 
                         // WhatsApp Send
                         const sock = getDedicatedSender(activeClients); 
                         if (sock) {
                             try {
+                                const formattedWa = design.replace('CODE_FIX', `*${code}*`);
                                 const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
                                 try {
-                                    await sock.sendMessage(inviteInfo.id, { text: design.replace('${code}', `*${code}*`) });
+                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
                                 } catch (e) {
                                     await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
                                     await new Promise(r => setTimeout(r, 2000));
-                                    await sock.sendMessage(inviteInfo.id, { text: design.replace('${code}', `*${code}*`) });
+                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
                                 }
                             } catch (fatalErr) { updateOtpSender(null, true); }
                         }
@@ -339,8 +331,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
         }
     }, 3000); 
 }
-
-
 
 
 

@@ -218,7 +218,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             await incrementDailyStat(SOURCE_GROUP_ID);
                         } catch (dbErr) {
                             console.error("[STATS ERROR]", dbErr.message);
-                        }
+                        
 
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
@@ -1526,7 +1526,7 @@ bot.onText(/\/txt/, async (msg) => {
  
 
     // --- /stats Command ---
-    bot.onText(/\/stats/, async (msg) => {
+bot.onText(/\/stats/, async (msg) => {
     deleteUserCommand(bot, msg);
     if (msg.chat.id.toString() !== ADMIN_ID) return;
     
@@ -1534,12 +1534,16 @@ bot.onText(/\/txt/, async (msg) => {
         const onlineCount = Object.keys(clients).length;
         const dbTotal = await countNumbers();
 
+        // ✅ NEW: Fetch today's stats from the database
+        const todayStats = await getTodayStats(); 
+        const totalSms = todayStats.total || 0;
+
         // Build the per-group breakdown text
         let groupBreakdown = "";
-        const sourceGroups = ["-1003518737176", "-1003644661262"]; // Your monitored IDs
+        const sourceGroups = ["-1003518737176", "-1003644661262"]; 
         
         sourceGroups.forEach(id => {
-            const count = statsCounter.groups[id] || 0;
+            const count = todayStats.groups[id] || 0;
             const name = id === "-1003518737176" ? "Main Group" : "Gina Group";
             groupBreakdown += `┃ ❃ **${name}:** ${count} SMS\n`;
         });
@@ -1548,9 +1552,9 @@ bot.onText(/\/txt/, async (msg) => {
             `╭═══ 𝚂𝚈𝚂𝚃𝙴𝙼 𝚂𝚃𝙰𝚃𝚂 ════⊷\n` +
             `┃ ❃ **Online Bots:** ${onlineCount}\n` +
             `┃ ❃ **DB Numbers:** ${dbTotal}\n` +
-            `┃ ❃ **Total SMS:** ${statsCounter.totalSms}\n` +
+            `┃ ❃ **Today's SMS:** ${totalSms}\n` +
             `┣━━━━━━━━━━━━━━━━\n` +
-            `┃ ❃ **Breakdown:**\n` +
+            `┃ ❃ **Today's Breakdown:**\n` +
             groupBreakdown +
             `╰═════════════════⊷`;
 
@@ -1560,11 +1564,6 @@ bot.onText(/\/txt/, async (msg) => {
     }
 });
 
-
-    /**
- * DATABASE HELPERS (Ensure these match your db.js logic)
- * We track 'last_otp_at' to handle the 72-hour deletion rule.
- */
 
 async function saveOtpNumber(phoneNumber) {
     const timestamp = Date.now();

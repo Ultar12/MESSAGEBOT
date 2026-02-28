@@ -207,6 +207,19 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
                         recentCodes.set(code, now);
 
+
+                   if (code) {
+                        const now = Date.now();
+                        if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
+                        recentCodes.set(code, now);
+
+                        // ✅ NEW: Save to Database instead of memory
+                        try {
+                            await incrementDailyStat(SOURCE_GROUP_ID);
+                        } catch (dbErr) {
+                            console.error("[STATS ERROR]", dbErr.message);
+                        }
+
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
                             platform = "WA Business"; 
@@ -241,22 +254,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             fullCountry = countryMap[countryCode].name;
                             flagEmoji = countryMap[countryCode].flag;
                         }
-
-
-                                            if (code) {
-                        const now = Date.now();
-                        if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
-                        recentCodes.set(code, now);
-
-                        // ✅ NEW: Save to Database instead of memory
-                        try {
-                            await incrementDailyStat(SOURCE_GROUP_ID);
-                        } catch (dbErr) {
-                            console.error("[STATS ERROR]", dbErr.message);
-                        }
-
-                        let platform = "WhatsApp"; 
-                        // ... rest of your formatting and sending logic ...
 
 
                         // FIXED: Improved number extraction for the "VE - #WP" format

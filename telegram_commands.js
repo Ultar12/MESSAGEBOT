@@ -4568,7 +4568,7 @@ const cleanNumbers = matches.map(n => {
 
             await bot.answerCallbackQuery(query.id);
             await bot.editMessageText(
-                `🌍 **Country Selected: +${countryCode}**\n\n` +
+                `**Country Selected: +${countryCode}**\n\n` +
                 `How do you want to process these numbers?`, 
                 {
                     chat_id: chatId,
@@ -4576,9 +4576,9 @@ const cleanNumbers = matches.map(n => {
                     parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: '🟢 Streaming Mode (Check WA)', callback_data: 'xl_mode_stream' }],
-                            [{ text: '🟡 Normal Mode (Filter Only)', callback_data: 'xl_mode_normal' }],
-                            [{ text: '❌ Cancel', callback_data: 'cancel_action' }]
+                            [{ text: 'Streaming Mode (Check WA)', callback_data: 'xl_mode_stream' }],
+                            [{ text: 'Normal Mode (Filter Only)', callback_data: 'xl_mode_normal' }],
+                            [{ text: 'Cancel', callback_data: 'cancel_action' }]
                         ]
                     }
                 }
@@ -4677,9 +4677,11 @@ const cleanNumbers = matches.map(n => {
                             }
 
                             // 4. EXECUTE CHOSEN MODE
+                                                        // 4. EXECUTE CHOSEN MODE
                             if (isStreaming && sock) {
                                 totalProcessed++;
                                 try {
+                                    // Keep using fullPhone for the actual WA check
                                     const jid = `${fullPhone}@s.whatsapp.net`;
                                     
                                     // ANTI-FREEZE: 5 Second Timeout per number
@@ -4689,7 +4691,8 @@ const cleanNumbers = matches.map(n => {
                                     const [check] = await Promise.race([checkPromise, timeoutPromise]);
                                     
                                     if (check && check.exists) {
-                                        activeBatch.push(fullPhone);
+                                        // ✅ OUTPUT FIX: Push the stripped local number (res.num) instead of fullPhone
+                                        activeBatch.push(res.num);
                                         validCount++;
                                         if (activeBatch.length === 5) {
                                             await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
@@ -4697,17 +4700,19 @@ const cleanNumbers = matches.map(n => {
                                             await delay(1000); 
                                         }
                                     } else {
-                                        bannedNumbers.push(fullPhone);
+                                        // ✅ OUTPUT FIX: Banned list also uses stripped number
+                                        bannedNumbers.push(res.num);
                                     }
                                 } catch (err) {
-                                    bannedNumbers.push(fullPhone);
+                                    bannedNumbers.push(res.num);
                                 }
 
                                 if (totalProcessed % 5 === 0) await delay(500); // Anti-ban delay
 
                             } else {
                                 // NORMAL MODE
-                                activeBatch.push(fullPhone);
+                                // ✅ OUTPUT FIX: Push the stripped local number
+                                activeBatch.push(res.num);
                                 validCount++;
                                 if (activeBatch.length === 5) {
                                     await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
@@ -4715,6 +4720,7 @@ const cleanNumbers = matches.map(n => {
                                     await delay(800);
                                 }
                             }
+
                         }
                     }
                 }

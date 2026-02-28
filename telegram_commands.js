@@ -580,7 +580,7 @@ const userKeyboard = {
 const adminKeyboard = {
     keyboard: [
         [{ text: "Connect Account" }, { text: "List All" }],
-        [{ text: "Broadcast" }, { text: "Clear Contact List" }]
+        [{ text: "/stats" }, { text: "Clear Contact List" }]
     ],
     resize_keyboard: true
 };
@@ -4521,14 +4521,29 @@ const cleanNumbers = matches.map(n => {
                     bot.sendMessage(chatId, '[NORMAL MODE] Filtering numbers without WA check...');
                 }
 
-                // Build DB and Session Exclusion List
+                                // --- 📊 BUILD DB & SESSION EXCLUSION LIST (FORMAT FIXED) ---
                 const connectedSet = new Set();
                 Object.values(shortIdMap).forEach(session => {
-                    if (session.phone) connectedSet.add(session.phone.toString().replace(/\D/g, ''));
+                    const res = normalizeWithCountry(session.phone);
+                    if (res) {
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        connectedSet.add(fullPhone);
+                    }
                 });
                 
                 const allDbDocs = await getAllNumbers(); 
-                const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString().replace(/\D/g, '')));
+                const dbSet = new Set();
+                
+                allDbDocs.forEach(doc => {
+                    const rawStr = String(doc.number || doc).replace(/\D/g, '');
+                    const res = normalizeWithCountry(rawStr);
+                    if (res && res.num) {
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        dbSet.add(fullPhone);
+                    } else {
+                        dbSet.add(rawStr);
+                    }
+                });
 
                 // Download File
                 const fileLink = await bot.getFileLink(fileId);

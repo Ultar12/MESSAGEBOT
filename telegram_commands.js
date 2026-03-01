@@ -1036,6 +1036,88 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+    // --- /lastseen [number] ---
+    bot.onText(/\/lastseen\s+(\d+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        const targetNumber = match[1];
+        
+        // Find an active WhatsApp client
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) {
+            return bot.sendMessage(chatId, "❌ [ERROR] No WhatsApp bots connected.");
+        }
+
+        const sock = clients[activeFolders[0]]; // Use the first available bot
+        const jid = `${targetNumber}@s.whatsapp.net`;
+
+        try {
+            bot.sendMessage(chatId, `📡 [PULLING DATA] Requesting presence for ${targetNumber}...`);
+
+            // We wrap the event listener in a Promise so it doesn't freeze your bot
+            const presenceData = await new Promise(async (resolve) => {
+                // 1. Set a 5-second timeout. If WA doesn't reply, they are hiding their status.
+                const timeout = setTimeout(() => {
+                    sock.ev.off('presence.update', listener);
+                    resolve(null);
+                }, 5000);
+
+                // 2. Create the listener to catch the data when WhatsApp sends it
+                const listener = (update) => {
+                    if (update.id === jid) {
+                        clearTimeout(timeout);
+                        sock.ev.off('presence.update', listener); // Clean up memory
+                        resolve(update.presences[jid]); // Return the data
+                    }
+                };
+
+                // 3. Attach the listener
+                sock.ev.on('presence.update', listener);
+
+                // 4. Trigger WhatsApp to send the data
+                try {
+                    await sock.presenceSubscribe(jid);
+                } catch (e) {
+                    clearTimeout(timeout);
+                    sock.ev.off('presence.update', listener);
+                    resolve(null);
+                }
+            });
+
+            // --- 5. Format the Result ---
+            if (!presenceData) {
+                return bot.sendMessage(chatId, 
+                    `[RESULT] ${targetNumber}\n` +
+                    `Status: 👻 HIDDEN / OFFLINE\n` +
+                    `Note: This user has their Last Seen privacy set to 'Nobody' or you are not in their contacts.`
+                );
+            }
+
+            const status = presenceData.lastKnownPresence === 'available' ? '🟢 ONLINE' : '🔴 OFFLINE';
+            
+            let lastSeenText = "Unknown";
+            if (presenceData.lastSeen) {
+                // Baileys provides the timestamp in seconds, so we multiply by 1000 for JS
+                const date = new Date(presenceData.lastSeen * 1000);
+                lastSeenText = date.toLocaleString(); // Formats to local date and time
+            } else if (presenceData.lastKnownPresence === 'available') {
+                lastSeenText = "Right now";
+            }
+
+            bot.sendMessage(chatId, 
+                `[PRESENCE] ${targetNumber}\n` +
+                `Status: ${status}\n` +
+                `Last Seen: ${lastSeenText}`
+            );
+
+        } catch (e) {
+            bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
+        }
+    });
 
 
     // --- /ttx [Reply to file] ---

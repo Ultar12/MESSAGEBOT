@@ -292,7 +292,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                                         // Line 2: Owner and Channel on the same line
                                         [
                                             { text: `Owner`, url: `https://t.me/Staries1` },
-                                            { text: `Channel`, url: `https://t.me/+P6_COkj786YwMWI9` }
+                                            { text: `Channel`, url: `https://t.me/+P6_COkj786YwMWI` }
                                         ]
                                     ] 
                                 }

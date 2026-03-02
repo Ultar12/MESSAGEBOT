@@ -1410,7 +1410,166 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+        // --- /convt : Swaps file format between TXT and XLSX (Admin & Subadmin) ---
+    bot.onText(/\/convt/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // 1. Authorization
+        const isUserAdmin = (userId === ADMIN_ID);
+        const isSubAdmin = (SUBADMIN_IDS || []).includes(userId);
+        if (!isUserAdmin && !isSubAdmin) return;
+
+        // 2. Validate Input
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '❌ [ERROR] Reply to a file with /convt');
+        }
+
+        try {
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const fileName = msg.reply_to_message.document.file_name || '';
+
+            // ==========================================
+            // BRANCH A: CONVERT EXCEL TO TXT (SMART SORT)
+            // ==========================================
+            if (fileName.toLowerCase().endsWith('.xlsx')) {
+                bot.sendMessage(chatId, '⚙️ [SYSTEM] Extracting, sorting by country, and stripping codes...');
                 
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                
+                // Object to hold groups of numbers by their country code
+                const countryGroups = {}; 
+
+                data.forEach(row => {
+                    if (Array.isArray(row)) {
+                        row.forEach(cell => { 
+                            if(cell) {
+                                const cellStr = cell.toString();
+                                const matches = cellStr.match(/\d{7,15}/g);
+                                
+                                if (matches) {
+                                    matches.forEach(num => {
+                                        const res = normalizeWithCountry(num);
+                                        
+                                        if (res && res.code && res.code !== 'N/A') {
+                                            const code = res.code;
+                                            
+                                            // ✅ PERFECT STRIPPING: Use the clean local number from your normalizer
+                                            const cleanNum = res.num;
+
+                                            // Create the group if it doesn't exist yet
+                                            if (!countryGroups[code]) {
+                                                countryGroups[code] = {
+                                                    name: res.name,
+                                                    numbers: new Set() // Use Set to automatically remove duplicates!
+                                                };
+                                            }
+                                            // Add the clean number to its specific country group
+                                            countryGroups[code].numbers.add(cleanNum);
+                                        } else {
+                                            // Fallback for completely unknown formats
+                                            if (!countryGroups['Unknown']) {
+                                                countryGroups['Unknown'] = { name: 'Unknown', numbers: new Set() };
+                                            }
+                                            countryGroups['Unknown'].numbers.add(num);
+                                        }
+                                    });
+                                }
+                            } 
+                        });
+                    }
+                });
+
+                const codesFound = Object.keys(countryGroups);
+                if (codesFound.length === 0) {
+                    return bot.sendMessage(chatId, '[ERROR] No valid numbers found in the Excel file.');
+                }
+
+                bot.sendMessage(chatId, `[INFO] Found numbers from ${codesFound.length} different regions. Generating files...`);
+
+                // Loop through each country group and send a separate TXT file
+                for (const code of codesFound) {
+                    const group = countryGroups[code];
+                    // Convert the Set back to an Array so we can join it into text
+                    const uniqueNumbers = Array.from(group.numbers); 
+                    const count = uniqueNumbers.length;
+                    
+                    // Format the text for the Telegram caption
+                    let captionText = `**[CONVERT] XLSX to TXT Complete**\n\n`;
+                    
+                    if (code !== 'Unknown') {
+                        captionText += `**Country:** ${group.name}\n` +
+                                       `**Country Code:** +${code}\n`;
+                    } else {
+                        captionText += `**Country Code:** Unknown / Local\n`;
+                    }
+                    
+                    captionText += `**Total Numbers:** ${count}\n\n` +
+                                   `**OTP Grp:** [Tap to Join](https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t)`;
+
+                    // Send the perfectly clean TXT file for this specific country
+                    await bot.sendDocument(
+                        chatId, 
+                        Buffer.from(uniqueNumbers.join('\n')), 
+                        { 
+                            caption: captionText,
+                            parse_mode: 'Markdown' 
+                        }, 
+                        { 
+                            filename: `converted_${code === 'Unknown' ? 'unknown' : code}.txt`, 
+                            contentType: 'text/plain' 
+                        }
+                    );
+                    
+                    await delay(1200); // Safety delay to avoid Telegram flood limits
+                }
+                
+            } 
+            // ==========================================
+            // BRANCH B: CONVERT TXT TO EXCEL
+            // ==========================================
+            else {
+                bot.sendMessage(chatId, '[SYSTEM] Converting TXT to XLSX...');
+                const text = await response.text();
+                
+                // Extract all numbers
+                const matches = text.match(/\d{7,15}/g) || [];
+                
+                // Remove duplicates before converting to Excel
+                const uniqueMatches = Array.from(new Set(matches));
+                
+                const lines = uniqueMatches.map(l => [l]);
+                
+                const worksheet = XLSX.utils.aoa_to_sheet(lines);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Numbers");
+                
+                const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+                
+                await bot.sendDocument(
+                    chatId, 
+                    buffer, 
+                    { 
+                        caption: `**[CONVERT] TXT to XLSX Complete**\n **Total Unique Numbers:** ${uniqueMatches.length}`, 
+                        parse_mode: 'Markdown' 
+                    }, 
+                    { 
+                        filename: 'converted.xlsx', 
+                        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+                    }
+                );
+            }
+        } catch (e) {
+            bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
+        }
+    });
+            
 
     // --- /sendgroup [message] | [bot_count] | [group_link] ---
     // Executes a message send job across X bots with a 3-second delay between each bot.

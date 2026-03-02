@@ -4743,7 +4743,7 @@ const cleanNumbers = matches.map(n => {
                     }
                 }
 
-                // 8. Generate Summary Header
+                // 8. Generate                // 8. Generate Summary Header
                 let finalSummary = isAborted ? `[PROCESS ABORTED BY USER]\n\n` : `[PROCESS COMPLETE]\n\n`;
                 finalSummary += `Command Used: /${cmdType.toUpperCase()}\n`;
                 finalSummary += `Country Detected: ${detectedCountry} (+${detectedCode})\n`;
@@ -4751,30 +4751,64 @@ const cleanNumbers = matches.map(n => {
                 finalSummary += `Valid/Active: ${validCount}\n`;
                 if (isStreaming) finalSummary += `Banned/Dead: ${bannedNumbers.length}\n`;
                 finalSummary += `Skipped (Duplicates/DB): ${skippedConnectedCount}`;
+                finalSummary += `\n\nAlways save temporarily banned numbers so you can reuse them later.`;
 
-                await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown' });
-
-                // 9. Send Output Files (EFATAL FIX APPLIED)
+                // 9. Send Output Files as a Forwardable Album
                 if (outputAsFile) {
-                    if (activeFileArray.length > 0) {
+                    if (activeFileArray.length > 0 && isStreaming && bannedNumbers.length > 0) {
+                        
+                        // Write to temporary files to safely send as an album without EFATAL errors
+                        const tempActive = `./Active_WA_Numbers_${Date.now()}.txt`;
+                        const tempWeak = `./Weak_WA_Numbers_${Date.now()}.txt`;
+
+                        fs.writeFileSync(tempActive, activeFileArray.join('\n'));
+                        fs.writeFileSync(tempWeak, bannedNumbers.join('\n'));
+
+                        try {
+                            // Send as a single album. One tap forwards everything.
+                            await bot.sendMediaGroup(chatId, [
+                                {
+                                    type: 'document',
+                                    media: tempActive,
+                                    caption: finalSummary,
+                                    parse_mode: 'Markdown'
+                                },
+                                {
+                                    type: 'document',
+                                    media: tempWeak
+                                }
+                            ]);
+                        } catch (err) {
+                            // Fallback if Telegram rejects the album format
+                            await bot.sendDocument(chatId, tempActive, { caption: finalSummary, parse_mode: 'Markdown' });
+                            await bot.sendDocument(chatId, tempWeak);
+                        }
+
+                        // Clean up temporary files instantly
+                        if (fs.existsSync(tempActive)) fs.unlinkSync(tempActive);
+                        if (fs.existsSync(tempWeak)) fs.unlinkSync(tempWeak);
+
+                    } else if (activeFileArray.length > 0) {
                         const activeBuffer = Buffer.from(activeFileArray.join('\n'));
                         await bot.sendDocument(
                             chatId, 
                             activeBuffer, 
-                            { caption: `Active WA Numbers (${activeFileArray.length})` }, 
+                            { caption: finalSummary, parse_mode: 'Markdown' }, 
                             { filename: 'Active_WA_Numbers.txt', contentType: 'text/plain' }
                         );
-                        await delay(1000); 
-                    }
-                    if (isStreaming && bannedNumbers.length > 0) {
+                    } else if (isStreaming && bannedNumbers.length > 0) {
                         const deadBuffer = Buffer.from(bannedNumbers.join('\n'));
                         await bot.sendDocument(
                             chatId, 
                             deadBuffer, 
-                            { caption: `Weak Numbers (${bannedNumbers.length})` }, 
+                            { caption: finalSummary, parse_mode: 'Markdown' }, 
                             { filename: 'Weak_WA_Numbers.txt', contentType: 'text/plain' }
                         );
+                    } else {
+                        await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown' });
                     }
+                } else {
+                    await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown' });
                 }
 
             } catch (e) {
@@ -4782,6 +4816,7 @@ const cleanNumbers = matches.map(n => {
             }
             return;
         }
+
 
 
 

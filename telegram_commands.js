@@ -288,11 +288,11 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                                 reply_markup: { 
                                     inline_keyboard: [
                                         // Line 1: Full width Copy button
-                                        [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
+                                        [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         // Line 2: Owner and Channel on the same line
                                         [
-                                            { text: `Owner`, url: `https://t.me/Staries1` },
-                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1` }
+                                            { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
+                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
                                         ]
                                     ] 
                                 }

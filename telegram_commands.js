@@ -4745,12 +4745,10 @@ const cleanNumbers = matches.map(n => {
 
                 // 8. Generate                // 8. Generate Summary Header
                 let finalSummary = isAborted ? `[PROCESS ABORTED BY USER]\n\n` : `[PROCESS COMPLETE]\n\n`;
-                finalSummary += `Command Used: /${cmdType.toUpperCase()}\n`;
                 finalSummary += `Country Detected: ${detectedCountry} (+${detectedCode})\n`;
                 finalSummary += `Total Checked: ${totalChecked}\n`;
-                finalSummary += `Valid/Active: ${validCount}\n`;
-                if (isStreaming) finalSummary += `Banned/Dead: ${bannedNumbers.length}\n`;
-                finalSummary += `Skipped (Duplicates/DB): ${skippedConnectedCount}`;
+                finalSummary += `Active: ${validCount}\n`;
+                if (isStreaming) finalSummary += `Weak: ${bannedNumbers.length}\n`;
                 finalSummary += `\n\nAlways save temporarily banned numbers so you can reuse them later.`;
 
                 // 9. Send Output Files as a Forwardable Album

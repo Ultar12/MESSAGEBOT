@@ -4566,7 +4566,7 @@ const cleanNumbers = matches.map(n => {
             });
         }
 
-        // --- EXECUTION LOGIC FOR BOTH TXT AND TTX ---
+                // --- EXECUTION LOGIC FOR BOTH TXT AND TTX ---
         if (data.startsWith('txt_run_') || data.startsWith('ttx_run_')) {
             await bot.answerCallbackQuery(query.id);
             await bot.deleteMessage(chatId, query.message.message_id);
@@ -4666,6 +4666,10 @@ const cleanNumbers = matches.map(n => {
                     }
 
                     const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    
+                    // --- DYNAMIC OUTPUT FORMAT ---
+                    // If /txt, use stripped res.num. If /ttx, use fullPhone.
+                    const numberToOutput = cmdType === 'txt' ? res.num : fullPhone;
 
                     if (connectedSet.has(fullPhone) || dbSet.has(fullPhone)) {
                         skippedConnectedCount++;
@@ -4685,9 +4689,9 @@ const cleanNumbers = matches.map(n => {
                             if (check && check.exists) {
                                 validCount++;
                                 if (outputAsFile) {
-                                    activeFileArray.push(res.num);
+                                    activeFileArray.push(numberToOutput);
                                 } else {
-                                    activeBatch.push(res.num);
+                                    activeBatch.push(numberToOutput);
                                     if (activeBatch.length === 5) {
                                         await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
                                         activeBatch = []; 
@@ -4695,10 +4699,10 @@ const cleanNumbers = matches.map(n => {
                                     }
                                 }
                             } else {
-                                bannedNumbers.push(res.num);
+                                bannedNumbers.push(numberToOutput);
                             }
                         } catch (err) {
-                            bannedNumbers.push(res.num); 
+                            bannedNumbers.push(numberToOutput); 
                         }
 
                         if (totalChecked % 5 === 0) await delay(500); 
@@ -4707,9 +4711,9 @@ const cleanNumbers = matches.map(n => {
                         // NORMAL MODE LOGIC
                         validCount++;
                         if (outputAsFile) {
-                            activeFileArray.push(res.num); 
+                            activeFileArray.push(numberToOutput); 
                         } else {
-                            activeBatch.push(res.num); 
+                            activeBatch.push(numberToOutput); 
                             if (activeBatch.length === 5) {
                                 await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
                                 activeBatch = [];
@@ -4741,6 +4745,7 @@ const cleanNumbers = matches.map(n => {
 
                 // 8. Generate Summary Header
                 let finalSummary = isAborted ? `[PROCESS ABORTED BY USER]\n\n` : `[PROCESS COMPLETE]\n\n`;
+                finalSummary += `Command Used: /${cmdType.toUpperCase()}\n`;
                 finalSummary += `Country Detected: ${detectedCountry} (+${detectedCode})\n`;
                 finalSummary += `Total Checked: ${totalChecked}\n`;
                 finalSummary += `Valid/Active: ${validCount}\n`;
@@ -4749,24 +4754,26 @@ const cleanNumbers = matches.map(n => {
 
                 await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown' });
 
-                // 9. Send Output Files
+                // 9. Send Output Files (EFATAL FIX APPLIED)
                 if (outputAsFile) {
                     if (activeFileArray.length > 0) {
                         const activeBuffer = Buffer.from(activeFileArray.join('\n'));
-                        await bot.sendDocument(chatId, activeBuffer, { 
-                            caption: `Active WA Numbers (${activeFileArray.length})`, 
-                            filename: 'Active_WA_Numbers.txt',
-                            contentType: 'text/plain'
-                        });
+                        await bot.sendDocument(
+                            chatId, 
+                            activeBuffer, 
+                            { caption: `Valid and Active WA Numbers (${activeFileArray.length})` }, 
+                            { filename: 'Active_WA_Numbers.txt', contentType: 'text/plain' }
+                        );
                         await delay(1000); 
                     }
                     if (isStreaming && bannedNumbers.length > 0) {
                         const deadBuffer = Buffer.from(bannedNumbers.join('\n'));
-                        await bot.sendDocument(chatId, deadBuffer, { 
-                            caption: `Weak Numbers (${bannedNumbers.length})`, 
-                            filename: 'Weak_WA_Numbers.txt',
-                            contentType: 'text/plain'
-                        });
+                        await bot.sendDocument(
+                            chatId, 
+                            deadBuffer, 
+                            { caption: `Dead, Banned, or Invalid Numbers (${bannedNumbers.length})` }, 
+                            { filename: 'Dead_WA_Numbers.txt', contentType: 'text/plain' }
+                        );
                     }
                 }
 

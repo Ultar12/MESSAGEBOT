@@ -3893,28 +3893,29 @@ bot.onText(/\/pdf/, async (msg) => {
         }
     });
 
-        // --- LISTENER: Delete Message on Admin Reaction ---
+            // --- LISTENER: Delete Message on Admin Reaction ---
     bot.on('message_reaction', async (event) => {
-        // CRITICAL: The word 'event' MUST be in the brackets above (event)
-        
-        // Safety check
-        if (!event || !event.user) return;
+        try {
+            // Safety check for valid event structure
+            if (!event || !event.chat || !event.message_id) return;
 
-        // Check if Admin
-        // We trim() to ensure no spaces in .env cause issues
-        const reactorId = event.user.id.toString().trim();
-        const adminId = ADMIN_ID.toString().trim();
+            // Extract the user ID of the person who reacted
+            const reactorId = event.user ? event.user.id.toString().trim() : null;
+            if (!reactorId) return;
 
-        if (reactorId === adminId) {
-            try {
-                // Delete message
+            // Authorize both the Master Admin and Subadmins
+            const isAdmin = (reactorId === ADMIN_ID.toString().trim());
+            const isSubAdmin = (SUBADMIN_IDS || []).includes(reactorId);
+
+            // Only proceed if authorized AND a reaction was actually added (not removed)
+            if ((isAdmin || isSubAdmin) && event.new_reaction && event.new_reaction.length > 0) {
                 await bot.deleteMessage(event.chat.id, event.message_id);
-                console.log('[DELETED] Message ' + event.message_id);
-            } catch (e) {
-                // Ignore errors
             }
+        } catch (e) {
+            // Fails silently if the message was already deleted or bot lacks admin rights in a group
         }
     });
+
 
 
 
@@ -4746,10 +4747,11 @@ const cleanNumbers = matches.map(n => {
                 // 8. Generate                // 8. Generate Summary Header
                 let finalSummary = isAborted ? `[PROCESS ABORTED BY USER]\n\n` : `[PROCESS COMPLETE]\n\n`;
                 finalSummary += `Country Detected: ${detectedCountry} (+${detectedCode})\n`;
-                finalSummary += `Total Checked: ${totalChecked}\n`;
+                finalSummary += `Total Number: ${totalChecked}\n`;
                 finalSummary += `Active: ${validCount}\n`;
                 if (isStreaming) finalSummary += `Weak: ${bannedNumbers.length}\n`;
                 finalSummary += `\n\nAlways save temporarily banned numbers so you can reuse them later.`;
+                finalSummary += `\nOTP Grp: [Join](https://t.me/+MLS1oZxY6TtiMTQ1)`;
 
                 // 9. Send Output Files as a Forwardable Album
                 if (outputAsFile) {

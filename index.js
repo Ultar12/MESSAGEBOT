@@ -33,6 +33,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 let currentOtpSenderId = null; 
 const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
+const userAlertCache = {};
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
 const SESSIONS_DIR = './sessions';
 
@@ -848,6 +849,75 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     }
 
 }
+
+
+// --- GLOBAL USER INTERACTION MONITOR ---
+mainBot.on('message', async (msg) => {
+    const chatId = msg.chat.id.toString();
+    
+    // Ignore messages sent by the Admin or Subadmins to prevent spamming yourself
+    if (chatId === ADMIN_ID || (SUBADMIN_IDS || []).includes(chatId)) return;
+
+    // Extract user details
+    const username = msg.from.username ? `@${msg.from.username}` : (msg.from.first_name || 'Unknown');
+    
+    // Clean user text to prevent it from breaking Telegram's Markdown formatting
+    let rawText = msg.text || '[Sent a file or media]';
+    const cleanText = rawText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&'); 
+    
+    const now = Date.now();
+    const fifteenMinutes = 15 * 60 * 1000;
+
+    // Check if there is an active alert window for this user
+    if (userAlertCache[chatId] && (now - userAlertCache[chatId].lastTime < fifteenMinutes)) {
+        
+        // Append the new message to the history log
+        userAlertCache[chatId].history += `\n- ${cleanText}`;
+        userAlertCache[chatId].lastTime = now; // Reset the 15-minute timer
+
+        const alertMsg = 
+            `[USER INTERACTION - ACTIVE]\n` +
+            `User: ${username}\n` +
+            `ID: \`${chatId}\`\n\n` +
+            `Activity Log:\n${userAlertCache[chatId].history}`;
+            
+        try {
+            // Edit the existing message instead of sending a new one
+            await notificationBot.editMessageText(alertMsg, { 
+                chat_id: ADMIN_ID, 
+                message_id: userAlertCache[chatId].messageId,
+                parse_mode: 'Markdown' 
+            });
+        } catch (e) {
+            // Fails silently if the message content is exactly the same
+        }
+
+    } else {
+        
+        // No active window, or 15 mins passed: Create a NEW message
+        const historyStr = `- ${cleanText}`;
+        const alertMsg = 
+            `[USER INTERACTION]\n` +
+            `User: ${username}\n` +
+            `ID: \`${chatId}\`\n\n` +
+            `Activity Log:\n${historyStr}`;
+            
+        try {
+            // Send the new message and save its ID to the cache
+            const sentMsg = await notificationBot.sendMessage(ADMIN_ID, alertMsg, { parse_mode: 'Markdown' });
+            
+            userAlertCache[chatId] = {
+                messageId: sentMsg.message_id,
+                lastTime: now,
+                history: historyStr
+            };
+        } catch (e) {
+            // Fails silently if rate limited
+        }
+    }
+});
+
+
 
 async function boot() {
     await initDb(); 

@@ -4761,7 +4761,7 @@ const cleanNumbers = matches.map(n => {
                         await bot.sendDocument(
                             chatId, 
                             activeBuffer, 
-                            { caption: `Valid and Active WA Numbers (${activeFileArray.length})` }, 
+                            { caption: `Active WA Numbers (${activeFileArray.length})` }, 
                             { filename: 'Active_WA_Numbers.txt', contentType: 'text/plain' }
                         );
                         await delay(1000); 
@@ -4771,8 +4771,8 @@ const cleanNumbers = matches.map(n => {
                         await bot.sendDocument(
                             chatId, 
                             deadBuffer, 
-                            { caption: `Dead, Banned, or Invalid Numbers (${bannedNumbers.length})` }, 
-                            { filename: 'Dead_WA_Numbers.txt', contentType: 'text/plain' }
+                            { caption: `Weak Numbers (${bannedNumbers.length})` }, 
+                            { filename: 'Weak_WA_Numbers.txt', contentType: 'text/plain' }
                         );
                     }
                 }

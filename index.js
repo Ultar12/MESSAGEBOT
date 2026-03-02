@@ -819,14 +819,34 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     });
 
 
-    if (targetNumber && !sock.authState.creds.registered) {
+        if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(targetNumber);
-                if (chatId) mainBot.sendMessage(chatId, `Code: \`${code}\``, { parse_mode: 'Markdown' });
-            } catch (e) {}
+                // Insert a dash in the middle to make it easier to read (e.g., ABCD-EFGH)
+                const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
+
+                if (chatId) {
+                    mainBot.sendMessage(chatId, 
+                        `[PAIRING CODE GENERATED]\n\n` +
+                        `Your code is: **${formattedCode}**\n\n` +
+                        `Tap the button below to copy the code, then open the WhatsApp notification on your phone to link the device.`, 
+                        { 
+                            parse_mode: 'Markdown',
+                            reply_markup: {
+                                inline_keyboard: [
+                                    [{ text: `Copy Code: ${code}`, copy_text: { text: code } }]
+                                ]
+                            }
+                        }
+                    );
+                }
+            } catch (e) {
+                if (chatId) mainBot.sendMessage(chatId, `[ERROR] Failed to request pairing code. Please ensure the number is correct and try again.`);
+            }
         }, 3000);
     }
+
 }
 
 async function boot() {

@@ -770,44 +770,38 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
                         // ... inside sock.ev.on('connection.update', async (update) => { ...
 
-            if (isPermanentDisconnect) {
-                const disconnectStatus = (reason === 403) ? 'BANNED/BLOCKED' : 'LOGGED OUT/BAD SESSION';
+                        if (isPermanentDisconnect) {
+                // Determine the exact reason
+                const isBanned = (reason === 403 || String(lastDisconnect?.error).includes('403'));
+                const disconnectStatus = isBanned ? '[BANNED / BLOCKED]' : '[LOGGED OUT / BAD SESSION]';
 
-                // 1. Suppression: NO immediate notification sent to Admin OR Subadmin.
-                
-                // 2. Handle Admin Alert (Buffering)
-                if (disconnectStatus === 'BANNED/BLOCKED') {
-                    // --- BATCH BAN LOGIC (15 MIN) ---
-                    // **FIXED LOGIC**: Pushes the raw phone number (including country code)
-                    bannedNumbersBuffer.push(phoneNumber); 
-                    if (!banSummaryTimeout) {
-                        // ACTION: Set to 15 minutes (15 * 60 * 1000)
-                        banSummaryTimeout = setTimeout(sendBanSummary, 15 * 60 * 1000); 
-                    }
-                    
-                } else {
-                    // ... keep your existing DISCONNECT BUFFER LOGIC here if you want to use it ...
-                    disconnectedNumbersBuffer.push({ 
-                        shortId: cachedShortId, 
-                        number: phoneNumber, 
-                        status: disconnectStatus 
-                    });
-                    if (!disconnectSummaryTimeout) {
-                         // ACTION: Set to 15 minutes (15 * 60 * 1000)
-                         disconnectSummaryTimeout = setTimeout(sendDisconnectSummary, 15 * 60 * 1000); 
-                    }
+                // 1. IMMEDIATE ADMIN NOTIFICATION
+                const alertMessage = 
+                    `**[ACCOUNT LOST]**\n\n` +
+                    `**Number:** +${phoneNumber}\n` +
+                    `**Status:** ${disconnectStatus}\n` +
+                    `**Session ID:** \`${cachedShortId}\`\n\n` +
+                    `*Session data has been wiped from the server.*`;
+
+                try {
+                    await mainBot.sendMessage(ADMIN_ID, alertMessage, { parse_mode: 'Markdown' });
+                    // Optional: If you want subadmins to be notified when their specific bot dies, uncomment below:
+                    // if (chatId && chatId !== ADMIN_ID) {
+                    //     await mainBot.sendMessage(chatId, alertMessage, { parse_mode: 'Markdown' });
+                    // }
+                } catch (err) {
+                    console.error("Failed to send instant disconnect alert:", err.message);
                 }
-    
 
-                
-                // 3. Perform Cleanup
-                await deductOnDisconnect(folder);
+                // 2. Perform Cleanup
+                try { await deductOnDisconnect(folder); } catch(e) {}
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
                 if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
                 delete clients[folder];
 
             } else {
+
                 // If it's a temporary disconnect (e.g., network error), we only attempt restart.
                 // WE DO NOT SEND ANY NOTIFICATION (temporary disconnect is now silent).
                 

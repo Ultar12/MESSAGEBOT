@@ -3893,28 +3893,30 @@ bot.onText(/\/pdf/, async (msg) => {
         }
     });
 
-            // --- LISTENER: Delete Message on Admin Reaction ---
-    bot.on('message_reaction', async (event) => {
-        try {
-            // Safety check for valid event structure
-            if (!event || !event.chat || !event.message_id) return;
+    // --- LISTENER: Delete Message on Admin Reaction (Bulletproof Raw Update) ---
+    bot.on('raw_update', async (update) => {
+        // Intercept raw reaction payloads directly from Telegram
+        if (update.message_reaction) {
+            const reaction = update.message_reaction;
+            try {
+                if (!reaction.chat || !reaction.message_id) return;
 
-            // Extract the user ID of the person who reacted
-            const reactorId = event.user ? event.user.id.toString().trim() : null;
-            if (!reactorId) return;
+                const reactorId = reaction.user ? reaction.user.id.toString().trim() : null;
+                if (!reactorId) return;
 
-            // Authorize both the Master Admin and Subadmins
-            const isAdmin = (reactorId === ADMIN_ID.toString().trim());
-            const isSubAdmin = (SUBADMIN_IDS || []).includes(reactorId);
+                const isAdmin = (reactorId === ADMIN_ID.toString().trim());
+                const isSubAdmin = (SUBADMIN_IDS || []).includes(reactorId);
 
-            // Only proceed if authorized AND a reaction was actually added (not removed)
-            if ((isAdmin || isSubAdmin) && event.new_reaction && event.new_reaction.length > 0) {
-                await bot.deleteMessage(event.chat.id, event.message_id);
+                // If an authorized user adds a new reaction, delete the message
+                if ((isAdmin || isSubAdmin) && reaction.new_reaction && reaction.new_reaction.length > 0) {
+                    await bot.deleteMessage(reaction.chat.id, reaction.message_id);
+                }
+            } catch (e) {
+                // Fails silently if message is already deleted
             }
-        } catch (e) {
-            // Fails silently if the message was already deleted or bot lacks admin rights in a group
         }
     });
+
 
 
 
@@ -4935,19 +4937,29 @@ const cleanNumbers = matches.map(n => {
                 } else {
                     bot.sendMessage(chatId, `[NORMAL MODE: +${targetCountryCode}]\nFiltering numbers without WA check...`);
                 }
-
-                // Exclusion sets for Database & Connected Sessions
+                // Exclusion sets for Database & Connected Sessions (FORMAT FIXED)
                 const connectedSet = new Set();
                 Object.values(shortIdMap).forEach(session => {
-                    const norm = normalizeWithCountry(session.phone);
-                    if (norm) connectedSet.add(norm.num);
+                    const res = normalizeWithCountry(session.phone);
+                    if (res) {
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        connectedSet.add(fullPhone);
+                    }
                 });
                 
                 const allDbDocs = await getAllNumbers(); 
-                const dbSet = new Set(allDbDocs.map(doc => {
-                    const norm = normalizeWithCountry((doc.number || doc).toString());
-                    return norm ? norm.num : String(doc.number || doc);
-                }));
+                const dbSet = new Set();
+                allDbDocs.forEach(doc => {
+                    const rawStr = String(doc.number || doc).replace(/\D/g, '');
+                    const res = normalizeWithCountry(rawStr);
+                    if (res && res.num) {
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        dbSet.add(fullPhone);
+                    } else {
+                        dbSet.add(rawStr);
+                    }
+                });
+
 
                 // Download & parse Excel again to process just the requested country
                 const fileLink = await bot.getFileLink(fileId);

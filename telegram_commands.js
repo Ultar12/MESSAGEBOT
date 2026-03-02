@@ -302,7 +302,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                             setTimeout(async () => { 
                                 try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
-                            }, 3600000);
+                            }, 86400000);
 
                         } catch (err) {
                             console.error("❌ [TG SEND ERROR]:", err.message);

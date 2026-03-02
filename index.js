@@ -622,7 +622,8 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             delete qrActiveState[folder];
         }
         
-        if (qr && chatId && !qrActiveState[folder]) {
+         if (qr && chatId && !qrActiveState[folder] && !targetNumber) {
+
             qrActiveState[folder] = true;
             try {
                 if (qrMessageCache[folder]) try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}

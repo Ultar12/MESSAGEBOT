@@ -4878,23 +4878,22 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                // --- XL COMMAND: COUNTRY SELECTION ---
+                // --- XL COMMAND: STEP 1 (COUNTRY SELECTION) ---
         if (data.startsWith('xl_c_')) {
             const countryCode = data.replace('xl_c_', '');
             userState[chatId + '_xl_country'] = countryCode;
 
             await bot.answerCallbackQuery(query.id);
             await bot.editMessageText(
-                `**Country Selected: +${countryCode}**\n\n` +
-                `How do you want to process these numbers?`, 
+                `[COUNTRY SELECTED: +${countryCode}]\n\nSelect checking mode:`,
                 {
                     chat_id: chatId,
                     message_id: query.message.message_id,
                     parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: 'Streaming Mode (Check WA)', callback_data: 'xl_mode_stream' }],
-                            [{ text: 'Normal Mode (Filter Only)', callback_data: 'xl_mode_normal' }],
+                            [{ text: 'Streaming Mode (Check WA)', callback_data: 'xl_m_stream' }],
+                            [{ text: 'Normal Mode (Filter Only)', callback_data: 'xl_m_normal' }],
                             [{ text: 'Cancel', callback_data: 'cancel_action' }]
                         ]
                     }
@@ -4903,26 +4902,45 @@ const cleanNumbers = matches.map(n => {
             return;
         }
 
-        // --- XL COMMAND: MODE SELECTION & EXECUTION ---
-        if (data === 'xl_mode_stream' || data === 'xl_mode_normal') {
+        // --- XL COMMAND: STEP 2 (MODE SELECTION) ---
+        if (data.startsWith('xl_m_')) {
+            const selectedMode = data.replace('xl_m_', ''); 
+            userState[chatId + '_xl_mode'] = selectedMode;
+
+            return bot.editMessageText(`[OUTPUT STYLE]\nHow do you want to receive the numbers?`, {
+                chat_id: chatId,
+                message_id: query.message.message_id,
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'Send as .TXT Files', callback_data: 'xl_run_file' }],
+                        [{ text: 'Send in Chat Batches', callback_data: 'xl_run_batch' }],
+                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                    ]
+                }
+            });
+        }
+
+        // --- XL COMMAND: STEP 3 (EXECUTION) ---
+        if (data.startsWith('xl_run_')) {
             await bot.answerCallbackQuery(query.id);
             await bot.deleteMessage(chatId, query.message.message_id);
 
             const fileId = userState[chatId + '_xl_file'];
             const targetCountryCode = userState[chatId + '_xl_country'];
+            const selectedMode = userState[chatId + '_xl_mode'];
             
-            if (!fileId || !targetCountryCode) {
+            if (!fileId || !targetCountryCode || !selectedMode) {
                 return bot.sendMessage(chatId, '[ERROR] Session expired. Please reply to the file with /xl again.');
             }
 
-            // Clear state so it doesn't get stuck
             userState[chatId + '_xl_file'] = null;
             userState[chatId + '_xl_country'] = null;
+            userState[chatId + '_xl_mode'] = null;
 
-            const isStreaming = data === 'xl_mode_stream';
+            const isStreaming = selectedMode === 'stream';
+            const outputAsFile = data.includes('file');
 
             try {
-                // Determine socket if streaming
                 let sock = null;
                 if (isStreaming) {
                     const activeFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId);
@@ -4937,11 +4955,13 @@ const cleanNumbers = matches.map(n => {
                 } else {
                     bot.sendMessage(chatId, `[NORMAL MODE: +${targetCountryCode}]\nFiltering numbers without WA check...`);
                 }
-                // Exclusion sets for Database & Connected Sessions (FORMAT FIXED)
+
+                // HYPER-AGGRESSIVE EXCLUSION LIST: Stores Raw, Local, and International variants
                 const connectedSet = new Set();
                 Object.values(shortIdMap).forEach(session => {
                     const res = normalizeWithCountry(session.phone);
                     if (res) {
+                        connectedSet.add(res.num);
                         const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
                         connectedSet.add(fullPhone);
                     }
@@ -4951,17 +4971,15 @@ const cleanNumbers = matches.map(n => {
                 const dbSet = new Set();
                 allDbDocs.forEach(doc => {
                     const rawStr = String(doc.number || doc).replace(/\D/g, '');
+                    dbSet.add(rawStr); 
                     const res = normalizeWithCountry(rawStr);
                     if (res && res.num) {
+                        dbSet.add(res.num); 
                         const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                        dbSet.add(fullPhone);
-                    } else {
-                        dbSet.add(rawStr);
+                        dbSet.add(fullPhone); 
                     }
                 });
 
-
-                // Download & parse Excel again to process just the requested country
                 const fileLink = await bot.getFileLink(fileId);
                 const response = await fetch(fileLink);
                 const buffer = await response.buffer();
@@ -4970,96 +4988,98 @@ const cleanNumbers = matches.map(n => {
                 const excelData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
                 let activeBatch = []; 
+                let activeFileArray = [];
                 const bannedNumbers = []; 
                 let totalProcessed = 0;
                 let validCount = 0;
                 let skippedCount = 0;
 
-                // Loop through Excel Data
+                userState[chatId + '_stopFlag'] = false;
+
                 for (const row of excelData) {
+                    if (userState[chatId + '_stopFlag']) break;
                     if (!Array.isArray(row)) continue;
                     
                     for (const cell of row) {
+                        if (userState[chatId + '_stopFlag']) break;
                         if (!cell) continue;
                         
                         const cellStr = cell.toString();
                         const matches = cellStr.match(/\d{7,15}/g) || [];
                         
                         for (const rawNum of matches) {
+                            if (userState[chatId + '_stopFlag']) break;
+
                             const res = normalizeWithCountry(rawNum);
                             
-                            // 1. SKIP INVALID NUMBERS
                             if (!res || !res.num) continue;
-                            
-                            // 2. SKIP IF IT DOES NOT MATCH THE BUTTON YOU CLICKED
                             if (res.code !== targetCountryCode) continue;
 
-                            // Format correctly (e.g., 234...)
                             const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
 
-                            // 3. FILTER DB AND CONNECTED
-                            if (connectedSet.has(fullPhone) || dbSet.has(fullPhone)) {
+                            // STRICT FILTER: Checks all 3 possible variations of the number
+                            if (connectedSet.has(fullPhone) || connectedSet.has(res.num) || dbSet.has(fullPhone) || dbSet.has(res.num) || dbSet.has(rawNum)) {
                                 skippedCount++;
                                 continue;
                             }
 
-                            // 4. EXECUTE CHOSEN MODE
-                                                        // 4. EXECUTE CHOSEN MODE
                             if (isStreaming && sock) {
                                 totalProcessed++;
                                 try {
-                                    // Keep using fullPhone for the actual WA check
                                     const jid = `${fullPhone}@s.whatsapp.net`;
-                                    
-                                    // ANTI-FREEZE: 5 Second Timeout per number
                                     const checkPromise = sock.onWhatsApp(jid);
                                     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
                                     
                                     const [check] = await Promise.race([checkPromise, timeoutPromise]);
                                     
                                     if (check && check.exists) {
-                                        // ✅ OUTPUT FIX: Push the stripped local number (res.num) instead of fullPhone
-                                        activeBatch.push(res.num);
                                         validCount++;
-                                        if (activeBatch.length === 5) {
-                                            await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                                            activeBatch = []; 
-                                            await delay(1000); 
+                                        if (outputAsFile) {
+                                            activeFileArray.push(res.num);
+                                        } else {
+                                            activeBatch.push(res.num);
+                                            if (activeBatch.length === 5) {
+                                                await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                                activeBatch = []; 
+                                                await delay(1000); 
+                                            }
                                         }
                                     } else {
-                                        // ✅ OUTPUT FIX: Banned list also uses stripped number
                                         bannedNumbers.push(res.num);
                                     }
                                 } catch (err) {
                                     bannedNumbers.push(res.num);
                                 }
 
-                                if (totalProcessed % 5 === 0) await delay(500); // Anti-ban delay
+                                if (totalProcessed % 5 === 0) await delay(500); 
 
                             } else {
-                                // NORMAL MODE
-                                // ✅ OUTPUT FIX: Push the stripped local number
-                                activeBatch.push(res.num);
+                                totalProcessed++;
                                 validCount++;
-                                if (activeBatch.length === 5) {
-                                    await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                                    activeBatch = [];
-                                    await delay(800);
+                                if (outputAsFile) {
+                                    activeFileArray.push(res.num);
+                                } else {
+                                    activeBatch.push(res.num);
+                                    if (activeBatch.length === 5) {
+                                        await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                        activeBatch = [];
+                                        await delay(800);
+                                    }
                                 }
                             }
-
                         }
                     }
                 }
 
-                // Flush remaining numbers
-                if (activeBatch.length > 0) {
+                const isAborted = userState[chatId + '_stopFlag'];
+                userState[chatId + '_stopFlag'] = false;
+
+                if (!outputAsFile && activeBatch.length > 0) {
                     await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
                 }
 
-                // Print Banned Report
-                if (isStreaming && sock && bannedNumbers.length > 0) {
-                    await bot.sendMessage(chatId, `**[BANNED / DEAD]** (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
+                if (!outputAsFile && isStreaming && sock && bannedNumbers.length > 0) {
+                    await bot.sendMessage(chatId, `[BANNED / DEAD] (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
                     for (let i = 0; i < bannedNumbers.length; i += 10) {
                         const chunk = bannedNumbers.slice(i, i + 10);
                         if (chunk.length > 0) {
@@ -5069,22 +5089,80 @@ const cleanNumbers = matches.map(n => {
                     }
                 }
 
-                // Final Summary
-                bot.sendMessage(chatId, 
-                    `**XL PROCESS COMPLETE**\n\n` +
-                    `Target: +${targetCountryCode}\n` +
-                    `Total Checked: ${isStreaming ? totalProcessed : validCount}\n` +
-                    `Valid/Active: ${validCount}\n` +
-                    (isStreaming ? `Banned/Dead: ${bannedNumbers.length}\n` : '') +
-                    `Skipped (Duplicates/DB): ${skippedCount}`, 
-                    { parse_mode: 'Markdown' }
-                );
+                let finalSummary = isAborted ? `[PROCESS ABORTED BY USER]\n\n` : `[PROCESS COMPLETE]\n\n`;
+                finalSummary += `Command Used: /XL\n`;
+                finalSummary += `Target: +${targetCountryCode}\n`;
+                finalSummary += `Total Checked: ${totalProcessed}\n`;
+                finalSummary += `Active: ${validCount}\n`;
+                if (isStreaming) finalSummary += `Weak: ${bannedNumbers.length}\n`;
+                finalSummary += `Skipped (Duplicates/DB): ${skippedCount}`;
+                finalSummary += `\n\nAlways save temporarily banned numbers so you can reuse them later.`;
+                finalSummary += `\nOTP Grp: [Join](https://t.me/+MLS1oZxY6TtiMTQ1)`;
+
+                if (outputAsFile) {
+                    if (activeFileArray.length > 0 && isStreaming && bannedNumbers.length > 0) {
+                        
+                        const tempDir = `./tmp_xl_${Date.now()}_${chatId}`;
+                        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+                        
+                        const tempActive = `${tempDir}/Active_WA_Numbers.txt`;
+                        const tempWeak = `${tempDir}/Weak_WA_Numbers.txt`;
+
+                        fs.writeFileSync(tempActive, activeFileArray.join('\n'));
+                        fs.writeFileSync(tempWeak, bannedNumbers.join('\n'));
+
+                        try {
+                            await bot.sendMediaGroup(chatId, [
+                                {
+                                    type: 'document',
+                                    media: tempActive,
+                                    caption: finalSummary,
+                                    parse_mode: 'Markdown'
+                                },
+                                {
+                                    type: 'document',
+                                    media: tempWeak
+                                }
+                            ]);
+                        } catch (err) {
+                            await bot.sendDocument(chatId, tempActive, { caption: finalSummary, parse_mode: 'Markdown' });
+                            await bot.sendDocument(chatId, tempWeak);
+                        }
+
+                        if (fs.existsSync(tempActive)) fs.unlinkSync(tempActive);
+                        if (fs.existsSync(tempWeak)) fs.unlinkSync(tempWeak);
+                        if (fs.existsSync(tempDir)) fs.rmdirSync(tempDir);
+
+                    } else if (activeFileArray.length > 0) {
+                        const activeBuffer = Buffer.from(activeFileArray.join('\n'));
+                        await bot.sendDocument(
+                            chatId, 
+                            activeBuffer, 
+                            { caption: finalSummary, parse_mode: 'Markdown' }, 
+                            { filename: 'Active_WA_Numbers.txt', contentType: 'text/plain' }
+                        );
+                    } else if (isStreaming && bannedNumbers.length > 0) {
+                        const deadBuffer = Buffer.from(bannedNumbers.join('\n'));
+                        await bot.sendDocument(
+                            chatId, 
+                            deadBuffer, 
+                            { caption: finalSummary, parse_mode: 'Markdown' }, 
+                            { filename: 'Weak_WA_Numbers.txt', contentType: 'text/plain' }
+                        );
+                    } else {
+                        await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown' });
+                    }
+                } else {
+                    await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown' });
+                }
 
             } catch (e) {
-                bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
+                bot.sendMessage(chatId, `[ERROR] ${e.message}`);
             }
             return;
         }
+        
+                                    
 
 
         // Handle withdrawal approval

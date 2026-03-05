@@ -4217,15 +4217,11 @@ const cleanNumbers = matches.map(n => {
             return; // Exit here so this message isn't processed as a regular command
         }
 
-        // --- START OF FIX: Handle State-Dependent Input BEFORE restrictions ---
-
-     if (userState[chatId] === 'WAITING_PAIR') {
+                if (userState[chatId] === 'WAITING_PAIR') {
             const number = text.replace(/[^0-9]/g, '');
             if (number.length < 10) return sendMenu(bot, chatId, 'Invalid number.');
             
             // CHECK 1: Verify CAPTCHA if not admin/subadmin
-            // FIX: The verification bypass now includes both Admin and Subadmin roles.
-            // CHECK 1: Verify CAPTCHA if not admin/subadmin. 
             if (userId !== ADMIN_ID && !isSubAdmin) { 
                 const dbVerified = await isUserVerified(userId);
                 if (!dbVerified) {
@@ -4235,18 +4231,37 @@ const cleanNumbers = matches.map(n => {
                 }
             }
             
-            // CHECK 2: Check if number already exists
+            // CHECK 2: Smart Overwrite for Offline Sessions (Fixes the "Already exists" error)
             const existingSession = Object.values(shortIdMap).find(s => s.phone === number);
             if (existingSession) {
                 const existingId = Object.keys(shortIdMap).find(k => shortIdMap[k] === existingSession);
-                return sendMenu(bot, chatId, '[ERROR] Number +' + number + ' is already connected as ID: ' + existingId);
+                
+                // If the bot is currently ONLINE and working, block the new pairing
+                if (clients[existingSession.folder]) {
+                    return sendMenu(bot, chatId, `[ERROR] Number +${number} is already active and ONLINE as ID: ${existingId}`);
+                } else {
+                    // If it is OFFLINE, wipe the old memory so the user can re-link immediately
+                    bot.sendMessage(chatId, `[SYSTEM] Offline session detected for +${number}. Clearing old data to allow re-linking...`);
+                    
+                    // Remove from active memory map to bypass the block
+                    delete shortIdMap[existingId];
+                    
+                    // Delete the broken authentication folder from the server to prevent credential conflicts
+                    try {
+                        if (fs.existsSync(existingSession.folder)) {
+                            fs.rmSync(existingSession.folder, { recursive: true, force: true });
+                        }
+                    } catch (e) {
+                        console.error("[CLEANUP ERROR]", e.message);
+                    }
+                }
             }
             
             userState[chatId] = null;
             bot.sendMessage(chatId, 'Initializing +' + number + '...', getKeyboard(chatId));
             const sessionId = makeSessionId();
             
-            // Start the client
+            // Start the new client
             startClient(sessionId, number, chatId, userId);
             
             // --- AUTO ENABLE ANTI-MSG ON CONNECT (PAIRING CODE) ---
@@ -4261,18 +4276,6 @@ const cleanNumbers = matches.map(n => {
             return;
         }
 
-
-        if (userState[chatId] === 'WAITING_BANK_DETAILS') {
-            const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-            if (lines.length < 3) {
-                return bot.sendMessage(chatId, '[ERROR] Send 3 lines: Bank Name, Account Number, Account Name');
-            }
-            const [bankName, accNum, accName] = lines;
-            await updateBank(userId, bankName, accNum, accName);
-            userState[chatId] = null;
-            sendMenu(bot, chatId, '[SUCCESS] Bank details saved.');
-            return;
-        }
 
 
                 // --- 🌍 SMART UNIVERSAL SAVE (Bulk Forward Support) ---

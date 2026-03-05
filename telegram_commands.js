@@ -35,6 +35,7 @@ const apiId = parseInt(process.env.TELEGRAM_API_ID);
 // Add these to handle bulk forwards without spamming
 const vzBuffer = {}; 
 const vzTimer = {};
+const mergeBuffer = {}; // <-- ADD THIS LINE FOR THE FILE MERGER
 const apiHash = process.env.TELEGRAM_API_HASH;
 const stringSession = new StringSession(process.env.TELEGRAM_SESSION || ""); 
 // Initialize UserBot (Call this once in your index.js or startup)
@@ -1145,6 +1146,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     // --- /txt [Reply to file] ---
+    bot.    // --- /txt [Reply to file] ---
     bot.onText(/\/txt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1163,25 +1165,59 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             return bot.sendMessage(chatId, '[ERROR] This is an Excel file. Please use /xl instead.');
         }
 
-        userState[chatId + '_txt_file'] = msg.reply_to_message.document.file_id;
+        const fileId = msg.reply_to_message.document.file_id;
+        userState[chatId + '_txt_file'] = fileId;
 
-        bot.sendMessage(chatId, 
-            `*Select TXT Processing Mode:*\n\n` +
-            `*Streaming Mode:* Deep checks numbers on WA.\n` +
-            `*Normal Mode:* Only filters out DB/Connected.\n\n` +
-            `*Note: Cross-country formatting is enabled automatically.*`, 
-            {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: 'Streaming Mode (Check WA)', callback_data: 'txt_menu_stream' }],
-                        [{ text: 'Normal Mode (Filter Only)', callback_data: 'txt_menu_normal' }],
-                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
-                    ]
+        // --- NEW: QUICK PRE-ANALYSIS ---
+        let statusMsg = await bot.sendMessage(chatId, '⏳ Analyzing file...');
+        try {
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const rawText = await response.text();
+            
+            // Extract and count unique numbers quickly
+            const rawMatches = rawText.match(/\d{7,15}/g) || [];
+            const uniqueNumbers = Array.from(new Set(rawMatches));
+            
+            let detectedCountry = "Unknown";
+            let detectedCode = "N/A";
+            
+            // Fast loop to find the first identifiable country for the prompt
+            for (const num of uniqueNumbers) {
+                const res = normalizeWithCountry(num);
+                if (res && res.name && res.name !== "Local/Unknown") {
+                    detectedCountry = res.name;
+                    detectedCode = res.code;
+                    break; 
                 }
             }
-        );
+
+            await bot.deleteMessage(chatId, statusMsg.message_id);
+
+            bot.sendMessage(chatId, 
+                `**FILE ANALYSIS**\n` +
+                `Total Input Found: ${uniqueNumbers.length}\n` +
+                `Country Detected: ${detectedCountry} (+${detectedCode})\n\n` +
+                `*Select TXT Processing Mode:*\n\n` +
+                `*Streaming Mode:* Deep checks numbers on WA.\n` +
+                `*Normal Mode:* Only filters out DB/Connected.`, 
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: 'Streaming Mode (Check WA)', callback_data: 'txt_menu_stream' }],
+                            [{ text: 'Normal Mode (Filter Only)', callback_data: 'txt_menu_normal' }],
+                            [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                        ]
+                    }
+                }
+            );
+
+        } catch (e) {
+            bot.sendMessage(chatId, `[ERROR] Failed to analyze file: ${e.message}`);
+        }
     });
+
 
     // --- /ttx [Reply to file] ---
     bot.onText(/\/ttx/, async (msg) => {
@@ -1217,6 +1253,72 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     });
 
+
+
+        // --- /addfile : File Merger Command ---
+    bot.onText(/\/addfile/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .vcf file with /addfile to bank its numbers.');
+        }
+
+        try {
+            bot.sendMessage(chatId, '[PROCESSING] Extracting numbers for merge...');
+
+            const fileId = msg.reply_to_message.document.file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const response = await fetch(fileLink);
+            const rawText = await response.text();
+
+            const matches = rawText.match(/\d{7,15}/g) || [];
+            
+            if (matches.length === 0) {
+                return bot.sendMessage(chatId, '[ERROR] No valid numbers found in this file.');
+            }
+
+            // Initialize the memory buffer if it's empty
+            if (!mergeBuffer[chatId]) mergeBuffer[chatId] = new Set();
+
+            let addedCount = 0;
+            for (const num of matches) {
+                const res = normalizeWithCountry(num);
+                if (res && res.num) {
+                    // Standardize formatting before saving
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    if (!mergeBuffer[chatId].has(fullPhone)) {
+                        mergeBuffer[chatId].add(fullPhone);
+                        addedCount++;
+                    }
+                }
+            }
+
+            const totalStored = mergeBuffer[chatId].size;
+
+            bot.sendMessage(chatId, 
+                `**MERGE BUFFER UPDATED**\n\n` +
+                `Added from this file: ${addedCount} (Unique)\n` +
+                `**Total Temporarily Saved:** ${totalStored}\n\n` +
+                `Reply to another file with /addfile to keep adding, or click below to pour them all into one file.`, 
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: 'Drop File (Merge All)', callback_data: 'drop_merged_file' }],
+                            [{ text: 'Clear Buffer', callback_data: 'clear_merge_buffer' }]
+                        ]
+                    }
+                }
+            );
+
+        } catch (e) {
+            bot.sendMessage(chatId, `[ERROR] ${e.message}`);
+        }
+    });
 
 
     bot.onText(/\/sender/, (msg) => {
@@ -4907,6 +5009,37 @@ const cleanNumbers = matches.map(n => {
         }
 
 
+
+                // --- FILE MERGER BUTTONS ---
+        if (data === 'drop_merged_file') {
+            await bot.answerCallbackQuery(query.id);
+            if (!mergeBuffer[chatId] || mergeBuffer[chatId].size === 0) {
+                return bot.sendMessage(chatId, '[ERROR] Your merge buffer is empty.');
+            }
+
+            const allNumbers = Array.from(mergeBuffer[chatId]);
+            const buffer = Buffer.from(allNumbers.join('\n'));
+
+            await bot.sendDocument(
+                chatId, 
+                buffer, 
+                { 
+                    caption: `**MERGED FILE COMPLETE**\n\nTotal Numbers: ${allNumbers.length}\nBuffer has been cleared.`,
+                    parse_mode: 'Markdown'
+                }, 
+                { filename: `Merged_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
+            );
+
+            // Empty the pool after dropping the file
+            mergeBuffer[chatId] = new Set();
+            return;
+        }
+
+        if (data === 'clear_merge_buffer') {
+            await bot.answerCallbackQuery(query.id, 'Buffer cleared.');
+            mergeBuffer[chatId] = new Set();
+            return bot.editMessageText(`Merge buffer has been cleared.`, { chat_id: chatId, message_id: query.message.message_id });
+        }
 
 
         // Handle QR cancel

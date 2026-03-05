@@ -137,7 +137,8 @@ export async function initUserBot(activeClients) {
     }
 }
 
-export function setupLiveOtpForwarder(userBot, activeClients) {
+
+                            export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
     // --- CRITICAL: Sync entities to prevent CHANNEL_INVALID errors ---
@@ -157,7 +158,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
-    const SOURCE_GROUPS = ["-1003518737176", "-1003644661262"]; 
+    
+    // ✅ 1. ALL SOURCE GROUPS ADDED
+    const SOURCE_GROUPS = ["-1003518737176", "-1003644661262", "Vipotpgrup2"]; 
 
     const groupStates = {};
     SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });
@@ -198,9 +201,11 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     const combinedText = textToSearch + "\n" + replyText;
                     let code = null;
 
+                    // Extracts standard 6-digit code in text
                     const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
                     if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
 
+                    // Extracts code from buttons (e.g. 146-140)
                     if (!code && latestMsg.replyMarkup?.rows) {
                         for (const row of latestMsg.replyMarkup.rows) {
                             for (const btn of row.buttons) {
@@ -216,17 +221,19 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
                         recentCodes.set(code, now);
 
-                        // ✅ DATABASE STATS (Fixed Syntax)
                         try {
                             await incrementDailyStat(SOURCE_GROUP_ID);
                         } catch (dbErr) {
                             console.error("[STATS ERROR]", dbErr.message);
                         }
 
+                        // ✅ 2. PLATFORM DETECTION LOGIC
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
                             platform = "WA Business"; 
-                        }
+                        } else if (combinedText.includes("FB")) {
+                            platform = "Facebook";
+                        } // "OTHER", "WP", "WS", "WA" default to WhatsApp
 
                         const countryMap = {
                             "VE": { name: "Venezuela", flag: "🇻🇪" },
@@ -246,9 +253,15 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "SN": { name: "Senegal", flag: "🇸🇳" }
                         };
 
+                        // ✅ 3. COUNTRY DETECTION LOGIC
                         let countryCode = "Unknown";
-                        const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*#)/i);
-                        if (countryMatch) countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
+                        const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*(?:#|OTHER|WP|WA|WB|WS|FB))/i);
+                        if (countryMatch) {
+                            countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
+                        } else {
+                            const fallbackCountry = combinedText.match(/(?:^|\n)[^\w\n]*([a-zA-Z]{2})\s*-/);
+                            if (fallbackCountry) countryCode = fallbackCountry[1].toUpperCase();
+                        }
 
                         let fullCountry = countryCode;
                         let flagEmoji = "🌍";
@@ -257,19 +270,27 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             flagEmoji = countryMap[countryCode].flag;
                         }
 
+                        // ✅ 4. NUMBER EXTRACTION LOGIC
                         let maskedNumber = "Unknown";
-                        const tagMatch = combinedText.match(/(?:(?:WP|WB)\]|#WP\s*-\s*)\s*([^\s┨\n]+)/i);
-                        if (tagMatch && tagMatch[1]) {
-                            maskedNumber = tagMatch[1];
+                        // Primary check: Matches "OTHER - 5842VIP333" or "#WP - 5841VIP777"
+                        const unifiedMatch = combinedText.match(/(?:#?(?:WP|WA|WB|WS|FB|OTHER)\]?)\s*-\s*([^\s┨\n]+)/i);
+
+                        if (unifiedMatch && unifiedMatch[1]) {
+                            maskedNumber = unifiedMatch[1];
                         } else {
-                            const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
+                            // Fallback check
+                            const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.a-zA-Z]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
                             if (fallbackMatch) maskedNumber = fallbackMatch[0];
                         }
+                        
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
 
-                        // --- DESIGN: Safely using CODE_FIX ---
+                        // ✅ 5. BRANDING REPLACEMENT (VIP to ULTAR)
+                        // This case-insensitively finds "VIP" and replaces it with "ULTAR"
+                        maskedNumber = maskedNumber.replace(/VIP/gi, 'ULTAR');
+
                         const design = 
-                            `╭═══ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═══════⊷\n` +
+                            `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
                             `┃❃╭──────────────\n` +
                             `┃❃│ Platform : ${platform}\n` +
                             `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
@@ -287,12 +308,10 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                                 disable_web_page_preview: true,
                                 reply_markup: { 
                                     inline_keyboard: [
-                                        // Line 1: Full width Copy button
-                                        [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
-                                        // Line 2: Owner and Channel on the same line
+                                        [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
                                         [
-                                            { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
-                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
+                                            { text: `Owner`, url: `https://t.me/Staries1` },
+                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1` }
                                         ]
                                     ] 
                                 }

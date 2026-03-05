@@ -2786,29 +2786,28 @@ bot.onText(/\/vz/, async (msg) => {
     });
 
 
-        // --- /tcheck : Identifies Active, Temporarily Flagged, and Dead leads (Admin & Subadmin) ---
+            // --- /tcheck : Ultimate Deep Scan (Active, Clean, Temp Ban, Perm Ban) ---
     bot.onText(/\/tcheck/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
-        // Authorization check for Admin and Subadmins
         const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        const isSubAdmin = (SUBADMIN_IDS || []).includes(userId);
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /tcheck');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt or .xlsx file with /tcheck\n\n*Warning:* This is a deep scan and runs slowly to protect your bot from being banned.');
         }
 
-        // Use the first available bot for checking
-        const activeIds = Object.keys(shortIdMap).filter(id => clients[shortIdMap[id].folder]);
-        if (activeIds.length === 0) return bot.sendMessage(chatId, '[ERROR] No active bots available.');
+        const activeFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId);
+        if (activeFolders.length === 0) return bot.sendMessage(chatId, '[ERROR] No active bots available for deep checking.');
         
-        const sock = clients[shortIdMap[activeIds[0]].folder];
+        const sock = clients[activeFolders[0]];
+        const checkerNum = sock.user.id.split(':')[0]; 
 
         try {
-            bot.sendMessage(chatId, '[PROCESSING] Deep scanning file for status and temporary bans...');
+            const statusMsg = await bot.sendMessage(chatId, `[DEEP SCAN INITIATED]\nUsing Bot: +${checkerNum}\nDownloading file...`);
             
             const fileId = msg.reply_to_message.document.file_id;
             const fileLink = await bot.getFileLink(fileId);
@@ -2817,8 +2816,7 @@ bot.onText(/\/vz/, async (msg) => {
             
             let rawNumbers = [];
 
-            // 1. Handle File Reading (TXT or XLSX)
-            if (fileName.endsWith('.xlsx')) {
+            if (fileName.toLowerCase().endsWith('.xlsx')) {
                 const arrayBuffer = await response.arrayBuffer();
                 const buffer = Buffer.from(arrayBuffer);
                 const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -2834,79 +2832,141 @@ bot.onText(/\/vz/, async (msg) => {
                 rawNumbers = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
             }
 
-            const activeList = [];
-            const flaggedList = []; // Restricted/Temporary Ban
-            const deadList = [];
+            const activeList = [];       // Registered on another phone (Your image)
+            const cleanList = [];        // Exists: false, but not banned
+            const tempBanList = [];      // Reason: Blocked (Reviewable)
+            const permBanList = [];      // Reason: Banned
+            const invalidList = [];      // Format errors
+            
             let processed = 0;
+            userState[chatId + '_stopFlag'] = false;
 
-            // 2. Deep Audit Loop
             for (const numStr of rawNumbers) {
+                if (userState[chatId + '_stopFlag']) break;
+
                 const res = normalizeWithCountry(numStr);
                 if (!res || !res.num) continue;
 
-                const jid = res.num.includes('@') ? res.num : `${res.num}@s.whatsapp.net`;
+                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                const jid = `${fullPhone}@s.whatsapp.net`;
 
                 try {
+                    // STEP 1: Passive Check (Identifies Active Accounts)
                     const [waCheck] = await sock.onWhatsApp(jid);
                     
                     if (waCheck && waCheck.exists) {
-                        try {
-                            // Logic: Try to fetch status. If account is flagged/temp-ban, 
-                            // metadata fetching usually throws a 401/403 error.
-                            await sock.fetchStatus(jid);
-                            activeList.push(res.num);
-                        } catch (err) {
-                            // Exists but metadata is restricted = Flagged
-                            flaggedList.push(res.num);
-                        }
+                        activeList.push(res.num); // Registered on another device
                     } else {
-                        deadList.push(res.num);
+                        // STEP 2: Aggressive Ban Probe
+                        try {
+                            await sock.requestRegistrationCode({
+                                phoneNumber: "+" + fullPhone,
+                                method: 'sms',
+                                fields: {
+                                    mcc: "624", 
+                                    mnc: "01"
+                                }
+                            });
+                            // If this payload succeeds without an error, the number is clean and unregistered.
+                            cleanList.push(res.num);
+                        } catch (regErr) {
+                            const reason = regErr.data?.reason || regErr.message || "unknown";
+                            
+                            if (reason === 'blocked') {
+                                tempBanList.push(res.num);
+                            } else if (reason === 'banned') {
+                                permBanList.push(res.num);
+                            } else {
+                                invalidList.push(res.num);
+                            }
+                        }
                     }
                 } catch (e) {
-                    deadList.push(res.num);
+                    invalidList.push(res.num);
                 }
 
                 processed++;
-                if (processed % 20 === 0) {
-                    bot.sendMessage(chatId, '[PROGRESS] Checked ' + processed + '/' + rawNumbers.length).catch(() => {});
+                
+                // Live Update every 10 numbers
+                if (processed % 10 === 0 && !userState[chatId + '_stopFlag']) {
+                    try {
+                        await bot.editMessageText(
+                            `[DEEP SCAN IN PROGRESS]\n\n` +
+                            `Checked: ${processed} / ${rawNumbers.length}\n` +
+                            `Active (Logged In): ${activeList.length}\n` +
+                            `Clean (Unregistered): ${cleanList.length}\n` +
+                            `Temp Ban: ${tempBanList.length}\n` +
+                            `Perm Ban: ${permBanList.length}`,
+                            { chat_id: chatId, message_id: statusMsg.message_id }
+                        );
+                    } catch(e) {}
                 }
                 
-                // 1.5s delay to prevent the checking bot from being banned
-                await delay(1500); 
+                // MANDATORY ANTI-BAN DELAY (4 Seconds)
+                // Do not lower this, or your checker bot will be permanently banned.
+                await delay(4000); 
             }
 
-            bot.sendMessage(chatId, '[T-CHECK COMPLETE] Sending categorized results...');
+            const isAborted = userState[chatId + '_stopFlag'];
+            userState[chatId + '_stopFlag'] = false;
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e) {}
 
-            // 3. Send Files (FIXED: Added filename and contentType to fourth argument)
-            
+            let finalCaption = isAborted ? `[DEEP SCAN ABORTED]\n\n` : `[DEEP SCAN COMPLETE]\n\n`;
+            finalCaption += `Total Checked: ${processed}\n`;
+            finalCaption += `Active (Logged In): ${activeList.length}\n`;
+            finalCaption += `Clean (Unregistered): ${cleanList.length}\n`;
+            finalCaption += `Temp Ban (Reviewable): ${tempBanList.length}\n`;
+            finalCaption += `Permanent Ban: ${permBanList.length}\n`;
+            finalCaption += `Invalid/Errors: ${invalidList.length}`;
+
+            // Send Results as an Album if there are files
+            const filesToSend = [];
+            const tempDir = `./tmp_tcheck_${Date.now()}_${chatId}`;
+            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+
             if (activeList.length > 0) {
-                const buffer = Buffer.from(activeList.join('\n'), 'utf-8');
-                await bot.sendDocument(chatId, buffer, 
-                    { caption: '[STATUS: ACTIVE]\nTotal: ' + activeList.length + '\nSafe leads.' }, 
-                    { filename: 'active_leads.txt', contentType: 'text/plain' }
-                );
+                const path = `${tempDir}/Active_Logged_In.txt`;
+                fs.writeFileSync(path, activeList.join('\n'));
+                filesToSend.push({ type: 'document', media: path });
+            }
+            if (cleanList.length > 0) {
+                const path = `${tempDir}/Clean_Unregistered.txt`;
+                fs.writeFileSync(path, cleanList.join('\n'));
+                filesToSend.push({ type: 'document', media: path });
+            }
+            if (tempBanList.length > 0) {
+                const path = `${tempDir}/Temporarily_Banned.txt`;
+                fs.writeFileSync(path, tempBanList.join('\n'));
+                filesToSend.push({ type: 'document', media: path });
+            }
+            if (permBanList.length > 0) {
+                const path = `${tempDir}/Permanently_Banned.txt`;
+                fs.writeFileSync(path, permBanList.join('\n'));
+                filesToSend.push({ type: 'document', media: path });
             }
 
-            if (flaggedList.length > 0) {
-                const buffer = Buffer.from(flaggedList.join('\n'), 'utf-8');
-                await bot.sendDocument(chatId, buffer, 
-                    { caption: '[STATUS: FLAGGED]\nTotal: ' + flaggedList.length + '\nLikely temporary ban or restriction.' }, 
-                    { filename: 'flagged_leads.txt', contentType: 'text/plain' }
-                );
-            }
+            if (filesToSend.length > 0) {
+                filesToSend[0].caption = finalCaption; // Attach report to the first file
+                filesToSend[0].parse_mode = 'Markdown';
+                
+                try {
+                    await bot.sendMediaGroup(chatId, filesToSend);
+                } catch (err) {
+                    await bot.sendMessage(chatId, finalCaption, { parse_mode: 'Markdown' });
+                }
 
-            if (deadList.length > 0) {
-                const buffer = Buffer.from(deadList.join('\n'), 'utf-8');
-                await bot.sendDocument(chatId, buffer, 
-                    { caption: '[STATUS: DEAD]\nTotal: ' + deadList.length + '\nNot on WhatsApp.' }, 
-                    { filename: 'dead_leads.txt', contentType: 'text/plain' }
-                );
+                // Cleanup
+                filesToSend.forEach(f => { if (fs.existsSync(f.media)) fs.unlinkSync(f.media); });
+                if (fs.existsSync(tempDir)) fs.rmdirSync(tempDir);
+            } else {
+                await bot.sendMessage(chatId, finalCaption, { parse_mode: 'Markdown' });
             }
 
         } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
+            bot.sendMessage(chatId, `[ERROR] ${e.message}`);
         }
     });
+
 
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);

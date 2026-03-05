@@ -1146,7 +1146,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     // --- /txt [Reply to file] ---
-    bot.    // --- /txt [Reply to file] ---
     bot.onText(/\/txt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;

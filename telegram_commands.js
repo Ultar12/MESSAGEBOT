@@ -270,10 +270,12 @@ export async function initUserBot(activeClients) {
                             flagEmoji = countryMap[countryCode].flag;
                         }
 
-                        // ✅ 4. NUMBER EXTRACTION LOGIC
+                                                // ✅ 4. NEW NUMBER EXTRACTION LOGIC (Handles hyphens AND spaces)
                         let maskedNumber = "Unknown";
-                        // Primary check: Matches "OTHER - 5842VIP333" or "#WP - 5841VIP777"
-                        const unifiedMatch = combinedText.match(/(?:#?(?:WP|WA|WB|WS|FB|OTHER)\]?)\s*-\s*([^\s┨\n]+)/i);
+                        
+                        // Primary check: Matches "OTHER - 5842VIP333", "#WP - 5841VIP777", AND "[#WP] 5842••••273"
+                        // The (?:-\s*)? part makes the hyphen optional
+                        const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER)\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
 
                         if (unifiedMatch && unifiedMatch[1]) {
                             maskedNumber = unifiedMatch[1];
@@ -284,6 +286,9 @@ export async function initUserBot(activeClients) {
                         }
                         
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
+
+                        // ✅ 5. BRANDING REPLACEMENT (VIP to ULTAR)
+                        maskedNumber = maskedNumber.replace(/VIP/gi, 'ULTAR');
 
                         // ✅ 5. BRANDING REPLACEMENT (VIP to ULTAR)
                         // This case-insensitively finds "VIP" and replaces it with "ULTAR"
@@ -299,7 +304,7 @@ export async function initUserBot(activeClients) {
                             `┃❃╰───────────────\n` +
                             `╰═════════════════⊷`;
 
-                        // Telegram Send
+                                                    // Telegram Send
                         try {
                             const formattedText = design.replace('CODE_FIX', `\`${code}\``);
 
@@ -308,10 +313,10 @@ export async function initUserBot(activeClients) {
                                 disable_web_page_preview: true,
                                 reply_markup: { 
                                     inline_keyboard: [
-                                        [{ text: `Copy: ${code}`, copy_text: { text: code } }], 
+                                        [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         [
-                                            { text: `Owner`, url: `https://t.me/Staries1` },
-                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1` }
+                                            { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
+                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
                                         ]
                                     ] 
                                 }

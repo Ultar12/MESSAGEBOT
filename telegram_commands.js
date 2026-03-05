@@ -1218,6 +1218,36 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+        // --- /split : Split a TXT file into equal parts ---
+    bot.onText(/\/split/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Please reply to a .txt file with /split');
+        }
+
+        const fileName = msg.reply_to_message.document.file_name || '';
+        if (fileName.toLowerCase().endsWith('.xlsx')) {
+            return bot.sendMessage(chatId, '[ERROR] This command only works on .txt or .vcf files.');
+        }
+
+        // Save state and file ID
+        userState[chatId] = 'WAITING_SPLIT_COUNT';
+        userState[chatId + '_split_file'] = msg.reply_to_message.document.file_id;
+
+        bot.sendMessage(chatId, 
+            `**FILE SPLITTER**\n\n` +
+            `How many parts do you want to divide this file into?\n\n` +
+            `*(Example: Send \`6\` to split 6,000 numbers into 6 files of 1,000)*`, 
+            { parse_mode: 'Markdown', reply_markup: { force_reply: true } }
+        );
+    });
+
+
     // --- /ttx [Reply to file] ---
     bot.onText(/\/ttx/, async (msg) => {
         deleteUserCommand(bot, msg);
@@ -4443,6 +4473,77 @@ const cleanNumbers = matches.map(n => {
 
             return; 
         }
+
+
+                // --- FILE SPLITTER EXECUTION ---
+        if (userState[chatId] === 'WAITING_SPLIT_COUNT') {
+            const parts = parseInt(text.trim());
+            
+            // Safety checks
+            if (isNaN(parts) || parts <= 1 || parts > 50) {
+                userState[chatId] = null;
+                return bot.sendMessage(chatId, '[ERROR] Invalid amount. Please enter a number between 2 and 50. Process cancelled.');
+            }
+
+            const fileId = userState[chatId + '_split_file'];
+            userState[chatId] = null;
+            userState[chatId + '_split_file'] = null;
+
+            if (!fileId) return bot.sendMessage(chatId, '[ERROR] File expired. Please reply to the file again.');
+
+            let statusMsg = await bot.sendMessage(chatId, `[PROCESSING] Downloading and dividing file into ${parts} parts...`);
+
+            try {
+                const fileLink = await bot.getFileLink(fileId);
+                const response = await fetch(fileLink);
+                const rawText = await response.text();
+
+                // Extract all non-empty lines
+                const lines = rawText.split(/\r?\n/).filter(l => l.trim().length > 0);
+
+                if (lines.length === 0) {
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                    return bot.sendMessage(chatId, '[ERROR] The file appears to be empty.');
+                }
+
+                if (lines.length < parts) {
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                    return bot.sendMessage(chatId, `[ERROR] The file only has ${lines.length} numbers. Cannot split into ${parts} parts.`);
+                }
+
+                // Calculate chunk size
+                const chunkSize = Math.ceil(lines.length / parts);
+                
+                await bot.editMessageText(
+                    `**SPLITTING IN PROGRESS**\n\nTotal Numbers: ${lines.length}\nFiles: ${parts}\nSize per file: ~${chunkSize} numbers\n\nUploading...`,
+                    { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                );
+
+                // Slice and send files
+                for (let i = 0; i < parts; i++) {
+                    const chunk = lines.slice(i * chunkSize, (i + 1) * chunkSize);
+                    if (chunk.length === 0) continue;
+
+                    const buffer = Buffer.from(chunk.join('\n'));
+                    
+                    await bot.sendDocument(
+                        chatId, 
+                        buffer, 
+                        { caption: `**Part ${i + 1} of ${parts}**\nTotal: ${chunk.length} numbers`, parse_mode: 'Markdown' }, 
+                        { filename: `Split_Part_${i + 1}.txt`, contentType: 'text/plain' }
+                    );
+                    
+                    await delay(1200); // 1.2 second delay to prevent Telegram FloodWait errors
+                }
+
+                bot.sendMessage(chatId, `**SPLIT COMPLETE!** Successfully generated ${parts} files.`, { parse_mode: 'Markdown' });
+
+            } catch (e) {
+                bot.sendMessage(chatId, `[ERROR] ${e.message}`);
+            }
+            return; // Stop processing so it doesn't trigger the main menu
+        }
+
 
 
         if (userState[chatId] === 'WAITING_WITHDRAW_AMOUNT') {

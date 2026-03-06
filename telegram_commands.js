@@ -121,7 +121,7 @@ export function getDedicatedSender(activeClients) {
 }
 
 
-/export async function initUserBot(activeClients) {
+export async function initUserBot(activeClients) {
     try {
         console.log("[USERBOT] Starting initialization...");
         await userBot.connect();

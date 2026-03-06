@@ -774,10 +774,12 @@ const userKeyboard = {
 const adminKeyboard = {
     keyboard: [
         [{ text: "Connect Account" }, { text: "List All" }],
-        [{ text: "/stats" }, { text: "Clear Contact List" }]
+        [{ text: "/stats" }, { text: "Balance" }], // Balance moved next to stats
+        [{ text: "Clear Contact List" }]
     ],
     resize_keyboard: true
 };
+
 
 // NEW: Restricted keyboard for SUBADMINS
 const subadminKeyboard = {
@@ -4797,6 +4799,36 @@ const cleanNumbers = matches.map(n => {
                 }
                 sendMenu(bot, chatId, accMsg);
                 break;
+
+                        case "Balance":
+                deleteUserCommand(bot, msg);
+                // Admin check is already handled by the general message block
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
+                
+                try {
+                    bot.sendMessage(chatId, "Checking Eden SMS Balance...");
+                    
+                    const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
+                    const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773";
+                    
+                    const response = await fetch(`${CUSTOM_API_URL}/balance?api_key=${API_KEY}`);
+                    const data = await response.json();
+
+                    if (data.ok) {
+                        const balanceMsg = 
+                            `**SMS BALANCE**\n\n` +
+                            `**User:** \`${data.user_id}\`\n` +
+                            `**Balance:** \`$${data.balance}\``;
+                            
+                        sendMenu(bot, chatId, balanceMsg);
+                    } else {
+                        bot.sendMessage(chatId, `[ERROR] API returned false: ${data.error || "Unknown error"}`);
+                    }
+                } catch (e) {
+                    bot.sendMessage(chatId, `[ERROR] Failed to fetch balance: ${e.message}`);
+                }
+                break;
+
 
             case "Referrals":
                 deleteUserCommand(bot, msg);

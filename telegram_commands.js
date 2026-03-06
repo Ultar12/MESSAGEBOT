@@ -121,8 +121,7 @@ export function getDedicatedSender(activeClients) {
 }
 
 
-// To this line:
-export async function initUserBot(activeClients) {
+/export async function initUserBot(activeClients) {
     try {
         console.log("[USERBOT] Starting initialization...");
         await userBot.connect();
@@ -131,12 +130,17 @@ export async function initUserBot(activeClients) {
         // This forces the bot to pick an account and "LOCK" it immediately on startup
         getDedicatedSender(activeClients); 
         
+        // Start the Telegram Group Scraper
         await setupLiveOtpForwarder(userBot, activeClients);
+
+        // ✅ START THE NEW CUSTOM API POLLER
+        setupApiOtpForwarder(activeClients);
         
     } catch (e) {
         console.error("[USERBOT INIT FAIL]", e.message);
     }
 }
+
 
 
                             export function setupLiveOtpForwarder(userBot, activeClients) {

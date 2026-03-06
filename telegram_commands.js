@@ -431,18 +431,8 @@ export function setupApiOtpForwarder(activeClients) {
             if (data.ok && data.sms) {
                 const sms = data.sms;
 
-                // Stop if we have already forwarded this exact SMS ID
-                if (lastProcessedSmsId === sms.id) return;
-                lastProcessedSmsId = sms.id;
-
-                const messageText = sms.message || "";
-                let code = null;
-
-                // Extract standard 6-digit code from the message text
-                const textCodeMatch = messageText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
-
-                if (code) {
+                                if (code) {
+                    // 1. Platform (Removed the "API" tag)
                     let platform = sms.service || "WhatsApp"; 
                     if (messageText.toLowerCase().includes("business") || messageText.includes("WB")) {
                         platform = "WA Business";
@@ -451,19 +441,28 @@ export function setupApiOtpForwarder(activeClients) {
                     const fullCountry = sms.country || "Unknown";
                     const flagEmoji = apiCountryMap[fullCountry] || "🌍";
 
-                    let maskedNumber = sms.phone || "Unknown";
-                    // Apply your branding rule
-                    maskedNumber = maskedNumber.replace(/VIP/gi, 'ULTAR');
+                    // 2. Number Masking Logic (First 4 + ULTAR + Last 4)
+                    let rawNumber = sms.phone || "Unknown";
+                    let maskedNumber = rawNumber;
+                    
+                    if (rawNumber !== "Unknown" && rawNumber.length >= 8) {
+                        const firstPart = rawNumber.slice(0, 4); // Keeps first 4 digits (e.g. 5842)
+                        const lastPart = rawNumber.slice(-4);    // Keeps last 4 digits (e.g. 9275)
+                        maskedNumber = `${firstPart}ULTAR${lastPart}`; 
+                    }
 
                     const design = 
                         `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
                         `┃❃╭──────────────\n` +
-                        `┃❃│ Platform : ${platform} (API)\n` +
+                        `┃❃│ Platform : ${platform}\n` +
                         `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
                         `┃❃│ Number   : ${maskedNumber}\n` +
                         `┃❃│ Code     : CODE_FIX\n` +
                         `┃❃╰───────────────\n` +
                         `╰═════════════════⊷`;
+
+                    // --- SEND TO TELEGRAM ---
+
 
                     // --- SEND TO TELEGRAM ---
                     try {

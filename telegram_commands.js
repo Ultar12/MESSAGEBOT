@@ -317,14 +317,20 @@ export async function initUserBot(activeClients) {
                                 parse_mode: 'Markdown',
                                 disable_web_page_preview: true,
                                 reply_markup: { 
+                            
                                     inline_keyboard: [
                                         [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         [
                                             { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
                                             { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
+                                        ],
+                                        // NEW ROW ADDED HERE
+                                        [
+                                            { text: `💰Rent WhatsApp💰`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
                                         ]
                                     ] 
                                 }
+
                             });
 
                             console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
@@ -469,7 +475,7 @@ export function setupApiOtpForwarder(activeClients) {
                                 parse_mode: 'Markdown',
                                 disable_web_page_preview: true,
                                 reply_markup: { 
-                                                                    reply_markup: { 
+                        
                                     inline_keyboard: [
                                         [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         [

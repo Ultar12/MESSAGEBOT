@@ -508,7 +508,7 @@ export function setupApiOtpForwarder(activeClients) {
         } catch (e) {
             // Silently handle network errors (e.g. if the API server reboots)
         }
-    }, 4000); // Checks the API every 4 seconds
+    }, 1000); // Checks the API every 4 seconds
 }
 
 

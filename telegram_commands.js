@@ -362,12 +362,11 @@ export async function initUserBot(activeClients) {
 }
 
 
-// --- NEW CUSTOM API OTP FORWARDER ---
+// --- UPGRADED CUSTOM API OTP FORWARDER (ULTRA-FAST POLLING) ---
 export function setupApiOtpForwarder(activeClients) {
-    console.log("[MONITOR] Starting Custom API OTP Polling...");
+    console.log("[MONITOR] Starting Ultra-Fast Custom API OTP Polling...");
 
     const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
-    // Uses ENV var if set, otherwise falls back to the token you provided
     const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773"; 
 
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
@@ -376,141 +375,151 @@ export function setupApiOtpForwarder(activeClients) {
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
 
-    let lastProcessedSmsId = null;
+    const processedSmsIds = new Set();
 
-    // Small map for the API outputs
-        // Massive map for API outputs to ensure almost every country gets a flag
     const apiCountryMap = {
-        // South America & Caribbean
         "Venezuela": "🇻🇪", "Brazil": "🇧🇷", "Colombia": "🇨🇴", "Argentina": "🇦🇷", "Peru": "🇵🇪", 
         "Chile": "🇨🇱", "Ecuador": "🇪🇨", "Bolivia": "🇧🇴", "Paraguay": "🇵🇾", "Uruguay": "🇺🇾", 
         "Guyana": "🇬🇾", "Haiti": "🇭🇹", "Dominican Republic": "🇩🇴", "Cuba": "🇨🇺",
-
-        // Africa
         "Zimbabwe": "🇿🇼", "Nigeria": "🇳🇬", "Guinea": "🇬🇳", "South Africa": "🇿🇦", 
         "Burkina Faso": "🇧🇫", "Senegal": "🇸🇳", "Kenya": "🇰🇪", "Egypt": "🇪🇬", "Morocco": "🇲🇦", 
         "Algeria": "🇩🇿", "Ghana": "🇬🇭", "Ivory Coast": "🇨🇮", "Cameroon": "🇨🇲", "Mali": "🇲🇱", 
         "Tanzania": "🇹🇿", "Uganda": "🇺🇬", "Angola": "🇦🇴", "Mozambique": "🇲🇿", "Zambia": "🇿🇲",
         "Rwanda": "🇷🇼", "Sudan": "🇸🇩", "Ethiopia": "🇪🇹", "Somalia": "🇸🇴", "Djibouti": "🇩🇯",
-
-        // Asia (Southeast, South, East)
         "Indonesia": "🇮🇩", "Philippines": "🇵🇭", "Vietnam": "🇻🇳", "Malaysia": "🇲🇾", 
         "Thailand": "🇹🇭", "Cambodia": "🇰🇭", "Laos": "🇱🇦", "Myanmar": "🇲🇲", "Singapore": "🇸🇬",
         "India": "🇮🇳", "Pakistan": "🇵🇰", "Bangladesh": "🇧🇩", "Sri Lanka": "🇱🇰", "Nepal": "🇳🇵",
         "China": "🇨🇳", "Japan": "🇯🇵", "South Korea": "🇰🇷", "Taiwan": "🇹🇼", "Hong Kong": "🇭🇰",
-
-        // Central Asia & Middle East
         "Russia": "🇷🇺", "Kyrgyzstan": "🇰🇬", "Kazakhstan": "🇰🇿", "Uzbekistan": "🇺🇿", 
         "Tajikistan": "🇹🇯", "Turkmenistan": "🇹🇲", "Turkey": "🇹🇷", "Iran": "🇮🇷", "Iraq": "🇮🇶", 
         "Saudi Arabia": "🇸🇦", "UAE": "🇦🇪", "Yemen": "🇾🇪", "Oman": "🇴🇲", "Jordan": "🇯🇴", 
         "Lebanon": "🇱🇧", "Syria": "🇸🇾", "Israel": "🇮🇱", "Kuwait": "🇰🇼", "Qatar": "🇶🇦", "Bahrain": "🇧🇭",
-
-        // North & Central America
         "United States": "🇺🇸", "Canada": "🇨🇦", "Mexico": "🇲🇽", "Guatemala": "🇬🇹", 
         "Honduras": "🇭🇳", "El Salvador": "🇸🇻", "Nicaragua": "🇳🇮", "Costa Rica": "🇨🇷", "Panama": "🇵🇦",
-
-        // Europe
         "United Kingdom": "🇬🇧", "France": "🇫🇷", "Germany": "🇩🇪", "Spain": "🇪🇸", "Italy": "🇮🇹",
         "Netherlands": "🇳🇱", "Belgium": "🇧🇪", "Switzerland": "🇨🇭", "Austria": "🇦🇹", "Sweden": "🇸🇪",
         "Norway": "🇳🇴", "Denmark": "🇩🇰", "Finland": "🇫🇮", "Poland": "🇵🇱", "Ukraine": "🇺🇦", 
         "Romania": "🇷🇴", "Greece": "🇬🇷", "Portugal": "🇵🇹", "Czech Republic": "🇨🇿", "Hungary": "🇭🇺",
         "Bulgaria": "🇧🇬", "Serbia": "🇷🇸", "Croatia": "🇭🇷", "Ireland": "🇮🇪",
-
-        // Oceania
         "Australia": "🇦🇺", "New Zealand": "🇳🇿", "Fiji": "🇫🇯", "Papua New Guinea": "🇵🇬"
     };
 
-
-    setInterval(async () => {
+    // The recursive polling function (Prevents overlapping requests)
+    const pollApi = async () => {
         try {
-            // Fetch the latest SMS from the API endpoint
-            const response = await fetch(`${CUSTOM_API_URL}/sms/latest?api_key=${API_KEY}`);
+            // FIX 1: Increased limit to 50 so high-volume SMS doesn't push your code out of sight.
+            const response = await fetch(`${CUSTOM_API_URL}/sms/list?api_key=${API_KEY}&limit=50&page=1`);
+            
+            if (!response.ok) throw new Error("API not reachable");
             const data = await response.json();
 
-            // If API returns ok: true and has sms data
-            if (data.ok && data.sms) {
-                const sms = data.sms;
+            if (data.ok && data.sms && Array.isArray(data.sms)) {
+                // Reverse to process oldest first (chronological order)
+                const recentMessages = data.sms.reverse();
 
-                                if (code) {
-                    // 1. Platform (Removed the "API" tag)
-                    let platform = sms.service || "WhatsApp"; 
-                    if (messageText.toLowerCase().includes("business") || messageText.includes("WB")) {
-                        platform = "WA Business";
+                for (const sms of recentMessages) {
+                    if (processedSmsIds.has(sms.id)) continue;
+                    processedSmsIds.add(sms.id);
+
+                    // Memory limit to keep the bot fast
+                    if (processedSmsIds.size > 1000) {
+                        const iterator = processedSmsIds.values();
+                        processedSmsIds.delete(iterator.next().value);
                     }
 
-                    const fullCountry = sms.country || "Unknown";
-                    const flagEmoji = apiCountryMap[fullCountry] || "🌍";
+                    const messageText = sms.message || "";
+                    let code = null;
 
-                    // 2. Number Masking Logic (First 4 + ULTAR + Last 4)
-                    let rawNumber = sms.phone || "Unknown";
-                    let maskedNumber = rawNumber;
-                    
-                    if (rawNumber !== "Unknown" && rawNumber.length >= 8) {
-                        const firstPart = rawNumber.slice(0, 4); // Keeps first 4 digits (e.g. 5842)
-                        const lastPart = rawNumber.slice(-4);    // Keeps last 4 digits (e.g. 9275)
-                        maskedNumber = `${firstPart}ULTAR${lastPart}`; 
-                    }
+                    // Extracts code (e.g. "WhatsApp code 318-569" or "324989")
+                    const textCodeMatch = messageText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                    if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
 
-                    const design = 
-                        `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
-                        `┃❃╭──────────────\n` +
-                        `┃❃│ Platform : ${platform}\n` +
-                        `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
-                        `┃❃│ Number   : ${maskedNumber}\n` +
-                        `┃❃│ Code     : CODE_FIX\n` +
-                        `┃❃╰───────────────\n` +
-                        `╰═════════════════⊷`;
+                    if (code) {
+                        let platform = sms.service || "WhatsApp"; 
+                        if (messageText.toLowerCase().includes("business") || messageText.includes("WB")) {
+                            platform = "WA Business";
+                        }
 
-                    // --- SEND TO TELEGRAM ---
+                        const fullCountry = sms.country || "Unknown";
+                        const flagEmoji = apiCountryMap[fullCountry] || "🌍";
 
+                        let rawNumber = sms.phone || "Unknown";
+                        let maskedNumber = rawNumber;
+                        
+                        if (rawNumber !== "Unknown" && rawNumber.length >= 8) {
+                            const firstPart = rawNumber.slice(0, 4); 
+                            const lastPart = rawNumber.slice(-4);    
+                            maskedNumber = `${firstPart}ULTAR${lastPart}`; 
+                        }
 
-                    // --- SEND TO TELEGRAM ---
-                    try {
-                        const formattedText = design.replace('CODE_FIX', `\`${code}\``);
-                        const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, formattedText, {
-                            parse_mode: 'Markdown',
-                            disable_web_page_preview: true,
-                            reply_markup: { 
-                                inline_keyboard: [
-                                    [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
-                                    [
-                                        { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
-                                        { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
-                                    ]
-                                ] 
-                            }
-                        });
-                        console.log(`[API FORWARDED] Code ${code} sent to Telegram.`);
+                        const design = 
+                            `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
+                            `┃❃╭──────────────\n` +
+                            `┃❃│ Platform : ${platform}\n` +
+                            `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+                            `┃❃│ Number   : ${maskedNumber}\n` +
+                            `┃❃│ Code     : CODE_FIX\n` +
+                            `┃❃╰───────────────\n` +
+                            `╰═════════════════⊷`;
 
-                        setTimeout(async () => { 
-                            try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
-                        }, 86400000);
-                    } catch (err) { }
-
-                    // --- SEND TO WHATSAPP ---
-                    const sock = getDedicatedSender(activeClients); 
-                    if (sock) {
+                        // --- SEND TO TELEGRAM ---
                         try {
-                            const formattedWa = design.replace('CODE_FIX', `*${code}*`);
-                            const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
+                            const formattedText = design.replace('CODE_FIX', `\`${code}\``);
+                            const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, formattedText, {
+                                parse_mode: 'Markdown',
+                                disable_web_page_preview: true,
+                                reply_markup: { 
+                                                                    reply_markup: { 
+                                    inline_keyboard: [
+                                        [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
+                                        [
+                                            { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
+                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
+                                        ],
+                                        // NEW ROW ADDED HERE
+                                        [
+                                            { text: `💰Rent WhatsApp💰`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
+                                        ]
+                                    ] 
+
+                                }
+                            });
+                            console.log(`[API FORWARDED] Code ${code} sent to Telegram.`);
+
+                            setTimeout(async () => { 
+                                try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
+                            }, 86400000);
+                        } catch (err) {}
+
+                        // --- SEND TO WHATSAPP ---
+                        const sock = getDedicatedSender(activeClients); 
+                        if (sock) {
                             try {
-                                await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                            } catch (e) {
-                                await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                await new Promise(r => setTimeout(r, 2000));
-                                await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                            }
-                        } catch (fatalErr) { updateOtpSender(null, true); }
+                                const formattedWa = design.replace('CODE_FIX', `*${code}*`);
+                                const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
+                                try {
+                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
+                                } catch (e) {
+                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
+                                }
+                            } catch (fatalErr) { updateOtpSender(null, true); }
+                        }
                     }
                 }
             }
         } catch (e) {
-            // Silently handle network errors (e.g. if the API server reboots)
+            // Silently catch errors so the loop doesn't break
+        } finally {
+            // FIX 2: Wait exactly 1 second AFTER the previous request finishes before firing the next one.
+            setTimeout(pollApi, 1000);
         }
-    }, 1000); // Checks the API every 4 seconds
+    };
+
+    // Kick off the infinite loop
+    pollApi();
 }
-
-
 
 
 const ADMIN_ID = process.env.ADMIN_ID;

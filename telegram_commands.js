@@ -773,12 +773,13 @@ const userKeyboard = {
 
 const adminKeyboard = {
     keyboard: [
-        [{ text: "Connect Account" }, { text: "List All" }],
-        [{ text: "/stats" }, { text: "Balance" }], // Balance moved next to stats
+        [{ text: "Connect Account" }, { text: "My Numbers" }], // Replaced List All
+        [{ text: "/stats" }, { text: "Balance" }],
         [{ text: "Clear Contact List" }]
     ],
     resize_keyboard: true
 };
+
 
 
 // NEW: Restricted keyboard for SUBADMINS
@@ -4769,66 +4770,96 @@ const cleanNumbers = matches.map(n => {
                 break;
 
             case "My Account":
-            case "My Numbers": // <-- HANDLES BOTH 'My Account' (User) and 'My Numbers' (Subadmin)
+            case "My Numbers": 
                 deleteUserCommand(bot, msg);
-                // If it's a subadmin and they clicked "My Account", we stop them (only "My Numbers" is on their keyboard).
-                if (isSubAdmin && text === "My Account") {
-                     return sendMenu(bot, chatId, '[ERROR] Access Denied. Use the "My Numbers" button.');
-                }
                 
-                let accUser = await getUser(userId);
-                if (!accUser) {
-                    await createUser(userId);
-                    accUser = await getUser(userId);
-                }
-                
-                // Get only this user's connected accounts from database (permanent storage)
-                const userSessions = await getAllSessions(userId);
-                let accMsg = `[MY CONNECTED ACCOUNTS]\n\n`;
-                
-                if (userSessions.length === 0) {
-                    accMsg += `No accounts connected.\n`;
-                } else {
-                    for (const session of userSessions) {
-                        const id = session.short_id;
-                        if (!id) continue; // Skip if no ID
-                        const status = clients[session.session_id] ? 'ONLINE' : 'OFFLINE';
-                        const dur = getDuration(session.connected_at);
-                        accMsg += `${id} | +${session.phone} | [${status}] | ${dur}\n`;
+                // --- SUBADMIN LOGIC: Show connected bot accounts ---
+                if (isSubAdmin && !isUserAdmin) {
+                    if (text === "My Account") {
+                         return sendMenu(bot, chatId, '[ERROR] Access Denied. Use the "My Numbers" button.');
                     }
-                }
-                sendMenu(bot, chatId, accMsg);
-                break;
-
-                        case "Balance":
-                deleteUserCommand(bot, msg);
-                // Admin check is already handled by the general message block
-                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
-                
-                try {
-                    bot.sendMessage(chatId, "Checking Eden SMS Balance...");
                     
-                    const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
-                    const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773";
+                    const userSessions = await getAllSessions(userId);
+                    let accMsg = `[MY CONNECTED ACCOUNTS]\n\n`;
                     
-                    const response = await fetch(`${CUSTOM_API_URL}/balance?api_key=${API_KEY}`);
-                    const data = await response.json();
-
-                    if (data.ok) {
-                        const balanceMsg = 
-                            `**SMS BALANCE**\n\n` +
-                            `**User:** \`${data.user_id}\`\n` +
-                            `**Balance:** \`$${data.balance}\``;
-                            
-                        sendMenu(bot, chatId, balanceMsg);
+                    if (userSessions.length === 0) {
+                        accMsg += `No accounts connected.\n`;
                     } else {
-                        bot.sendMessage(chatId, `[ERROR] API returned false: ${data.error || "Unknown error"}`);
+                        for (const session of userSessions) {
+                            const id = session.short_id;
+                            if (!id) continue; 
+                            const status = clients[session.session_id] ? 'ONLINE' : 'OFFLINE';
+                            const dur = getDuration(session.connected_at);
+                            accMsg += `${id} | +${session.phone} | [${status}] | ${dur}\n`;
+                        }
                     }
-                } catch (e) {
-                    bot.sendMessage(chatId, `[ERROR] Failed to fetch balance: ${e.message}`);
+                    return sendMenu(bot, chatId, accMsg);
+                }
+
+                // --- ADMIN LOGIC: Fetch from Eden API ---
+                if (isUserAdmin && text === "My Numbers") {
+                    try {
+                        const statusMsg = await bot.sendMessage(chatId, "Fetching allocated numbers from API...");
+                        
+                        const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
+                        const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773";
+                        
+                        const response = await fetch(`${CUSTOM_API_URL}/numbers?api_key=${API_KEY}`);
+                        const data = await response.json();
+
+                        await bot.deleteMessage(chatId, statusMsg.message_id);
+
+                        if (data.ok) {
+                            if (!data.numbers || data.numbers.length === 0) {
+                                return bot.sendMessage(chatId, "⚠️ You currently have 0 allocated numbers on the panel.");
+                            }
+
+                            // Tally up the data for a nice summary
+                            const serviceCount = {};
+                            const countryCount = {};
+                            
+                            data.numbers.forEach(numObj => {
+                                const svc = numObj.service || "Unknown";
+                                const ctry = numObj.country || "Unknown";
+                                
+                                serviceCount[svc] = (serviceCount[svc] || 0) + 1;
+                                countryCount[ctry] = (countryCount[ctry] || 0) + 1;
+                            });
+
+                            let summaryMsg = `**YOUR EDEN NUMBERS**\n\n`;
+                            summaryMsg += `**Total Allocated:** ${data.total}\n\n`;
+                            
+                            summaryMsg += `*By Service:*\n`;
+                            for (const [svc, count] of Object.entries(serviceCount)) {
+                                summaryMsg += `- ${svc}: ${count}\n`;
+                            }
+
+                            summaryMsg += `\n*By Country:*\n`;
+                            for (const [ctry, count] of Object.entries(countryCount)) {
+                                summaryMsg += `- ${ctry}: ${count}\n`;
+                            }
+
+                            // Store the raw array in memory so the download button can grab it
+                            userState[chatId + '_api_numbers'] = data.numbers.map(n => n.phone);
+
+                            bot.sendMessage(chatId, summaryMsg, {
+                                parse_mode: 'Markdown',
+                                reply_markup: {
+                                    inline_keyboard: [
+                                        [{ text: `Download as .TXT (${data.total})`, callback_data: 'download_api_numbers' }],
+                                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                                    ]
+                                }
+                            });
+
+                        } else {
+                            bot.sendMessage(chatId, `[ERROR] API returned false: ${data.error || "Unknown error"}`);
+                        }
+                    } catch (e) {
+                        bot.sendMessage(chatId, `[ERROR] Failed to fetch numbers: ${e.message}`);
+                    }
                 }
                 break;
-
 
             case "Referrals":
                 deleteUserCommand(bot, msg);
@@ -5350,6 +5381,38 @@ const cleanNumbers = matches.map(n => {
             return;
         }
 
+
+                // --- DOWNLOAD API NUMBERS ---
+        if (data === 'download_api_numbers') {
+            await bot.answerCallbackQuery(query.id, 'Preparing file...');
+            
+            const numbersArray = userState[chatId + '_api_numbers'];
+            
+            if (!numbersArray || numbersArray.length === 0) {
+                return bot.sendMessage(chatId, '[ERROR] Data expired. Please click "My Numbers" again to fetch fresh data.');
+            }
+
+            // Create the text buffer
+            const buffer = Buffer.from(numbersArray.join('\n'));
+
+            // Send the file
+            await bot.sendDocument(
+                chatId, 
+                buffer, 
+                { 
+                    caption: `**API NUMBERS EXPORTED**\nTotal: ${numbersArray.length}\nFormat: Clean Numbers`,
+                    parse_mode: 'Markdown'
+                }, 
+                { 
+                    filename: `Eden_Numbers_${Date.now()}.txt`, 
+                    contentType: 'text/plain' 
+                }
+            );
+
+            // Clean up the memory and remove the inline buttons from the summary message
+            userState[chatId + '_api_numbers'] = null;
+            return bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+        }
 
 
                 // --- FILE MERGER BUTTONS ---

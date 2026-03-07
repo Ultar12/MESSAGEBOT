@@ -446,17 +446,12 @@ export function setupApiOtpForwarder(activeClients) {
                             platform = "WA Business";
                         }
 
-                  if (code) {
+                
                         // ✅ RECORD STATS FOR API
                         try {
                             await incrementDailyStat("EDEN_API");
                         } catch (dbErr) {
                             // Ignore db errors to keep the loop fast
-                        }
-
-                        let platform = sms.service || "WhatsApp"; 
-                        if (messageText.toLowerCase().includes("business") || messageText.includes("WB")) {
-                            platform = "WA Business";
                         }
 
 

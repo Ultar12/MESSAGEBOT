@@ -121,20 +121,152 @@ export function getDedicatedSender(activeClients) {
 }
 
 
+
+
+// --- HYBRID 24-HOUR CHANNEL SCANNER ---
+// Uses UserBot to scan, but SenderBot to warn/pin/kick
+export function setupDailyChannelScanner(userBot, senderBot) {
+    console.log("🛡️ [SCANNER] Hybrid Channel Sweeper Initialized.");
+
+    // Your exact group, channel, and link
+    const ULTAR_OTP_GROUP_ID = "-1003645249777"; 
+    const TARGET_CHANNEL_ID = "-1003844497723";  
+    const TARGET_CHANNEL_LINK = "https://t.me/+iEEWbmC6Pdw0MDI1";
+
+    const SUBADMIN_IDS = (process.env.SUBADMIN_IDS || '').split(',').map(id => id.trim());
+    const ADMIN_ID = process.env.ADMIN_ID;
+
+    // Database File Path to survive server restarts
+    const DB_FILE = path.join(process.cwd(), 'scanner_data.json');
+
+    const loadData = () => {
+        try {
+            if (fs.existsSync(DB_FILE)) return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+        } catch (e) {}
+        return { warnedUsers: [], lastPinnedMsgId: null };
+    };
+
+    const saveData = (data) => {
+        try { fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2)); } catch (e) {}
+    };
+
+    // Run every 24 Hours (86,400,000 ms)
+    setInterval(async () => {
+        console.log("[SCANNER] Starting 24h Channel Sweep...");
+        
+        let data = loadData();
+
+        try {
+            // 1. UNPIN YESTERDAY'S MESSAGE (Using the standard bot)
+            if (data.lastPinnedMsgId) {
+                try {
+                    await senderBot.unpinChatMessage(ULTAR_OTP_GROUP_ID, { message_id: data.lastPinnedMsgId });
+                } catch (e) {}
+                data.lastPinnedMsgId = null;
+                saveData(data);
+            }
+
+            // 2. FETCH MEMBERS SILENTLY (Using the UserBot)
+            const otpMembers = await userBot.getParticipants(ULTAR_OTP_GROUP_ID);
+            const channelMembers = await userBot.getParticipants(TARGET_CHANNEL_ID);
+
+            const channelMemberIds = new Set(channelMembers.map(p => p.id.toString()));
+
+            const usersToWarn = [];
+            const newWarnedUsers = [];
+
+            // 3. PROCESS VIOLATORS
+            for (const p of otpMembers) {
+                const userIdStr = p.id.toString();
+                
+                // Exclude Bots, Admin, and Subadmins
+                if (p.bot || userIdStr === ADMIN_ID || SUBADMIN_IDS.includes(userIdStr)) continue;
+                
+                // If they are in the group, but NOT in the channel
+                if (!channelMemberIds.has(userIdStr)) {
+                    if (data.warnedUsers.includes(userIdStr)) {
+                        // STRIKE 2: They ignored the warning. Kick them (Using the standard bot).
+                        try {
+                            await senderBot.banChatMember(ULTAR_OTP_GROUP_ID, userIdStr);
+                            await senderBot.unbanChatMember(ULTAR_OTP_GROUP_ID, userIdStr); 
+                            console.log(`[SCANNER] Kicked ID: ${userIdStr}`);
+                        } catch (e) {}
+                        await new Promise(r => setTimeout(r, 2000)); // Anti-spam delay
+                    } else {
+                        // STRIKE 1: Add to today's warning list
+                        usersToWarn.push({ id: userIdStr, name: p.firstName || 'User' });
+                        newWarnedUsers.push(userIdStr);
+                    }
+                }
+            }
+
+            // Update memory for tomorrow
+            data.warnedUsers = newWarnedUsers;
+            saveData(data);
+
+            // 4. SEND WARNING & PIN IT (Using the standard bot)
+            if (usersToWarn.length > 0) {
+                let tags = usersToWarn.slice(0, 50).map(u => `[${u.name}](tg://user?id=${u.id})`).join(', ');
+                if (usersToWarn.length > 50) {
+                    tags += `\n*...and ${usersToWarn.length - 50} others.*`;
+                }
+
+                const warningText = 
+                    `⚠️ **ACTION REQUIRED** ⚠️\n\n` +
+                    `The following users are NOT in our main channel. You have **24 hours** to join, or you will be automatically removed from this group:\n\n` +
+                    `${tags}`;
+
+                try {
+                    const warnMsg = await senderBot.sendMessage(ULTAR_OTP_GROUP_ID, warningText, {
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: 'Join Main Channel', url: TARGET_CHANNEL_LINK }]
+                            ]
+                        }
+                    });
+
+                    // Pin the message
+                    await senderBot.pinChatMessage(ULTAR_OTP_GROUP_ID, warnMsg.message_id, { disable_notification: false });
+                    
+                    data = loadData(); 
+                    data.lastPinnedMsgId = warnMsg.message_id; 
+                    saveData(data);
+                } catch (pinErr) {
+                    console.error("[SCANNER] Failed to pin or send. Ensure OTP bot is admin.");
+                }
+            }
+
+            console.log("[SCANNER] 24h Sweep complete!");
+
+        } catch (e) {
+            console.error("[SCANNER ERROR]", e.message);
+        }
+    }, 86400000); // 86400000 ms = exactly 24 hours
+}
+
+
+
 export async function initUserBot(activeClients) {
     try {
         console.log("[USERBOT] Starting initialization...");
         await userBot.connect();
         console.log("[USERBOT] Connection established.");
         
-        // This forces the bot to pick an account and "LOCK" it immediately on startup
         getDedicatedSender(activeClients); 
         
         // Start the Telegram Group Scraper
         await setupLiveOtpForwarder(userBot, activeClients);
 
-        // ✅ START THE NEW CUSTOM API POLLER
+        // Start the Custom API Poller
         setupApiOtpForwarder(activeClients);
+        
+        // ✅ START THE HYBRID CHANNEL SCANNER
+        // Create the senderBot instance to pass to the scanner
+        const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
+        const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
+        
+        setupDailyChannelScanner(userBot, senderBot);
         
     } catch (e) {
         console.error("[USERBOT INIT FAIL]", e.message);
@@ -143,7 +275,8 @@ export async function initUserBot(activeClients) {
 
 
 
-                            export function setupLiveOtpForwarder(userBot, activeClients) {
+
+  export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
     // --- CRITICAL: Sync entities to prevent CHANNEL_INVALID errors ---

@@ -4798,20 +4798,31 @@ const cleanNumbers = matches.map(n => {
 
                 // --- ADMIN LOGIC: Fetch from Eden API ---
                 if (isUserAdmin && text === "My Numbers") {
+                    let statusMsg;
                     try {
-                        const statusMsg = await bot.sendMessage(chatId, "Fetching allocated numbers from API...");
+                        statusMsg = await bot.sendMessage(chatId, "🔄 Fetching allocated numbers from API...");
                         
                         const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
                         const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773";
                         
-                        const response = await fetch(`${CUSTOM_API_URL}/numbers?api_key=${API_KEY}`);
-                        const data = await response.json();
+                        // Added headers to force the server to return JSON, even on errors
+                        const response = await fetch(`${CUSTOM_API_URL}/numbers?api_key=${API_KEY}`, {
+                            headers: { 'Accept': 'application/json' }
+                        });
+                        
+                        // Grab raw text first to check if it's an HTML error page
+                        const rawText = await response.text();
 
-                        await bot.deleteMessage(chatId, statusMsg.message_id);
+                        if (rawText.trim().startsWith('<')) {
+                             return bot.editMessageText(`❌ **[API SERVER ERROR]**\nThe Eden SMS server returned an HTML error page instead of data. Their \`/numbers\` endpoint might be down or broken right now.\n\n**HTTP Status:** ${response.status}`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+                        }
+
+                        // If it's safe, parse the JSON
+                        const data = JSON.parse(rawText);
 
                         if (data.ok) {
                             if (!data.numbers || data.numbers.length === 0) {
-                                return bot.sendMessage(chatId, "⚠️ You currently have 0 allocated numbers on the panel.");
+                                return bot.editMessageText("⚠️ You currently have 0 allocated numbers on the panel.", { chat_id: chatId, message_id: statusMsg.message_id });
                             }
 
                             // Tally up the data for a nice summary
@@ -4826,7 +4837,7 @@ const cleanNumbers = matches.map(n => {
                                 countryCount[ctry] = (countryCount[ctry] || 0) + 1;
                             });
 
-                            let summaryMsg = `**YOUR EDEN NUMBERS**\n\n`;
+                            let summaryMsg = `📱 **YOUR EDEN NUMBERS**\n\n`;
                             summaryMsg += `**Total Allocated:** ${data.total}\n\n`;
                             
                             summaryMsg += `*By Service:*\n`;
@@ -4842,24 +4853,32 @@ const cleanNumbers = matches.map(n => {
                             // Store the raw array in memory so the download button can grab it
                             userState[chatId + '_api_numbers'] = data.numbers.map(n => n.phone);
 
-                            bot.sendMessage(chatId, summaryMsg, {
+                            // EDIT the original message
+                            bot.editMessageText(summaryMsg, {
+                                chat_id: chatId,
+                                message_id: statusMsg.message_id,
                                 parse_mode: 'Markdown',
                                 reply_markup: {
                                     inline_keyboard: [
-                                        [{ text: `Download as .TXT (${data.total})`, callback_data: 'download_api_numbers' }],
+                                        [{ text: `📥 Download as .TXT (${data.total})`, callback_data: 'download_api_numbers' }],
                                         [{ text: 'Cancel', callback_data: 'cancel_action' }]
                                     ]
                                 }
                             });
 
                         } else {
-                            bot.sendMessage(chatId, `[ERROR] API returned false: ${data.error || "Unknown error"}`);
+                            bot.editMessageText(`❌ [ERROR] API returned false: ${data.error || "Unknown error"}`, { chat_id: chatId, message_id: statusMsg.message_id });
                         }
                     } catch (e) {
-                        bot.sendMessage(chatId, `[ERROR] Failed to fetch numbers: ${e.message}`);
+                        if (statusMsg) {
+                            bot.editMessageText(`❌ [ERROR] Failed to fetch numbers: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+                        } else {
+                            bot.sendMessage(chatId, `❌ [ERROR] ${e.message}`);
+                        }
                     }
                 }
                 break;
+
 
             case "Referrals":
                 deleteUserCommand(bot, msg);
@@ -4879,6 +4898,36 @@ const cleanNumbers = matches.map(n => {
                 refMsg += `RATE: 5 points per hour (if referral is active)\n`;
                 sendMenu(bot, chatId, refMsg);
                 break;
+
+                        case "Balance":
+                deleteUserCommand(bot, msg);
+                // Admin check is already handled by the general message block
+                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
+                
+                try {
+                    bot.sendMessage(chatId, "Checking Eden SMS Balance...");
+                    
+                    const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
+                    const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773";
+                    
+                    const response = await fetch(`${CUSTOM_API_URL}/balance?api_key=${API_KEY}`);
+                    const data = await response.json();
+
+                    if (data.ok) {
+                        const balanceMsg = 
+                            `**SMS BALANCE**\n\n` +
+                            `**User:** \`${data.user_id}\`\n` +
+                            `**Balance:** \`$${data.balance}\``;
+                            
+                        sendMenu(bot, chatId, balanceMsg);
+                    } else {
+                        bot.sendMessage(chatId, `[ERROR] API returned false: ${data.error || "Unknown error"}`);
+                    }
+                } catch (e) {
+                    bot.sendMessage(chatId, `[ERROR] Failed to fetch balance: ${e.message}`);
+                }
+                break;
+
 
             case "Withdraw":
                 deleteUserCommand(bot, msg);

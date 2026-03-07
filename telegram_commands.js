@@ -446,6 +446,20 @@ export function setupApiOtpForwarder(activeClients) {
                             platform = "WA Business";
                         }
 
+                  if (code) {
+                        // ✅ RECORD STATS FOR API
+                        try {
+                            await incrementDailyStat("EDEN_API");
+                        } catch (dbErr) {
+                            // Ignore db errors to keep the loop fast
+                        }
+
+                        let platform = sms.service || "WhatsApp"; 
+                        if (messageText.toLowerCase().includes("business") || messageText.includes("WB")) {
+                            platform = "WA Business";
+                        }
+
+
                         const fullCountry = sms.country || "Unknown";
                         const flagEmoji = apiCountryMap[fullCountry] || "🌍";
 
@@ -1905,45 +1919,50 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     // --- END /sendgroup ---
 
  
-
-    // --- /stats Command ---
-bot.onText(/\/stats/, async (msg) => {
-    deleteUserCommand(bot, msg);
-    if (msg.chat.id.toString() !== ADMIN_ID) return;
-    
-    try {
-        const onlineCount = Object.keys(clients).length;
-        const dbTotal = await countNumbers();
-
-        // ✅ NEW: Fetch today's stats from the database
-        const todayStats = await getTodayStats(); 
-        const totalSms = todayStats.total || 0;
-
-        // Build the per-group breakdown text
-        let groupBreakdown = "";
-        const sourceGroups = ["-1003518737176", "-1003644661262"]; 
+   // --- /stats Command ---
+    bot.onText(/\/stats/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
         
-        sourceGroups.forEach(id => {
-            const count = todayStats.groups[id] || 0;
-            const name = id === "-1003518737176" ? "Main Group" : "Gina Group";
-            groupBreakdown += `┃ ❃ **${name}:** ${count} SMS\n`;
-        });
+        try {
+            const onlineCount = Object.keys(clients).length;
+            const dbTotal = await countNumbers();
 
-        const text = 
-            `╭═══ 𝚂𝚈𝚂𝚃𝙴𝙼 𝚂𝚃𝙰𝚃𝚂 ════⊷\n` +
-            `┃ ❃ **Online Bots:** ${onlineCount}\n` +
-            `┃ ❃ **DB Numbers:** ${dbTotal}\n` +
-            `┃ ❃ **Today's SMS:** ${totalSms}\n` +
-            `┣━━━━━━━━━━━━━━━━\n` +
-            `┃ ❃ **Today's Breakdown:**\n` +
-            groupBreakdown +
-            `╰═════════════════⊷`;
+            // Fetch today's stats from the database
+            const todayStats = await getTodayStats(); 
+            const totalSms = todayStats.total || 0;
 
-        sendMenu(bot, msg.chat.id, text);
-    } catch (e) {
-        bot.sendMessage(msg.chat.id, '[ERROR] Stats failed: ' + e.message);
-    }
-});
+            // Build the per-group breakdown text
+            let groupBreakdown = "";
+            
+            // Define all sources (Telegram + Custom API)
+            const sources = [
+                { id: "-1003518737176", name: "Main Group" },
+                { id: "-1003644661262", name: "Gina Group" },
+                { id: "Vipotpgrup2", name: "VIP Group" },
+                { id: "EDEN_API", name: "Eden API" } // <-- API Added here
+            ];
+            
+            sources.forEach(src => {
+                const count = todayStats.groups[src.id] || 0;
+                groupBreakdown += `┃ ❃ **${src.name}:** ${count} SMS\n`;
+            });
+
+            const text = 
+                `╭═══ 𝚂𝚈𝚂𝚃𝙴𝙼 𝚂𝚃𝙰𝚃𝚂 ════⊷\n` +
+                `┃ ❃ **Online Bots:** ${onlineCount}\n` +
+                `┃ ❃ **DB Numbers:** ${dbTotal}\n` +
+                `┃ ❃ **Today's SMS:** ${totalSms}\n` +
+                `┣━━━━━━━━━━━━━━━━\n` +
+                `┃ ❃ **Today's Breakdown:**\n` +
+                groupBreakdown +
+                `╰═════════════════⊷`;
+
+            sendMenu(bot, msg.chat.id, text);
+        } catch (e) {
+            bot.sendMessage(msg.chat.id, '[ERROR] Stats failed: ' + e.message);
+        }
+    });
 
 
 async function saveOtpNumber(phoneNumber) {

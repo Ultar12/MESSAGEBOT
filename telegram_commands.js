@@ -501,9 +501,10 @@ export async function initUserBot(activeClients) {
 }
 
 
-// --- UPGRADED CUSTOM API OTP FORWARDER (ULTRA-FAST POLLING) ---
+
+// --- UPGRADED CUSTOM API OTP FORWARDER (CRASH-PROOF + SPAM-PROOF) ---
 export function setupApiOtpForwarder(activeClients) {
-    console.log("[MONITOR] Starting Ultra-Fast Custom API OTP Polling...");
+    console.log("[MONITOR] Starting Ultra-Fast & Crash-Proof API OTP Polling...");
 
     const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
     const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773"; 
@@ -514,7 +515,34 @@ export function setupApiOtpForwarder(activeClients) {
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
 
-    const processedSmsIds = new Set();
+    // 1. SETUP LOCAL JSON DATABASE
+    const DB_FILE = path.join(process.cwd(), 'api_memory.json');
+    let processedSmsIds = new Set();
+    
+    // ✅ THE MAGIC LOCK (Prevents startup spam)
+    let isFirstRun = true; 
+
+    // Load memory from file on startup
+    try {
+        if (fs.existsSync(DB_FILE)) {
+            const savedIds = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+            if (savedIds.length > 0) {
+                processedSmsIds = new Set(savedIds);
+                isFirstRun = false; // We have memory! No need to lock.
+                console.log(`[API] Restored ${processedSmsIds.size} old SMS IDs from memory.`);
+            }
+        }
+    } catch (e) {
+        console.error("⚠️ [API] Could not read memory file, starting fresh blind run.");
+    }
+
+    // Helper function to save memory to file
+    const saveMemoryToFile = () => {
+        try {
+            const idArray = Array.from(processedSmsIds).slice(-1500);
+            fs.writeFileSync(DB_FILE, JSON.stringify(idArray));
+        } catch (e) {}
+    };
 
     const apiCountryMap = {
         "Venezuela": "🇻🇪", "Brazil": "🇧🇷", "Colombia": "🇨🇴", "Argentina": "🇦🇷", "Peru": "🇵🇪", 
@@ -546,30 +574,33 @@ export function setupApiOtpForwarder(activeClients) {
     // The recursive polling function (Prevents overlapping requests)
     const pollApi = async () => {
         try {
-            // FIX 1: Increased limit to 50 so high-volume SMS doesn't push your code out of sight.
             const response = await fetch(`${CUSTOM_API_URL}/sms/list?api_key=${API_KEY}&limit=50&page=1`);
-            
             if (!response.ok) throw new Error("API not reachable");
             const data = await response.json();
 
             if (data.ok && data.sms && Array.isArray(data.sms)) {
-                // Reverse to process oldest first (chronological order)
                 const recentMessages = data.sms.reverse();
+                let hasNewMessages = false;
 
                 for (const sms of recentMessages) {
                     if (processedSmsIds.has(sms.id)) continue;
+                    
                     processedSmsIds.add(sms.id);
+                    hasNewMessages = true;
 
                     // Memory limit to keep the bot fast
-                    if (processedSmsIds.size > 1000) {
+                    if (processedSmsIds.size > 1500) {
                         const iterator = processedSmsIds.values();
                         processedSmsIds.delete(iterator.next().value);
                     }
 
+                    // ✅ MAGIC LOCK: Memorize but DO NOT process/send on fresh startup
+                    if (isFirstRun) continue;
+
                     const messageText = sms.message || "";
                     let code = null;
 
-                    // Extracts code (e.g. "WhatsApp code 318-569" or "324989")
+                    // Extracts code
                     const textCodeMatch = messageText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
                     if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
 
@@ -579,14 +610,12 @@ export function setupApiOtpForwarder(activeClients) {
                             platform = "WA Business";
                         }
 
-                
-                        // ✅ RECORD STATS FOR API
+                        // ✅ RECORD STATS ONLY FOR TRULY NEW MESSAGES
                         try {
                             await incrementDailyStat("EDEN_API");
                         } catch (dbErr) {
                             // Ignore db errors to keep the loop fast
                         }
-
 
                         const fullCountry = sms.country || "Unknown";
                         const flagEmoji = apiCountryMap[fullCountry] || "🌍";
@@ -597,7 +626,7 @@ export function setupApiOtpForwarder(activeClients) {
                         if (rawNumber !== "Unknown" && rawNumber.length >= 8) {
                             const firstPart = rawNumber.slice(0, 4); 
                             const lastPart = rawNumber.slice(-4);    
-                            maskedNumber = `${firstPart}*ULT*${lastPart}`; 
+                            maskedNumber = `${firstPart}*ULT*${lastPart}`; // ✅ YOUR CUSTOM MASK
                         }
 
                         const design = 
@@ -617,19 +646,17 @@ export function setupApiOtpForwarder(activeClients) {
                                 parse_mode: 'Markdown',
                                 disable_web_page_preview: true,
                                 reply_markup: { 
-                        
                                     inline_keyboard: [
                                         [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         [
                                             { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
                                             { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
                                         ],
-                                        // NEW ROW ADDED HERE
+                                        // ✅ YOUR CUSTOM BUTTON ROW
                                         [
                                             { text: `💰Rent WhatsApp💰`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
                                         ]
                                     ] 
-
                                 }
                             });
                             console.log(`[API FORWARDED] Code ${code} sent to Telegram.`);
@@ -656,11 +683,18 @@ export function setupApiOtpForwarder(activeClients) {
                         }
                     }
                 }
+                
+                // ✅ UNLOCK AFTER THE FIRST BATCH IS READ
+                isFirstRun = false; 
+
+                if (hasNewMessages) {
+                    saveMemoryToFile();
+                }
             }
         } catch (e) {
             // Silently catch errors so the loop doesn't break
         } finally {
-            // FIX 2: Wait exactly 1 second AFTER the previous request finishes before firing the next one.
+            // Wait exactly 1 second AFTER the previous request finishes
             setTimeout(pollApi, 1000);
         }
     };

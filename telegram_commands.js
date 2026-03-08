@@ -326,6 +326,7 @@ export async function initUserBot(activeClients) {
                     continue;
                 }
 
+                                // A BRAND NEW MESSAGE ARRIVED!
                 if (latestMsg.id > state.lastMessageId) {
                     state.lastMessageId = latestMsg.id; 
                     
@@ -339,16 +340,22 @@ export async function initUserBot(activeClients) {
                     const combinedText = textToSearch + "\n" + replyText;
                     let code = null;
 
-                    // Extracts standard 6-digit code in text
+                    // 1. Check the main text first
                     const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
                     if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
 
-                    // Extracts code from buttons (e.g. 146-140)
-                    if (!code && latestMsg.replyMarkup?.rows) {
+                    // 2. ✅ EMOJI-PROOF BUTTON EXTRACTOR
+                    if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
                         for (const row of latestMsg.replyMarkup.rows) {
                             for (const btn of row.buttons) {
-                                const btnCodeMatch = (btn.text || "").match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                                if (btnCodeMatch) { code = btnCodeMatch[1] + btnCodeMatch[2]; break; }
+                                const btnText = btn.text || "";
+                                // Simply looks for 3 digits, a dash/space, and 3 digits anywhere in the button.
+                                // This completely bypasses the copy icon emoji that was breaking it!
+                                const btnCodeMatch = btnText.match(/(\d{3})[-\s]?(\d{3})/);
+                                if (btnCodeMatch) { 
+                                    code = btnCodeMatch[1] + btnCodeMatch[2]; 
+                                    break; 
+                                }
                             }
                             if (code) break;
                         }
@@ -364,6 +371,9 @@ export async function initUserBot(activeClients) {
                         } catch (dbErr) {
                             console.error("[STATS ERROR]", dbErr.message);
                         }
+
+                        // ... (The rest of your platform/country logic continues here exactly as before!) ...
+
 
                         // ✅ 2. PLATFORM DETECTION LOGIC
                         let platform = "WhatsApp"; 

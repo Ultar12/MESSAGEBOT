@@ -626,7 +626,7 @@ export function setupApiOtpForwarder(activeClients) {
                         if (rawNumber !== "Unknown" && rawNumber.length >= 8) {
                             const firstPart = rawNumber.slice(0, 4); 
                             const lastPart = rawNumber.slice(-4);    
-                            maskedNumber = `${firstPart}*ULT*${lastPart}`; // ✅ YOUR CUSTOM MASK
+                            maskedNumber = ${firstPart}•ULT•${lastPart}; // ✅ YOUR CUSTOM MASK
                         }
 
                         const design = 

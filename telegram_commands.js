@@ -436,7 +436,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
 
                         // ✅ BRANDING REPLACEMENT
-                        maskedNumber = maskedNumber.replace(/VIP/gi, 'ULTAR');
+                        // ✅ 5. BRANDING REPLACEMENT
+                        maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
+
 
                         const design = 
                             `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +

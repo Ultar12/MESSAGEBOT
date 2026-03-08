@@ -1596,6 +1596,44 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+        // --- USERBOT PRIVATE GROUP FINDER ---
+    bot.onText(/\/findgroup (.+)/i, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        
+        const keyword = match[1].toLowerCase();
+        
+        try {
+            bot.sendMessage(msg.chat.id, `Asking UserBot to search your chats for: "${keyword}"...`);
+            
+            // The UserBot fetches all your active chats
+            const dialogs = await userBot.getDialogs();
+            
+            let text = `**Search Results for "${keyword}":**\n\n`;
+            let found = 0;
+            
+            for (const dialog of dialogs) {
+                // Filter for groups/channels that match the keyword
+                if (dialog.title && dialog.title.toLowerCase().includes(keyword)) {
+                    text += `**Name:** ${dialog.title}\n`;
+                    text += `**ID:** \`${dialog.id.toString()}\`\n\n`;
+                    found++;
+                }
+            }
+            
+            if (found === 0) {
+                text = `No groups or channels found matching "${keyword}". Try a different word!`;
+            }
+            
+            bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+            
+        } catch(e) {
+            bot.sendMessage(msg.chat.id, `[ERROR] Search failed: ${e.message}`);
+        }
+    });
+
+
+
     // --- /ttx [Reply to file] ---
     bot.onText(/\/ttx/, async (msg) => {
         deleteUserCommand(bot, msg);

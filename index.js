@@ -40,6 +40,69 @@ const SESSIONS_DIR = './sessions';
 
 if (!TELEGRAM_TOKEN || !NOTIFICATION_TOKEN || !ADMIN_ID) { console.error('Missing Tokens'); process.exit(1); }
 
+
+// ==========================================
+// 🛡️ GLOBAL ANTI-CRASH SHIELD (WITH ADMIN ALERTS)
+// ==========================================
+
+// Helper function to DM the Admin instantly
+const sendErrorToAdmin = async (errorType, errorDetails) => {
+    try {
+        // Replace with your actual Bot Token if it's not in your .env file
+        const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY"; 
+        const ADMIN_ID = process.env.ADMIN_ID; 
+
+        if (!ADMIN_ID) return;
+
+        // Format the error message beautifully
+        const text = 
+            `**BOT CRASH PREVENTED**\n\n` +
+            `**Type:** ${errorType}\n` +
+            `**Error:** \`${String(errorDetails).substring(0, 800)}\``; // Limit to 800 chars so it doesn't break Telegram limits
+
+        const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+        
+        // Native fetch (Works perfectly in Node.js v24)
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: ADMIN_ID,
+                text: text,
+                parse_mode: 'Markdown'
+            })
+        });
+    } catch (e) {
+        console.log("Could not send error log to admin:", e.message);
+    }
+};
+
+process.on('unhandledRejection', (reason, promise) => {
+    const errorStr = String(reason);
+    
+    // Ignore harmless network timeouts so they don't spam your DMs
+    if (errorStr.includes('Timeout') || errorStr.includes('408') || errorStr.includes('fetch failed')) {
+        console.log('[NETWORK TIMEOUT] Ignored safely.');
+    } else {
+        console.error('[UNHANDLED REJECTION]', reason);
+        // Send the serious errors to your DM!
+        sendErrorToAdmin('Unhandled Rejection (Background Error)', errorStr);
+    }
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('[STREAM CRASH PREVENTED]', error.message);
+    // Send the fatal stream/code errors to your DM!
+    sendErrorToAdmin('Uncaught Exception (Fatal Code Error)', error.stack || error.message);
+});
+
+process.on('uncaughtExceptionMonitor', (error) => {
+    // Monitor just logs it, no need to send duplicate DMs
+    console.error('[MONITOR]', error.message);
+});
+// ==========================================
+
+
 const app = express();
 const PORT = process.env.PORT || 10000;
 

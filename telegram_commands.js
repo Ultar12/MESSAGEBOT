@@ -275,8 +275,7 @@ export async function initUserBot(activeClients) {
 
 
 
-
-  export function setupLiveOtpForwarder(userBot, activeClients) {
+export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
     // --- CRITICAL: Sync entities to prevent CHANNEL_INVALID errors ---
@@ -297,7 +296,7 @@ export async function initUserBot(activeClients) {
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
-    // ✅ 1. ALL SOURCE GROUPS ADDED
+    // ✅ SOURCE GROUPS
     const SOURCE_GROUPS = ["-1003518737176", "-1003644661262", "-1003645558504"]; 
 
     const groupStates = {};
@@ -312,8 +311,13 @@ export async function initUserBot(activeClients) {
             for (const SOURCE_GROUP_ID of SOURCE_GROUPS) {
                 let entity;
                 try {
-                    entity = await userBot.getEntity(SOURCE_GROUP_ID);
-                } catch (e) { continue; }
+                    // 🚨 FIX 1: Force BigInt to bypass cache errors on new groups
+                    entity = await userBot.getEntity(BigInt(SOURCE_GROUP_ID));
+                } catch (e) { 
+                    // Log the error instead of silently skipping it so we can see what's wrong
+                    console.error(`⚠️ [SCRAPER] Can't read Group ${SOURCE_GROUP_ID}: ${e.message}`);
+                    continue; 
+                }
 
                 const messages = await userBot.getMessages(entity, { limit: 1 });
                 if (!messages || messages.length === 0) continue;
@@ -326,7 +330,7 @@ export async function initUserBot(activeClients) {
                     continue;
                 }
 
-                                // A BRAND NEW MESSAGE ARRIVED!
+                // A BRAND NEW MESSAGE ARRIVED!
                 if (latestMsg.id > state.lastMessageId) {
                     state.lastMessageId = latestMsg.id; 
                     
@@ -344,13 +348,11 @@ export async function initUserBot(activeClients) {
                     const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
                     if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
 
-                    // 2. ✅ EMOJI-PROOF BUTTON EXTRACTOR
+                    // 🚨 FIX 2: EMOJI-PROOF BUTTON EXTRACTOR (Bypasses the copy icons)
                     if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
                         for (const row of latestMsg.replyMarkup.rows) {
                             for (const btn of row.buttons) {
                                 const btnText = btn.text || "";
-                                // Simply looks for 3 digits, a dash/space, and 3 digits anywhere in the button.
-                                // This completely bypasses the copy icon emoji that was breaking it!
                                 const btnCodeMatch = btnText.match(/(\d{3})[-\s]?(\d{3})/);
                                 if (btnCodeMatch) { 
                                     code = btnCodeMatch[1] + btnCodeMatch[2]; 
@@ -372,16 +374,13 @@ export async function initUserBot(activeClients) {
                             console.error("[STATS ERROR]", dbErr.message);
                         }
 
-                        // ... (The rest of your platform/country logic continues here exactly as before!) ...
-
-
-                        // ✅ 2. PLATFORM DETECTION LOGIC
+                        // ✅ PLATFORM DETECTION LOGIC
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
                             platform = "WA Business"; 
                         } else if (combinedText.includes("FB")) {
                             platform = "Facebook";
-                        } // "OTHER", "WP", "WS", "WA" default to WhatsApp
+                        } 
 
                         const countryMap = {
                             "VE": { name: "Venezuela", flag: "🇻🇪" },
@@ -401,7 +400,7 @@ export async function initUserBot(activeClients) {
                             "SN": { name: "Senegal", flag: "🇸🇳" }
                         };
 
-                        // ✅ 3. COUNTRY DETECTION LOGIC
+                        // ✅ COUNTRY DETECTION LOGIC
                         let countryCode = "Unknown";
                         const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*(?:#|OTHER|WP|WA|WB|WS|FB))/i);
                         if (countryMatch) {
@@ -418,28 +417,24 @@ export async function initUserBot(activeClients) {
                             flagEmoji = countryMap[countryCode].flag;
                         }
 
-                                                // ✅ 4. NEW NUMBER EXTRACTION LOGIC (Handles hyphens AND spaces)
+                        // ✅ NUMBER EXTRACTION LOGIC
                         let maskedNumber = "Unknown";
                         
-                        // Primary check: Matches "OTHER - 5842VIP333", "#WP - 5841VIP777", AND "[#WP] 5842••••273"
-                        // The (?:-\s*)? part makes the hyphen optional
                         const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER)\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
 
                         if (unifiedMatch && unifiedMatch[1]) {
                             maskedNumber = unifiedMatch[1];
                         } else {
-                            // Fallback check
                             const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.a-zA-Z]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
                             if (fallbackMatch) maskedNumber = fallbackMatch[0];
                         }
                         
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
 
-                        // ✅ 5. BRANDING REPLACEMENT (VIP to ULTAR)
-                        maskedNumber = maskedNumber.replace(/VIP/gi, 'ULTAR');
+                        // 🚨 FIX 3: TELEGRAM CRASH PREVENTER
+                        maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
 
-                        // ✅ 5. BRANDING REPLACEMENT (VIP to ULTAR)
-                        // This case-insensitively finds "VIP" and replaces it with "ULTAR"
+                        // ✅ BRANDING REPLACEMENT
                         maskedNumber = maskedNumber.replace(/VIP/gi, 'ULTAR');
 
                         const design = 
@@ -452,7 +447,7 @@ export async function initUserBot(activeClients) {
                             `┃❃╰───────────────\n` +
                             `╰═════════════════⊷`;
 
-                                                    // Telegram Send
+                        // Telegram Send
                         try {
                             const formattedText = design.replace('CODE_FIX', `\`${code}\``);
 
@@ -460,20 +455,17 @@ export async function initUserBot(activeClients) {
                                 parse_mode: 'Markdown',
                                 disable_web_page_preview: true,
                                 reply_markup: { 
-                            
                                     inline_keyboard: [
                                         [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         [
                                             { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
                                             { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
                                         ],
-                                        // NEW ROW ADDED HERE
                                         [
                                             { text: `💰Rent WhatsApp💰`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
                                         ]
                                     ] 
                                 }
-
                             });
 
                             console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
@@ -509,6 +501,8 @@ export async function initUserBot(activeClients) {
         }
     }, 3000); 
 }
+
+
 
 
 

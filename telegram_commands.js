@@ -298,7 +298,7 @@ export async function initUserBot(activeClients) {
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
     // ✅ 1. ALL SOURCE GROUPS ADDED
-    const SOURCE_GROUPS = ["-1003518737176", "-1003644661262", "Vipotpgrup2"]; 
+    const SOURCE_GROUPS = ["-1003518737176", "-1003644661262", "-1003490979607"]; 
 
     const groupStates = {};
     SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });

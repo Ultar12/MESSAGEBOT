@@ -367,10 +367,6 @@ setInterval(async () => {
     try { await awardHourlyPoints(Object.keys(clients)); } catch (e) {}
 }, 3600000); 
 
-setInterval(() => {
-    http.get(SERVER_URL, (res) => {}).on('error', (err) => {});
-}, 14 * 60 * 1000);
-
 // --- HELPER: Formats +234... to 070/080... (if applicable) ---
 function formatNumberLocal(phoneNumber) {
     // Strip leading + if present

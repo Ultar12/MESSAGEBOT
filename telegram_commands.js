@@ -84,6 +84,37 @@ export function updateOtpSender(id, wasError = false) {
     }
 }
 
+
+// 🚀 --- NEW ROCKET BOT SETUP --- 🚀
+const rocketApiId = parseInt(process.env.ROCKET_API_ID || "0"); 
+const rocketApiHash = process.env.ROCKET_API_HASH || "";
+const rocketStringSession = new StringSession(process.env.ROCKET_SESSION || ""); 
+
+let rocketUserBot = null;
+if (rocketApiId && rocketApiHash) {
+    rocketUserBot = new TelegramClient(rocketStringSession, rocketApiId, rocketApiHash, { 
+        connectionRetries: 5,
+        useWSS: true 
+    });
+}
+
+// Helper to keep the second account connected
+async function ensureRocketConnected() {
+    if (!rocketUserBot) throw new Error("Rocket UserBot credentials not set in Heroku Config Vars.");
+    if (!rocketUserBot.connected) {
+        console.log("[ROCKET BOT] Connecting...");
+        await rocketUserBot.connect();
+    }
+    try {
+        await rocketUserBot.getMe(); 
+    } catch (e) {
+        console.log("[ROCKET BOT] Session might be invalid. Re-authorizing...");
+        await rocketUserBot.connect();
+    }
+}
+// ------------------------------------
+
+
 /**
  * Finds and locks a dedicated sender, skipping any that have previously failed.
  */
@@ -2309,34 +2340,40 @@ const getCountryPrefix = (text) => {
     return ""; 
 };
 
+
 bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
     const userId = chatId.toString();
     
-    if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
     const countLimit = parseInt(match[1]);
 
     const opts = {
         reply_markup: {
             inline_keyboard: [
+                [{ text: "ROCKET OTP", callback_data: `bot_rocket_${countLimit}` }],
                 [{ text: "UxOTP BOT", callback_data: `bot_uxotp_${countLimit}` }],
                 [{ text: "TEAM 56 (Richie)", callback_data: `bot_rishi_${countLimit}` }]
             ]
         }
     };
-    bot.sendMessage(chatId, "Select the source bot:", opts);
+    bot.sendMessage(chatId, "Select the source bot to grab numbers:", opts);
 });
 
 bot.on('callback_query', async (callbackQuery) => {
     const data = callbackQuery.data;
-    if (!data.startsWith('bot_')) return; // Ignore other callbacks
+    if (!data.startsWith('bot_')) return; 
     
     const chatId = callbackQuery.message.chat.id;
     const [_, botType, amountStr] = data.split('_');
     const countLimit = parseInt(amountStr);
     
-    const targetBot = botType === 'rishi' ? "RishiXfreebot" : "UxOtpBOT";
+    let targetBot = "";
+    if (botType === 'rishi') targetBot = "RishiXfreebot";
+    else if (botType === 'uxotp') targetBot = "UxOtpBOT";
+    else if (botType === 'rocket') targetBot = "ROCKETOTP_BOT";
+
     let totalFetched = 0;
     let currentBatch = [];
 
@@ -2344,68 +2381,75 @@ bot.on('callback_query', async (callbackQuery) => {
     bot.editMessageText(`Selected: ${targetBot}. Initializing human-like extraction...`, { chat_id: chatId, message_id: callbackQuery.message.message_id });
 
     try {
-        await ensureConnected();
+        const activeBotClient = botType === 'rocket' ? rocketUserBot : userBot;
+        const ensureConnection = botType === 'rocket' ? ensureRocketConnected : ensureConnected;
+        
+        await ensureConnection();
 
         if (botType === 'rishi') {
-            // Note: Keeping the exact text here because the userBot needs to send this exact trigger
-            await userBot.sendMessage(targetBot, { message: "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫" });
-            bot.sendMessage(chatId, "SENT: Get Number command. Select country manually.");
+            await activeBotClient.sendMessage(targetBot, { message: "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫" });
+            bot.sendMessage(chatId, "[SENT] Get Number command. Select country manually in Rishi bot.");
+        } else if (botType === 'rocket') {
+            await activeBotClient.sendMessage(targetBot, { message: "📱 GET NUMBER" });
+            bot.sendMessage(chatId, "[SENT] Get Number. Go to @ROCKETOTP_BOT on your scraper account and click a country from the list manually.");
         } else {
-            await userBot.sendMessage(targetBot, { message: "/start" });
-            bot.sendMessage(chatId, "UxOTP: Select country manually.");
+            await activeBotClient.sendMessage(targetBot, { message: "/start" });
+            bot.sendMessage(chatId, "[SENT] UxOTP: Select country manually.");
         }
 
         let numberVisible = false;
         let countryPrefix = "";
         
         while (!numberVisible) {
-            const res = await userBot.getMessages(targetBot, { limit: 1 });
+            const res = await activeBotClient.getMessages(targetBot, { limit: 1 });
             const text = res[0]?.message || "";
             
-            // Split Detection Logic
             if (botType === 'rishi' && text.includes("Number") && text.includes("+")) {
                 countryPrefix = getCountryPrefix(text);
                 numberVisible = true;
             } else if (botType === 'uxotp' && text.includes("Numbers:")) {
                 countryPrefix = getCountryPrefix(text);
                 numberVisible = true;
+            } else if (botType === 'rocket' && text.includes("Numbers Assigned!")) {
+                numberVisible = true;
             } else {
                 await randomDelay(2000, 3000); 
             }
         }
 
-        bot.sendMessage(chatId, `STARTED: Detected Code +${countryPrefix}. Using anti-ban delays.`);
+        bot.sendMessage(chatId, `[STARTED] Bot responded with numbers. Using anti-ban delays.`);
 
-        // Extraction Loop
         while (totalFetched < countLimit) {
-            await ensureConnected();
-            const response = await userBot.getMessages(targetBot, { limit: 1 });
+            await ensureConnection();
+            const response = await activeBotClient.getMessages(targetBot, { limit: 1 });
             const currentMsg = response[0];
             const text = currentMsg.message || "";
             
-            // Split Regex Logic
-            const regex = botType === 'rishi' ? /\+\d{10,15}/g : /\d{10,15}/g;
-            const phoneMatches = text.match(regex); 
+            let regex = /\d{10,15}/g;
+            if (botType === 'rishi' || botType === 'rocket') regex = /\+\d{10,15}/g;
             
-            if (phoneMatches) {
-                for (let rawNum of phoneMatches) {
-                    if (totalFetched >= countLimit) break;
+            if ((botType === 'rocket' && text.includes("Numbers Assigned!")) || botType !== 'rocket') {
+                const phoneMatches = text.match(regex); 
+                
+                if (phoneMatches) {
+                    for (let rawNum of phoneMatches) {
+                        if (totalFetched >= countLimit) break;
 
-                    let cleanNum = rawNum.replace("+", "").trim();
-                    if (countryPrefix && cleanNum.startsWith(countryPrefix)) {
-                        cleanNum = cleanNum.substring(countryPrefix.length);
-                    }
+                        let cleanNum = rawNum.replace("+", "").trim();
+                        if (countryPrefix && cleanNum.startsWith(countryPrefix)) {
+                            cleanNum = cleanNum.substring(countryPrefix.length);
+                        }
 
-                    // Prevent grabbing the User ID if it sneaks through in UxOTP
-                    if (cleanNum !== "8400094258" && cleanNum.length >= 7) {
-                        currentBatch.push(`\`${cleanNum}\``);
-                        totalFetched++;
-                    }
+                        if (cleanNum !== "8400094258" && cleanNum.length >= 7) {
+                            currentBatch.push(`\`${cleanNum}\``);
+                            totalFetched++;
+                        }
 
-                    if (currentBatch.length === 6) {
-                        await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 5}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                        currentBatch = [];
-                        await randomDelay(2000, 3500); // Batch cooling
+                        if (currentBatch.length === 6) {
+                            await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 5}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                            currentBatch = [];
+                            await randomDelay(2000, 3500);
+                        }
                     }
                 }
             }
@@ -2416,7 +2460,7 @@ bot.on('callback_query', async (callbackQuery) => {
                     for (const row of currentMsg.replyMarkup.rows) {
                         for (const b of row.buttons) {
                             const btnText = b.text.toLowerCase();
-                            if (btnText.includes("get next") || btnText.includes("new numbers")) {
+                            if (btnText.includes("get next") || btnText.includes("new numbers") || btnText.includes("change number")) {
                                 nextBtn = b;
                                 break;
                             }
@@ -2426,13 +2470,17 @@ bot.on('callback_query', async (callbackQuery) => {
                 }
 
                 if (nextBtn) {
-                    await randomDelay(1000, 2000); 
+                    // Wait exactly 10 seconds before clicking the button
+                    await randomDelay(10000, 10500); 
+                    
                     await currentMsg.click({ button: nextBtn });
                     
-                    // LONG Anti-Ban Delay to prevent FROZEN_METHOD_INVALID
-                    await randomDelay(6000, 10000); 
+                    // Small delay after clicking to let the new message load
+                    await randomDelay(2000, 3000); 
                 } else {
-                    break; 
+                    const fallbackCmd = botType === 'rocket' ? "📱 GET NUMBER" : "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫";
+                    await activeBotClient.sendMessage(targetBot, { message: fallbackCmd });
+                    await randomDelay(10000, 10500); 
                 }
             }
         }
@@ -2440,9 +2488,10 @@ bot.on('callback_query', async (callbackQuery) => {
         if (currentBatch.length > 0) {
             await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
         }
-        bot.sendMessage(chatId, `COMPLETED: Successfully grabbed ${totalFetched} numbers.`);
+        bot.sendMessage(chatId, `[COMPLETED] Successfully grabbed ${totalFetched} numbers.`);
+        
     } catch (e) {
-        bot.sendMessage(chatId, "USERBOT ERROR: " + e.message);
+        bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
     }
 });
 

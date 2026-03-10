@@ -5537,10 +5537,9 @@ const cleanNumbers = matches.map(n => {
             let sock = null;
             let checkerNum = "None";
 
-            const getActiveSocket = async () => {
+                        const getActiveSocket = async () => {
                 let availableFolders = [];
                 if (isUserAdmin) {
-                    // Filter out any bots that are in the failed list
                     availableFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
                 } else {
                     const mySessions = await getAllSessions(userId);
@@ -5548,21 +5547,21 @@ const cleanNumbers = matches.map(n => {
                     availableFolders = mySessionIds.filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
                 }
                 
-                // Find the first TRULY connected bot
+                // SAFER CHECK: Just verify the socket exists and has a logged-in user identity
                 for (const folder of availableFolders) {
                     const tempSock = clients[folder];
-                    if (tempSock && tempSock.ws && tempSock.ws.readyState === 1) {
+                    if (tempSock && tempSock.user && tempSock.user.id) {
                         currentFolder = folder;
                         sock = tempSock;
                         checkerNum = sock.user.id.split(':')[0];
                         return true;
                     } else {
-                        // If it's in the list but not fully connected, mark it as failed
                         job.failedFolders.push(folder);
                     }
                 }
                 return false;
             };
+
 
             if (job.isStreaming) {
                 const hasBot = await getActiveSocket();
@@ -5608,23 +5607,24 @@ const cleanNumbers = matches.map(n => {
 
                 if (job.isStreaming) {
                     // FAILOVER SYSTEM: Check if current bot died or was banned mid-way
-                    if (!clients[currentFolder] || !sock.ws || sock.ws.readyState !== 1) {
+                                        // FAILOVER SYSTEM: Check if current bot died or was banned mid-way
+                    if (!clients[currentFolder] || !sock || !sock.user) {
                         bot.sendMessage(chatId, `[WARNING] Bot +${checkerNum} disconnected or was BANNED!\n[SYSTEM] Finding a new bot...`);
                         
-                        // Mark this exact bot as dead so we NEVER pick it again for this job
                         if (currentFolder) job.failedFolders.push(currentFolder);
                         
                         const hasNewBot = await getActiveSocket();
                         if (!hasNewBot) {
-                            job.currentIndex = i; // Save progress
+                            job.currentIndex = i; 
                             return bot.sendMessage(chatId, `[FATAL ERROR] ALL BOTS ARE DEAD OR BANNED!\nStopped at ${i}/${job.lines.length}.\nConnect a new WhatsApp account and tap resume.`, {
                                 reply_markup: { inline_keyboard: [[{text: "Resume Processing", callback_data: "resume_stream_txt"}]] }
                             });
                         }
                         bot.sendMessage(chatId, `[SUCCESS] Successfully switched to Bot: +${checkerNum}`);
-                        i--; // Step back to retry this exact number with the new bot
+                        i--; 
                         continue;
                     }
+
 
                     try {
                         const jid = `${fullPhone}@s.whatsapp.net`;
@@ -5648,14 +5648,15 @@ const cleanNumbers = matches.map(n => {
                         } else {
                             job.bannedNumbers.push(numberToOutput);
                         }
-                    } catch (err) {
+                         } catch (err) {
                         // If the bot died exactly during this request, step back and trigger failover
-                        if (err.message !== "WA_TIMEOUT" && (!clients[currentFolder] || !sock.ws || sock.ws.readyState !== 1)) {
+                        if (err.message !== "WA_TIMEOUT" && (!clients[currentFolder] || !sock || !sock.user)) {
                             i--; 
                             continue;
                         }
                         job.bannedNumbers.push(numberToOutput); 
                     }
+
 
                     await delay(500); // Anti-ban delay
 

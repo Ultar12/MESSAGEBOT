@@ -5459,7 +5459,9 @@ const cleanNumbers = matches.map(n => {
                 
 
                 
-                 // --- SMART EXECUTION & RESUME ENGINE FOR TXT AND TTX ---
+
+                
+               // --- SMART EXECUTION & RESUME ENGINE FOR TXT AND TTX ---
         if (data.startsWith('txt_run_') || data.startsWith('ttx_run_') || data === 'resume_stream_txt') {
             await bot.answerCallbackQuery(query.id);
             
@@ -5468,7 +5470,7 @@ const cleanNumbers = matches.map(n => {
             // 1. LOAD OR CREATE JOB
             if (data === 'resume_stream_txt') {
                 job = userState[chatId + '_stream_txt'];
-                if (!job) return bot.sendMessage(chatId, "No paused job found. It may have expired or finished.");
+                if (!job) return bot.sendMessage(chatId, "[ERROR] No paused job found. It may have expired or finished.");
                 try { await bot.deleteMessage(chatId, query.message.message_id); } catch(e){}
             } else {
                 try { await bot.deleteMessage(chatId, query.message.message_id); } catch(e){}
@@ -5516,6 +5518,7 @@ const cleanNumbers = matches.map(n => {
                     cmdType, isStreaming, outputAsFile, lines,
                     currentIndex: 0, totalChecked: 0, validCount: 0, skippedCount: 0,
                     bannedNumbers: [], activeBatch: [], activeFileArray: [],
+                    failedFolders: [], // Tracks dead bots so it doesn't loop
                     detectedCountry: "Unknown", detectedCode: "N/A",
                     connectedSet: Array.from(connectedSet),
                     dbSet: Array.from(dbSet),
@@ -5527,7 +5530,7 @@ const cleanNumbers = matches.map(n => {
 
             // 2. THE ENGINE SETUP
             const isUserAdmin = (userId === ADMIN_ID);
-            let statusMsg = await bot.sendMessage(chatId, `Starting Processing Engine...`);
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Starting Processing Engine...`);
             job.statusMsgId = statusMsg.message_id;
 
             let currentFolder = null;
@@ -5537,17 +5540,26 @@ const cleanNumbers = matches.map(n => {
             const getActiveSocket = async () => {
                 let availableFolders = [];
                 if (isUserAdmin) {
-                    availableFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId);
+                    // Filter out any bots that are in the failed list
+                    availableFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
                 } else {
                     const mySessions = await getAllSessions(userId);
                     const mySessionIds = mySessions.map(s => s.session_id);
-                    availableFolders = mySessionIds.filter(f => clients[f] && f !== currentOtpSenderId);
+                    availableFolders = mySessionIds.filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
                 }
-                if (availableFolders.length > 0) {
-                    currentFolder = availableFolders[0];
-                    sock = clients[currentFolder];
-                    checkerNum = sock.user.id.split(':')[0];
-                    return true;
+                
+                // Find the first TRULY connected bot
+                for (const folder of availableFolders) {
+                    const tempSock = clients[folder];
+                    if (tempSock && tempSock.ws && tempSock.ws.readyState === 1) {
+                        currentFolder = folder;
+                        sock = tempSock;
+                        checkerNum = sock.user.id.split(':')[0];
+                        return true;
+                    } else {
+                        // If it's in the list but not fully connected, mark it as failed
+                        job.failedFolders.push(folder);
+                    }
                 }
                 return false;
             };
@@ -5555,7 +5567,7 @@ const cleanNumbers = matches.map(n => {
             if (job.isStreaming) {
                 const hasBot = await getActiveSocket();
                 if (!hasBot) {
-                    return bot.sendMessage(chatId, `**NO BOTS AVAILABLE!**\nPlease connect a WhatsApp account to continue processing.`, {
+                    return bot.sendMessage(chatId, `[ERROR] NO BOTS AVAILABLE!\nPlease connect a WhatsApp account to continue processing.`, {
                         reply_markup: { inline_keyboard: [[{text: "Resume Processing", callback_data: "resume_stream_txt"}]] }
                     });
                 }
@@ -5596,16 +5608,22 @@ const cleanNumbers = matches.map(n => {
 
                 if (job.isStreaming) {
                     // FAILOVER SYSTEM: Check if current bot died or was banned mid-way
-                    if (!clients[currentFolder] || (sock.ws && sock.ws.readyState !== 1)) {
-                        bot.sendMessage(chatId, `Bot +${checkerNum} disconnected or was BANNED!\nFinding a new bot...`);
+                    if (!clients[currentFolder] || !sock.ws || sock.ws.readyState !== 1) {
+                        bot.sendMessage(chatId, `[WARNING] Bot +${checkerNum} disconnected or was BANNED!\n[SYSTEM] Finding a new bot...`);
+                        
+                        // Mark this exact bot as dead so we NEVER pick it again for this job
+                        if (currentFolder) job.failedFolders.push(currentFolder);
+                        
                         const hasNewBot = await getActiveSocket();
                         if (!hasNewBot) {
                             job.currentIndex = i; // Save progress
-                            return bot.sendMessage(chatId, `**ALL BOTS ARE DEAD/BANNED!**\nStopped at ${i}/${job.lines.length}.\nConnect a new WhatsApp account and tap resume.`, {
+                            return bot.sendMessage(chatId, `[FATAL ERROR] ALL BOTS ARE DEAD OR BANNED!\nStopped at ${i}/${job.lines.length}.\nConnect a new WhatsApp account and tap resume.`, {
                                 reply_markup: { inline_keyboard: [[{text: "Resume Processing", callback_data: "resume_stream_txt"}]] }
                             });
                         }
-                        bot.sendMessage(chatId, `Successfully switched to Bot: +${checkerNum}`);
+                        bot.sendMessage(chatId, `[SUCCESS] Successfully switched to Bot: +${checkerNum}`);
+                        i--; // Step back to retry this exact number with the new bot
+                        continue;
                     }
 
                     try {
@@ -5631,8 +5649,8 @@ const cleanNumbers = matches.map(n => {
                             job.bannedNumbers.push(numberToOutput);
                         }
                     } catch (err) {
-                        // If the bot died exactly during this request, step back and retry this number
-                        if (err.message !== "WA_TIMEOUT" && (!clients[currentFolder] || (sock.ws && sock.ws.readyState !== 1))) {
+                        // If the bot died exactly during this request, step back and trigger failover
+                        if (err.message !== "WA_TIMEOUT" && (!clients[currentFolder] || !sock.ws || sock.ws.readyState !== 1)) {
                             i--; 
                             continue;
                         }
@@ -5655,18 +5673,18 @@ const cleanNumbers = matches.map(n => {
                     }
                 }
 
-                // 4. LIVE PROGRESS DASHBOARD (Edits message every 10 items)
+                // 4. LIVE PROGRESS DASHBOARD
                 if (i > 0 && i % 10 === 0) {
                     const percent = Math.floor((i / job.lines.length) * 100);
                     const left = job.lines.length - i;
                     const progressMsg = 
-                        `**STREAMING IN PROGRESS**\n\n` +
-                        `**Progress:** ${percent}% [${i}/${job.lines.length}]\n` +
-                        `**Remaining:** ${left}\n` +
-                        `**Active:** ${job.validCount}\n` +
-                        (job.isStreaming ? `**Weak/Dead:** ${job.bannedNumbers.length}\n` : '') +
-                        `**Skipped (DB/Dupe):** ${job.skippedCount}\n\n` +
-                        (job.isStreaming ? `**Current Bot:** +${checkerNum}` : `**Mode:** Normal Filter`);
+                        `[STREAMING IN PROGRESS]\n\n` +
+                        `Progress: ${percent}% [${i}/${job.lines.length}]\n` +
+                        `Remaining: ${left}\n` +
+                        `Active: ${job.validCount}\n` +
+                        (job.isStreaming ? `Weak/Dead: ${job.bannedNumbers.length}\n` : '') +
+                        `Skipped (DB/Dupe): ${job.skippedCount}\n\n` +
+                        (job.isStreaming ? `Current Bot: +${checkerNum}` : `Mode: Normal Filter`);
                     
                     try {
                         await bot.editMessageText(progressMsg, {chat_id: chatId, message_id: job.statusMsgId, parse_mode: 'Markdown'});
@@ -5679,15 +5697,13 @@ const cleanNumbers = matches.map(n => {
             userState[chatId + '_stopFlag'] = false;
 
             if (isAborted) {
-                return bot.sendMessage(chatId, `**Process Manually Paused.**\nStopped at ${job.currentIndex} / ${job.lines.length}.`, {
+                return bot.sendMessage(chatId, `[PAUSED] Process Manually Paused.\nStopped at ${job.currentIndex} / ${job.lines.length}.`, {
                     reply_markup: { inline_keyboard: [[{text: "Resume Processing", callback_data: "resume_stream_txt"}]] }
                 });
             }
 
-            // Job is completely finished. Delete from memory.
             userState[chatId + '_stream_txt'] = null;
 
-            // Flush remaining batches
             if (!job.outputAsFile && job.activeBatch.length > 0) {
                 await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
             }
@@ -5703,12 +5719,12 @@ const cleanNumbers = matches.map(n => {
                 }
             }
 
-            let finalSummary = `**[PROCESS COMPLETE]**\n\n`;
-            finalSummary += `**Country Detected:** ${job.detectedCountry} (+${job.detectedCode})\n`;
-            finalSummary += `**Total Checked:** ${job.totalChecked}\n`;
-            finalSummary += `**Active:** ${job.validCount}\n`;
-            if (job.isStreaming) finalSummary += `**Weak/Dead:** ${job.bannedNumbers.length}\n`;
-            finalSummary += `**Skipped (DB/Dupe):** ${job.skippedCount}\n\n`;
+            let finalSummary = `[PROCESS COMPLETE]\n\n`;
+            finalSummary += `Country Detected: ${job.detectedCountry} (+${job.detectedCode})\n`;
+            finalSummary += `Total Checked: ${job.totalChecked}\n`;
+            finalSummary += `Active: ${job.validCount}\n`;
+            if (job.isStreaming) finalSummary += `Weak/Dead: ${job.bannedNumbers.length}\n`;
+            finalSummary += `Skipped (DB/Dupe): ${job.skippedCount}\n\n`;
             finalSummary += `*Always save temporarily banned numbers so you can reuse them later.*\n`;
             finalSummary += `[Tap to Join OTP Grp](https://t.me/+MLS1oZxY6TtiMTQ1)`;
 
@@ -5745,7 +5761,7 @@ const cleanNumbers = matches.map(n => {
             }
             return;
         }
-
+ 
 
 
                 // --- DOWNLOAD API NUMBERS ---

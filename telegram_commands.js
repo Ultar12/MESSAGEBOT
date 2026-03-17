@@ -186,7 +186,7 @@ async function ensurePaymeConnected() {
 // ==========================================
 const PAYME_CHAT_USERNAME = "paymennow_bot"; 
 
-async function syncDatabaseWithChat() {
+export async function syncDatabaseWithChat() {
     console.log("[SYSTEM] Starting 30-minute Database Sync with PAYME chat...");
 
     try {

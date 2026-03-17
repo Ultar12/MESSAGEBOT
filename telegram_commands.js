@@ -195,13 +195,21 @@ export async function syncDatabaseWithChat() {
         const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
         const chatNumbers = new Set();
 
-        // 2. Extract and normalize all numbers from the chat
+        /        // 2. Extract and normalize all numbers from the chat
         for (const msg of messages) {
             if (msg.message) {
                 const foundNumbers = msg.message.match(/\d{7,15}/g); 
                 
                 if (foundNumbers) {
-                    for (const rawNum of foundNumbers) {
+                    for (let rawNum of foundNumbers) {
+                        
+                        // FORCE VENEZUELA COUNTRY CODE
+                        if (rawNum.startsWith('041') || rawNum.startsWith('042')) {
+                            rawNum = '58' + rawNum.substring(1); // Changes 042... to 5842...
+                        } else if ((rawNum.length === 10) && (rawNum.startsWith('41') || rawNum.startsWith('42'))) {
+                            rawNum = '58' + rawNum; // Catch missing leading zeros
+                        }
+
                         const res = normalizeWithCountry(rawNum);
                         if (res && res.num) {
                             const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
@@ -211,6 +219,7 @@ export async function syncDatabaseWithChat() {
                 }
             }
         }
+
 
         // 3. Fetch all current numbers from your Database
         const allDbDocs = await getAllNumbers(); 
@@ -2192,46 +2201,39 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
-        // --- /convt : Swaps file format between TXT and XLSX (Interactive) ---
-    bot.onText(/\/convt/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-        
-        // 1. Authorization
-        const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = (SUBADMIN_IDS || []).includes(userId);
-        if (!isUserAdmin && !isSubAdmin) return;
+ bot.onText(/\/convt/, async (msg) => {
+    deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+    
+    const isUserAdmin = (userId === ADMIN_ID);
+    const isSubAdmin = SUBADMIN_IDS && SUBADMIN_IDS.includes(userId);
+    if (!isUserAdmin && !isSubAdmin) return;
 
-        // 2. Validate Input
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a file with /convt');
+    if (!msg.reply_to_message || !msg.reply_to_message.document) {
+        return bot.sendMessage(chatId, "[ERROR] You must reply to a .txt or .xlsx file with /convt");
+    }
+
+    const fileId = msg.reply_to_message.document.file_id;
+    const fileName = msg.reply_to_message.document.file_name.toLowerCase();
+    
+    if (!fileName.endsWith('.txt') && !fileName.endsWith('.xlsx')) {
+        return bot.sendMessage(chatId, "[ERROR] Only .txt and .xlsx files are supported.");
+    }
+
+    userState[chatId + '_convt_file'] = { id: fileId, name: fileName };
+
+    const opts = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "Sort by Country Code (Standard)", callback_data: "convt_sort_cc" }],
+                [{ text: "Sort by 'Range' Column (Excel)", callback_data: "convt_sort_rng" }]
+            ]
         }
+    };
+    bot.sendMessage(chatId, "How do you want to group the extracted numbers?", opts);
+});
 
-        const fileId = msg.reply_to_message.document.file_id;
-        const fileName = msg.reply_to_message.document.file_name || '';
-
-        // Save state for callback
-        userState[chatId + '_convt_file'] = fileId;
-        userState[chatId + '_convt_filename'] = fileName;
-
-        // 3. Ask for format preference
-        bot.sendMessage(chatId, 
-            `**CONVERT TOOL**\n\n` +
-            `File: ${fileName}\n\n` +
-            `Do you want to strip the country code (keep local number only) or keep the full international number?`, 
-            {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: 'Strip Country Code', callback_data: 'convt_opt_strip' }],
-                        [{ text: 'Keep Country Code', callback_data: 'convt_opt_keep' }],
-                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
-                    ]
-                }
-            }
-        );
-    });
         
 
     // --- /sendgroup [message] | [bot_count] | [group_link] ---
@@ -5506,166 +5508,184 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                // --- CONVT COMMAND: EXECUTION ---
-        if (data.startsWith('convt_opt_')) {
+
+        
+                  // --- /CONVT MENU 1: CHOOSE SORT METHOD ---
+        if (data === 'convt_sort_cc' || data === 'convt_sort_rng') {
             await bot.answerCallbackQuery(query.id);
-            await bot.deleteMessage(chatId, query.message.message_id);
+            const fileData = userState[chatId + '_convt_file'];
+            if (!fileData) return bot.sendMessage(chatId, "[ERROR] File session expired. Please reply with /convt again.");
 
-            const stripCode = data === 'convt_opt_strip';
-            const fileId = userState[chatId + '_convt_file'];
-            const fileName = userState[chatId + '_convt_filename'];
-
-            if (!fileId) {
-                return bot.sendMessage(chatId, '❌ [ERROR] Session expired. Please reply to the file with /convt again.');
+            if (data === 'convt_sort_rng' && !fileData.name.endsWith('.xlsx')) {
+                return bot.sendMessage(chatId, "[ERROR] Grouping by Range requires an .xlsx file with a 'Range' column.");
             }
 
-            // Clear memory
-            userState[chatId + '_convt_file'] = null;
-            userState[chatId + '_convt_filename'] = null;
+            userState[chatId + '_convt_sort'] = data === 'convt_sort_cc' ? 'cc' : 'rng';
 
-            try {
-                const fileLink = await bot.getFileLink(fileId);
-                const response = await fetch(fileLink);
-
-                // ==========================================
-                // BRANCH A: CONVERT EXCEL TO TXT (SMART SORT)
-                // ==========================================
-                if (fileName.toLowerCase().endsWith('.xlsx')) {
-                    bot.sendMessage(chatId, `[SYSTEM] Extracting, sorting by country... (Strip Codes: ${stripCode ? 'YES' : 'NO'})`);
-                    
-                    const buffer = await response.buffer();
-                    const workbook = XLSX.read(buffer, { type: 'buffer' });
-                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                    const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-                    
-                    const countryGroups = {}; 
-
-                    data.forEach(row => {
-                        if (Array.isArray(row)) {
-                            row.forEach(cell => { 
-                                if(cell) {
-                                    const cellStr = cell.toString();
-                                    const matches = cellStr.match(/\d{7,15}/g);
-                                    
-                                    if (matches) {
-                                        matches.forEach(num => {
-                                            const res = normalizeWithCountry(num);
-                                            
-                                            if (res && res.code && res.code !== 'N/A') {
-                                                const code = res.code;
-                                                
-                                                // Handle Stripping vs Keeping
-                                                let finalNum = res.num; 
-                                                if (!stripCode) {
-                                                    // Add country code back on, stripping leading 0 from local if necessary
-                                                    finalNum = `${code}${res.num.replace(/^0/, '')}`;
-                                                }
-
-                                                if (!countryGroups[code]) {
-                                                    countryGroups[code] = {
-                                                        name: res.name,
-                                                        numbers: new Set() 
-                                                    };
-                                                }
-                                                countryGroups[code].numbers.add(finalNum);
-                                            } else {
-                                                if (!countryGroups['Unknown']) {
-                                                    countryGroups['Unknown'] = { name: 'Unknown', numbers: new Set() };
-                                                }
-                                                // If unknown, just strip non-digits
-                                                countryGroups['Unknown'].numbers.add(num.replace(/\D/g, ''));
-                                            }
-                                        });
-                                    }
-                                } 
-                            });
-                        }
-                    });
-
-                    const codesFound = Object.keys(countryGroups);
-                    if (codesFound.length === 0) {
-                        return bot.sendMessage(chatId, '[ERROR] No valid numbers found in the Excel file.');
-                    }
-
-                    bot.sendMessage(chatId, `[INFO] Found numbers from ${codesFound.length} different regions. Generating files...`);
-
-                    for (const code of codesFound) {
-                        const group = countryGroups[code];
-                        const uniqueNumbers = Array.from(group.numbers); 
-                        const count = uniqueNumbers.length;
-                        
-                        let captionText = `**[CONVERT] XLSX to TXT Complete**\n\n`;
-                        if (code !== 'Unknown') {
-                            captionText += `**Country:** ${group.name}\n**Country Code:** +${code}\n`;
-                        } else {
-                            captionText += `**Country Code:** Unknown / Local\n`;
-                        }
-                        captionText += `**Total Numbers:** ${count}\n\n**OTP Grp:** [Tap to Join](https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t)`;
-
-                        await bot.sendDocument(
-                            chatId, 
-                            Buffer.from(uniqueNumbers.join('\n')), 
-                            { caption: captionText, parse_mode: 'Markdown' }, 
-                            { filename: `converted_${code === 'Unknown' ? 'unknown' : code}.txt`, contentType: 'text/plain' }
-                        );
-                        await delay(1200); 
-                    }
-                } 
-                // ==========================================
-                // BRANCH B: CONVERT TXT TO EXCEL
-                // ==========================================
-                else {
-                    bot.sendMessage(chatId, `[SYSTEM] Converting TXT to XLSX... (Strip Codes: ${stripCode ? 'YES' : 'NO'})`);
-                    const text = await response.text();
-                    
-                    const matches = text.match(/\+?\d{7,15}/g) || [];
-                    const processedSet = new Set();
-
-                    matches.forEach(rawNum => {
-                        const res = normalizeWithCountry(rawNum);
-                        if (res && res.code && res.code !== 'N/A') {
-                            let finalNum = res.num;
-                            if (!stripCode) {
-                                // Add country code back on, stripping leading 0 from local if necessary
-                                finalNum = `${res.code}${res.num.replace(/^0/, '')}`;
-                            }
-                            processedSet.add(finalNum);
-                        } else {
-                            processedSet.add(rawNum.replace(/\D/g, '')); // Fallback
-                        }
-                    });
-                    
-                    const uniqueMatches = Array.from(processedSet);
-                    const lines = uniqueMatches.map(l => [l]);
-                    
-                    const worksheet = XLSX.utils.aoa_to_sheet(lines);
-                    const workbook = XLSX.utils.book_new();
-                    XLSX.utils.book_append_sheet(workbook, worksheet, "Numbers");
-                    
-                    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-                    
-                    await bot.sendDocument(
-                        chatId, 
-                        buffer, 
-                        { 
-                            caption: `**[CONVERT] TXT to XLSX Complete**\n **Total Unique Numbers:** ${uniqueMatches.length}`, 
-                            parse_mode: 'Markdown' 
-                        }, 
-                        { 
-                            filename: 'converted.xlsx', 
-                            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-                        }
-                    );
+            const opts = {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Keep Country Code", callback_data: "convt_out_keep" }],
+                        [{ text: "Strip Country Code", callback_data: "convt_out_strip" }]
+                    ]
                 }
-            } catch (e) {
-                bot.sendMessage(chatId, `[ERROR] ${e.message}`);
-            }
-            return;
+            };
+            return bot.editMessageText("Do you want to KEEP or STRIP the country code in the final text files?", { chat_id: chatId, message_id: query.message.message_id, reply_markup: opts.reply_markup });
         }
 
+        // --- /CONVT MENU 2: EXECUTION ---
+        if (data === 'convt_out_keep' || data === 'convt_out_strip') {
+            await bot.answerCallbackQuery(query.id);
+            const fileData = userState[chatId + '_convt_file'];
+            const sortMode = userState[chatId + '_convt_sort'];
+            const keepCode = data === 'convt_out_keep';
 
-                
+            if (!fileData || !sortMode) return bot.sendMessage(chatId, "[ERROR] Session expired. Please reply with /convt again.");
 
+            userState[chatId + '_convt_file'] = null;
+            userState[chatId + '_convt_sort'] = null;
+
+            await bot.editMessageText(`[SYSTEM] Extracting & Sorting... (Strip Codes: ${keepCode ? 'NO' : 'YES'})`, { chat_id: chatId, message_id: query.message.message_id });
+
+            try {
+                const fileLink = await bot.getFileLink(fileData.id);
+                const response = await fetch(fileLink);
+
+                const groupedNumbers = {}; // Groups numbers based on user's choice
+                const groupNames = {};     // Holds clean names for the final output
+
+                if (fileData.name.endsWith('.xlsx')) {
+                    const arrayBuffer = await response.arrayBuffer();
+                    const buffer = Buffer.from(arrayBuffer);
+                    const workbook = XLSX.read(buffer, { type: 'buffer' });
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+                    if (sortMode === 'rng') {
+                        // GROUP BY EXCEL 'RANGE' COLUMN
+                        const parsedObjects = XLSX.utils.sheet_to_json(sheet);
+                        for (const row of parsedObjects) {
+                            const num = row['Number'] || row['number'] || row['Phone'] || row['phone'];
+                            const rangeName = row['Range'] || row['range'] || 'Unknown_Range';
+
+                            if (num) {
+                                if (!groupedNumbers[rangeName]) {
+                                    groupedNumbers[rangeName] = [];
+                                    groupNames[rangeName] = `Range: ${rangeName}`;
+                                }
+                                groupedNumbers[rangeName].push(String(num));
+                            }
+                        }
+                    } else {
+                        // GROUP BY COUNTRY CODE (Your Original Method)
+                        const parsedData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                        parsedData.forEach(row => {
+                            if (Array.isArray(row)) {
+                                row.forEach(cell => {
+                                    if (cell) {
+                                        const numMatch = cell.toString().match(/\d{7,15}/g);
+                                        if (numMatch) {
+                                            numMatch.forEach(num => {
+                                                const res = normalizeWithCountry(num);
+                                                let groupKey = 'Unknown';
+                                                let groupName = 'Unknown / Local';
+
+                                                if (res && res.code && res.code !== 'N/A') {
+                                                    groupKey = res.code;
+                                                    groupName = `${res.name} (+${res.code})`;
+                                                }
+
+                                                if (!groupedNumbers[groupKey]) {
+                                                    groupedNumbers[groupKey] = [];
+                                                    groupNames[groupKey] = groupName;
+                                                }
+                                                groupedNumbers[groupKey].push(num);
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    }
+                } else if (fileData.name.endsWith('.txt')) {
+                    // TXT files just group by Country Code
+                    const rawText = await response.text();
+                    const matches = rawText.match(/\d{7,15}/g) || [];
+
+                    matches.forEach(num => {
+                        const res = normalizeWithCountry(num);
+                        let groupKey = 'Unknown';
+                        let groupName = 'Unknown / Local';
+
+                        if (res && res.code && res.code !== 'N/A') {
+                            groupKey = res.code;
+                            groupName = `${res.name} (+${res.code})`;
+                        }
+
+                        if (!groupedNumbers[groupKey]) {
+                            groupedNumbers[groupKey] = [];
+                            groupNames[groupKey] = groupName;
+                        }
+                        groupedNumbers[groupKey].push(num);
+                    });
+                }
+
+                const keys = Object.keys(groupedNumbers);
+                if (keys.length === 0) return bot.sendMessage(chatId, "[RESULT] No valid numbers found to extract.");
+
+                bot.sendMessage(chatId, `[INFO] Found ${keys.length} group(s). Generating files...`);
+
+                // Send the files out one by one
+                for (const groupKey of keys) {
+                    const rawArray = groupedNumbers[groupKey];
+                    const outputArray = [];
+                    let totalProcessed = 0;
+
+                    for (let num of rawArray) {
+                        num = num ? num.trim() : "";
+                        if (!num) continue;
+
+                        const res = normalizeWithCountry(num);
+                        if (res && res.num) {
+                            if (keepCode) {
+                                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                                outputArray.push(fullPhone);
+                            } else {
+                                outputArray.push(res.num);
+                            }
+                            totalProcessed++;
+                        }
+                    }
+
+                    if (outputArray.length > 0) {
+                        const uniqueArray = Array.from(new Set(outputArray));
+                        const textBuffer = Buffer.from(uniqueArray.join('\n'));
+                        
+                        const safeName = groupKey.replace(/[^a-zA-Z0-9_\- ]/g, "").replace(/\s+/g, "_");
+                        const suffix = keepCode ? "WithCode" : "Stripped";
+
+                        let captionText = `**[CONVERT COMPLETE]**\n\n`;
+                        captionText += `**Group:** ${groupNames[groupKey]}\n`;
+                        captionText += `**Total Unique Numbers:** ${uniqueArray.length}\n`;
+                        captionText += `**Mode:** ${keepCode ? 'Kept Country Code' : 'Stripped Country Code'}\n\n`;
+                        captionText += `**OTP Grp:** [Tap to Join](https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t)`;
+
+                        await bot.sendDocument(chatId, textBuffer, {
+                            caption: captionText,
+                            parse_mode: 'Markdown'
+                        }, { filename: `converted_${safeName}_${suffix}.txt`, contentType: 'text/plain' });
+
+                        await new Promise(resolve => setTimeout(resolve, 800)); // Anti-flood delay
+                    }
+                }
+
+                bot.sendMessage(chatId, "[PROCESS COMPLETE] All files have been extracted and sent.");
+
+            } catch (err) {
+                console.error("Convt Error:", err);
+                bot.sendMessage(chatId, "[ERROR] Failed to convert file: " + err.message);
+            }
+        }
+  
                 
 
                 

@@ -977,13 +977,9 @@ mainBot.on('message', async (msg) => {
     }
 });
 
-
-
 async function boot() {
     await initDb(); 
 
-    
-    // --- THIS IS THE MISSING LINE ---
     // Start the Telegram UserBot and the OTP Monitor
     await initUserBot(clients);
     
@@ -998,15 +994,40 @@ async function boot() {
         let shortId = await getShortId(session.session_id);
         if (!shortId) { shortId = generateShortId(); await saveShortId(session.session_id, shortId); }
 
-        shortIdMap[shortId] = { folder: session.session_id, phone: session.phone, chatId: session.telegram_user_id, connectedAt: new Date(session.connected_at) };
+        shortIdMap[shortId] = { 
+            folder: session.session_id, 
+            phone: session.phone, 
+            chatId: session.telegram_user_id, 
+            connectedAt: new Date(session.connected_at) 
+        };
         if (session.antimsg) antiMsgState[shortId] = true;
         if (session.autosave) autoSaveState[shortId] = true; 
 
         startClient(session.session_id, null, null, session.telegram_user_id);
     }
+
+    // ==========================================
+    // START PAYME SYNC ENGINE
+    // ==========================================
+    console.log(`[SYSTEM] Initializing PAYME Sync Timers...`);
+    
+    // Run the first sync 10 seconds after boot to allow all connections to settle
+    setTimeout(() => {
+        syncDatabaseWithChat().catch(e => console.error("[SYNC FATAL]", e.message));
+    }, 10000); 
+
+    // Loop the sync exactly every 30 minutes
+    setInterval(() => {
+        syncDatabaseWithChat().catch(e => console.error("[SYNC FATAL]", e.message));
+    }, 1800000);
+    // ==========================================
+
     console.log(`[BOOT] Server ready`);
 }
 
 boot().catch(err => {
     console.error('[BOOT] Error:', err.message);
 });
+
+
+

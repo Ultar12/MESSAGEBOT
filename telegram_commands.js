@@ -22,9 +22,6 @@ import { pipeline } from 'node:stream/promises';
 import * as XLSX from 'xlsx';
 import fetch from 'node-fetch';
 
-
-const xlsx = require('xlsx');
-
 // Global counter for statistics
 const statsCounter = {
     totalSms: 0,

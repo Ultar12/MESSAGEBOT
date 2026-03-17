@@ -1888,7 +1888,109 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     
 
-   
+   bot.onText(/\/dbscan/, async (msg) => {
+    deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+    
+    // Authorization Check
+    const isUserAdmin = (userId === ADMIN_ID);
+    const isSubAdmin = SUBADMIN_IDS && SUBADMIN_IDS.includes(userId);
+    if (!isUserAdmin && !isSubAdmin) return;
+
+    // Ensure user replied to a file
+    if (!msg.reply_to_message || !msg.reply_to_message.document) {
+        return bot.sendMessage(chatId, "[ERROR] You must reply to a .txt or .xlsx file with /dbscan");
+    }
+
+    const document = msg.reply_to_message.document;
+    const fileName = document.file_name.toLowerCase();
+    
+    if (!fileName.endsWith('.txt') && !fileName.endsWith('.xlsx')) {
+        return bot.sendMessage(chatId, "[ERROR] Only .txt and .xlsx files are supported.");
+    }
+
+    const statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading file and loading database... Please wait.");
+
+    try {
+        const fileId = document.file_id;
+        const fileLink = await bot.getFileLink(fileId);
+        const response = await fetch(fileLink);
+        
+        let fileNumbers = [];
+
+        if (fileName.endsWith('.txt')) {
+            const rawText = await response.text();
+            fileNumbers = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+        } else if (fileName.endsWith('.xlsx')) {
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            const workbook = xlsx.read(buffer, { type: 'buffer' });
+            const sheetName = workbook.SheetNames[0];
+            const sheet = workbook.Sheets[sheetName];
+            const data = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+            fileNumbers = data.flat().map(String).map(l => l.trim()).filter(l => l.length > 0);
+        }
+
+        const allDbDocs = await getAllNumbers(); 
+        const dbSet = new Set();
+        
+        allDbDocs.forEach(doc => {
+            const rawStr = String(doc.number || doc).replace(/\D/g, '');
+            const res = normalizeWithCountry(rawStr);
+            if (res && res.num) {
+                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                dbSet.add(fullPhone);
+            } else {
+                dbSet.add(rawStr);
+            }
+        });
+
+        const foundNumbers = new Set(); 
+        let totalChecked = 0;
+
+        for (const line of fileNumbers) {
+            const res = normalizeWithCountry(line);
+            if (!res || !res.num) continue; 
+            
+            totalChecked++;
+            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+            
+            if (dbSet.has(fullPhone)) {
+                foundNumbers.add(res.num);
+            }
+        }
+
+        const foundArray = Array.from(foundNumbers);
+
+        if (foundArray.length === 0) {
+            return bot.editMessageText(`[RESULT] Scan complete. Checked ${totalChecked} numbers. None of them were found in the database.`, { chat_id: chatId, message_id: statusMsg.message_id });
+        }
+
+        await bot.editMessageText(`[SYSTEM] Scan complete. Checked ${totalChecked} numbers.\nFound ${foundArray.length} numbers already in the database.\n\nSending in standard batches...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        // Standard Batch Output (5 items per batch, tap-to-copy)
+        const BATCH_SIZE = 5;
+        for (let i = 0; i < foundArray.length; i += BATCH_SIZE) {
+            const chunk = foundArray.slice(i, i + BATCH_SIZE);
+            const formattedChunk = chunk.map(n => `\`${n}\``).join('\n'); 
+            
+            const startNum = i + 1;
+            const endNum = Math.min(i + BATCH_SIZE, foundArray.length);
+            
+            await bot.sendMessage(chatId, `[BATCH] ${startNum}-${endNum}\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
+            
+            await new Promise(resolve => setTimeout(resolve, 800)); // Standard 800ms delay between batches
+        }
+
+        bot.sendMessage(chatId, "[PROCESS COMPLETE] All matching numbers have been sent.");
+
+    } catch (error) {
+        console.error("DB Scan Error:", error);
+        bot.sendMessage(chatId, "[ERROR] Failed to process the scan: " + error.message);
+    }
+});
+
 
         // --- /xl [Reply to file] ---
     bot.onText(/\/xl/, async (msg) => {

@@ -3663,6 +3663,100 @@ bot.onText(/\/vz/, async (msg) => {
     });
 
 
+        // --- /del : Delete numbers from PAYME chat and Database ---
+    bot.onText(/^\/del(?:\s+([\s\S]+))?/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        // Authorization Check
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        const rawInput = match[1];
+        if (!rawInput) {
+            return bot.sendMessage(chatId, "[ERROR] Usage:\n/del\n04163007202\n04261846661");
+        }
+
+        // Extract numbers from the multi-line input
+        const numbersToDelete = rawInput.split(/\r?\n/).map(n => n.trim().replace(/\D/g, '')).filter(n => n.length >= 7);
+
+        if (numbersToDelete.length === 0) {
+            return bot.sendMessage(chatId, "[ERROR] No valid numbers provided.");
+        }
+
+        const statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Searching for ${numbersToDelete.length} number(s) to delete...`);
+
+        try {
+            await ensurePaymeConnected();
+            
+            const dbDeleteList = [];
+            const searchStrings = [];
+            
+            // Format numbers for both the Chat Search and the Database Search
+            for (let num of numbersToDelete) {
+                searchStrings.push(num); // Keep the raw version (e.g., 0416...) to find in the chat
+                
+                let formattedNum = num;
+                // Force Venezuela format for the database check
+                if (num.startsWith('041') || num.startsWith('042')) {
+                    formattedNum = '58' + num.substring(1);
+                } else if ((num.length === 10) && (num.startsWith('41') || num.startsWith('42'))) {
+                    formattedNum = '58' + num;
+                }
+                
+                const res = normalizeWithCountry(formattedNum);
+                if (res && res.num) {
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    dbDeleteList.push(fullPhone);
+                }
+            }
+
+            // Fetch the last 3000 messages from the PAYME bot chat
+            const PAYME_CHAT_USERNAME = "paymennow_bot";
+            const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 3000 });
+            
+            const msgIdsToDelete = [];
+
+            // Scan messages for the numbers
+            for (const m of messages) {
+                if (m.message) {
+                    // If the message contains any of our target numbers, flag it for deletion
+                    const hasMatch = searchStrings.some(num => m.message.includes(num));
+                    if (hasMatch) {
+                        msgIdsToDelete.push(m.id);
+                    }
+                }
+            }
+
+            // 1. Delete from Telegram Chat
+            let chatDeleted = 0;
+            if (msgIdsToDelete.length > 0) {
+                await paymeUserBot.deleteMessages(PAYME_CHAT_USERNAME, msgIdsToDelete, { revoke: true });
+                chatDeleted = msgIdsToDelete.length;
+            }
+
+            // 2. Delete from Database
+            let dbDeleted = 0;
+            if (dbDeleteList.length > 0) {
+                await deleteNumbers(dbDeleteList);
+                dbDeleted = dbDeleteList.length;
+            }
+
+            bot.editMessageText(
+                `[DELETE COMPLETE]\n\n` +
+                `Requested: ${numbersToDelete.length}\n` +
+                `Deleted from PAYME Chat: ${chatDeleted} messages\n` +
+                `Deleted from Database: ${dbDeleted} records`,
+                { chat_id: chatId, message_id: statusMsg.message_id }
+            );
+
+        } catch (e) {
+            bot.editMessageText(`[ERROR] Failed to delete: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        }
+    });
+
+
+
     bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;

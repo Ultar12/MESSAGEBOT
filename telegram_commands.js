@@ -152,6 +152,113 @@ export function getDedicatedSender(activeClients) {
 }
 
 
+// ==========================================
+// PAYME SYNC BOT SETUP
+// ==========================================
+const paymeApiId = parseInt(process.env.PAYME_API_ID || "0"); 
+const paymeApiHash = process.env.PAYME_API_HASH || "";
+const paymeStringSession = new StringSession(process.env.PAYME_SESSION || ""); 
+
+let paymeUserBot = null;
+if (paymeApiId && paymeApiHash) {
+    paymeUserBot = new TelegramClient(paymeStringSession, paymeApiId, paymeApiHash, { 
+        connectionRetries: 5,
+        useWSS: true 
+    });
+}
+
+async function ensurePaymeConnected() {
+    if (!paymeUserBot) throw new Error("PAYME UserBot credentials not set in Config Vars.");
+    if (!paymeUserBot.connected) {
+        console.log("[PAYME BOT] Connecting...");
+        await paymeUserBot.connect();
+    }
+    try {
+        await paymeUserBot.getMe(); 
+    } catch (e) {
+        console.log("[PAYME BOT] Session might be invalid. Re-authorizing...");
+        await paymeUserBot.connect();
+    }
+}
+
+// ==========================================
+// MAIN SYNC ENGINE
+// ==========================================
+const PAYME_CHAT_USERNAME = "paymennow_bot"; 
+
+async function syncDatabaseWithChat() {
+    console.log("[SYSTEM] Starting 30-minute Database Sync with PAYME chat...");
+
+    try {
+        await ensurePaymeConnected();
+
+        // 1. Fetch the last 5000 messages from the chat using the PAYME UserBot
+        const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
+        const chatNumbers = new Set();
+
+        // 2. Extract and normalize all numbers from the chat
+        for (const msg of messages) {
+            if (msg.message) {
+                const foundNumbers = msg.message.match(/\d{7,15}/g); 
+                
+                if (foundNumbers) {
+                    for (const rawNum of foundNumbers) {
+                        const res = normalizeWithCountry(rawNum);
+                        if (res && res.num) {
+                            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                            chatNumbers.add(fullPhone);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Fetch all current numbers from your Database
+        const allDbDocs = await getAllNumbers(); 
+        const dbNumbers = new Set();
+        
+        allDbDocs.forEach(doc => {
+            const rawStr = String(doc.number || doc).replace(/\D/g, '');
+            const res = normalizeWithCountry(rawStr);
+            if (res && res.num) {
+                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                dbNumbers.add(fullPhone);
+            }
+        });
+
+        // 4. Perform Two-Way Sync using your batch functions
+        const numbersToAdd = [];
+        const numbersToRemove = [];
+
+        // A. Find missing numbers to add to the database
+        for (const phone of chatNumbers) {
+            if (!dbNumbers.has(phone)) {
+                numbersToAdd.push(phone);
+            }
+        }
+
+        // B. Find deleted numbers to remove from the database
+        for (const phone of dbNumbers) {
+            if (!chatNumbers.has(phone)) {
+                numbersToRemove.push(phone);
+            }
+        }
+
+        // Execute batch database commands
+        if (numbersToAdd.length > 0) {
+            await addNumbersToDb(numbersToAdd);
+        }
+        
+        if (numbersToRemove.length > 0) {
+            await deleteNumbers(numbersToRemove);
+        }
+
+        console.log(`[SYNC COMPLETE] Added: ${numbersToAdd.length} | Removed: ${numbersToRemove.length} | Total Synced: ${chatNumbers.size}`);
+
+    } catch (error) {
+        console.error("[SYNC ERROR] Failed to sync database:", error.message);
+    }
+}
 
 
 // --- HYBRID 24-HOUR CHANNEL SCANNER ---

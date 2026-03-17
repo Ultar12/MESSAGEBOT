@@ -195,7 +195,7 @@ export async function syncDatabaseWithChat() {
         const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
         const chatNumbers = new Set();
 
-        /        // 2. Extract and normalize all numbers from the chat
+             // 2. Extract and normalize all numbers from the chat
         for (const msg of messages) {
             if (msg.message) {
                 const foundNumbers = msg.message.match(/\d{7,15}/g); 

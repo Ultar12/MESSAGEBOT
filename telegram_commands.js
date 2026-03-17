@@ -443,7 +443,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
     // ✅ SOURCE GROUPS
-    const SOURCE_GROUPS = ["-1003644661262", "-1003518737176"]; 
+    const SOURCE_GROUPS = ["-1003644661262", "-1003518737176", "-1003389248033"]; 
 
     const groupStates = {};
     SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });

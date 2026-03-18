@@ -442,7 +442,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
-    // ✅ ADDED "otpbotsy" TO SOURCE GROUPS
+    // ✅ ALL SOURCE GROUPS INCLUDED (With "otpbotsy")
     const SOURCE_GROUPS = ["-1003644661262", "-1003518737176", "-1003389248033", "otpbotsy"]; 
 
     const groupStates = {};
@@ -457,30 +457,32 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
             for (const SOURCE_GROUP_ID of SOURCE_GROUPS) {
                 let entity;
                 try {
-                    // 🚨 UPDATED FIX 1: Handle both numeric IDs (BigInt) and public usernames ("otpbotsy")
+                    // 🚨 SMART ID READER: Handles both numeric IDs (BigInt) and public usernames ("otpbotsy")
                     if (/^-?\d+$/.test(SOURCE_GROUP_ID)) {
                         entity = await userBot.getEntity(BigInt(SOURCE_GROUP_ID));
                     } else {
                         entity = await userBot.getEntity(SOURCE_GROUP_ID);
                     }
                 } catch (e) { 
-                    console.error(`⚠️ [SCRAPER] Can't read Group ${SOURCE_GROUP_ID}: ${e.message}`);
                     continue; 
                 }
 
-                const messages = await userBot.getMessages(entity, { limit: 1 });
+                // 🚨 BURST CATCHER: Pull up to 15 messages to never miss rapid drops
+                const messages = await userBot.getMessages(entity, { limit: 15 });
                 if (!messages || messages.length === 0) continue;
 
-                const latestMsg = messages[0];
                 const state = groupStates[SOURCE_GROUP_ID];
 
                 if (state.lastMessageId === 0) {
-                    state.lastMessageId = latestMsg.id;
+                    state.lastMessageId = messages[0].id;
                     continue;
                 }
 
-                // A BRAND NEW MESSAGE ARRIVED!
-                if (latestMsg.id > state.lastMessageId) {
+                // Filter ALL new messages and sort them oldest-to-newest
+                const newMessages = messages.filter(m => m.id > state.lastMessageId).sort((a, b) => a.id - b.id);
+
+                // Loop through every single new message
+                for (const latestMsg of newMessages) {
                     state.lastMessageId = latestMsg.id; 
                     
                     let textToSearch = latestMsg.message || "";
@@ -493,23 +495,31 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     const combinedText = textToSearch + "\n" + replyText;
                     let code = null;
 
-                    // 1. Check the main text first
-                    const textCodeMatch = textToSearch.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                    if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
-
-                    // 🚨 FIX 2: EMOJI-PROOF BUTTON EXTRACTOR (Bypasses the copy icons)
-                    if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
-                        for (const row of latestMsg.replyMarkup.rows) {
-                            for (const btn of row.buttons) {
+                    // Button checker
+                    const checkButtons = (rows) => {
+                        for (const row of rows) {
+                            const btnArray = row.buttons || row; 
+                            for (const btn of btnArray) {
                                 const btnText = btn.text || "";
                                 const btnCodeMatch = btnText.match(/(\d{3})[-\s]?(\d{3})/);
-                                if (btnCodeMatch) { 
-                                    code = btnCodeMatch[1] + btnCodeMatch[2]; 
-                                    break; 
+                                if (btnCodeMatch) {
+                                    return btnCodeMatch[1] + btnCodeMatch[2];
                                 }
                             }
-                            if (code) break;
                         }
+                        return null;
+                    };
+
+                    if (latestMsg.buttons && latestMsg.buttons.length > 0) {
+                        code = checkButtons(latestMsg.buttons);
+                    }
+                    if (!code && latestMsg.replyMarkup && latestMsg.replyMarkup.rows) {
+                        code = checkButtons(latestMsg.replyMarkup.rows);
+                    }
+
+                    if (!code) {
+                        const textCodeMatch = combinedText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                        if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
                     }
 
                     if (code) {
@@ -519,11 +529,8 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                         try {
                             await incrementDailyStat(SOURCE_GROUP_ID);
-                        } catch (dbErr) {
-                            console.error("[STATS ERROR]", dbErr.message);
-                        }
+                        } catch (dbErr) {}
 
-                        // ✅ PLATFORM DETECTION LOGIC
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
                             platform = "WA Business"; 
@@ -531,7 +538,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             platform = "Facebook";
                         } 
 
-                      const countryMap = {
+                        const countryMap = {
                             "VE": { name: "Venezuela", flag: "🇻🇪" },
                             "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
                             "NG": { name: "Nigeria", flag: "🇳🇬" },
@@ -549,14 +556,14 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "BF": { name: "Burkina Faso", flag: "🇧🇫" },
                             "KG": { name: "Kyrgyzstan", flag: "🇰🇬" },
                             "SN": { name: "Senegal", flag: "🇸🇳" },
-                            "DE": { name: "Germany", flag: "🇩🇪" }, // <-- ADDED GERMANY
+                            "DE": { name: "Germany", flag: "🇩🇪" }, 
                             "FR": { name: "France", flag: "🇫🇷" },
                             "ES": { name: "Spain", flag: "🇪🇸" },
                             "IT": { name: "Italy", flag: "🇮🇹" }
                         };
 
-                        // ✅ COUNTRY DETECTION LOGIC
                         let countryCode = "Unknown";
+                        // 🚨 EMOJI EXTRACTOR: Look for 📞 and ☎️
                         const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*(?:#|OTHER|WP|WA|WB|WS|FB|📞|☎️))/i);
                         if (countryMatch) {
                             countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
@@ -565,7 +572,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             if (fallbackCountry) countryCode = fallbackCountry[1].toUpperCase();
                         }
 
-                        // STRICT FILTER: Ignore any country not in the map
+                        // 🚨 STRICT FILTER: Drops unmapped countries
                         if (!countryMap[countryCode]) {
                             continue; 
                         }
@@ -573,10 +580,8 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         let fullCountry = countryMap[countryCode].name;
                         let flagEmoji = countryMap[countryCode].flag;
 
-                        // ✅ NUMBER EXTRACTION LOGIC
                         let maskedNumber = "Unknown";
                         
-                        // 🚨 FIX: Added 📞 and ☎️ to the unified match
                         const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER|📞|☎️)\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
 
                         if (unifiedMatch && unifiedMatch[1]) {
@@ -587,13 +592,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         }
                         
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
-
-                        // 🚨 FIX: TELEGRAM CRASH PREVENTER
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
-
-                        // ✅ BRANDING REPLACEMENT
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
- 
+
                         const design = 
                             `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
                             `┃❃╭──────────────\n` +
@@ -627,9 +628,16 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                             console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
 
+                            // 🚨 DYNAMIC DELETION TIMER
+                            // 300,000 ms = 5 minutes | 86,400,000 ms = 24 hours
+                            let deleteDelay = 86400000; 
+                            if (SOURCE_GROUP_ID === "otpbotsy" || SOURCE_GROUP_ID === "-1003389248033") {
+                                deleteDelay = 300000; 
+                            }
+
                             setTimeout(async () => { 
                                 try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
-                            }, 86400000);
+                            }, deleteDelay);
 
                         } catch (err) {
                             console.error("❌ [TG SEND ERROR]:", err.message);
@@ -659,6 +667,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     }, 3000); 
 }
 
+                                
 
 
 

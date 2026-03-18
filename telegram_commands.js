@@ -442,8 +442,8 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
-    // ✅ SOURCE GROUPS
-    const SOURCE_GROUPS = ["-1003644661262", "-1003518737176", "-1003389248033"]; 
+    // ✅ ADDED "otpbotsy" TO SOURCE GROUPS
+    const SOURCE_GROUPS = ["-1003644661262", "-1003518737176", "-1003389248033", "otpbotsy"]; 
 
     const groupStates = {};
     SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });
@@ -457,10 +457,13 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
             for (const SOURCE_GROUP_ID of SOURCE_GROUPS) {
                 let entity;
                 try {
-                    // 🚨 FIX 1: Force BigInt to bypass cache errors on new groups
-                    entity = await userBot.getEntity(BigInt(SOURCE_GROUP_ID));
+                    // 🚨 UPDATED FIX 1: Handle both numeric IDs (BigInt) and public usernames ("otpbotsy")
+                    if (/^-?\d+$/.test(SOURCE_GROUP_ID)) {
+                        entity = await userBot.getEntity(BigInt(SOURCE_GROUP_ID));
+                    } else {
+                        entity = await userBot.getEntity(SOURCE_GROUP_ID);
+                    }
                 } catch (e) { 
-                    // Log the error instead of silently skipping it so we can see what's wrong
                     console.error(`⚠️ [SCRAPER] Can't read Group ${SOURCE_GROUP_ID}: ${e.message}`);
                     continue; 
                 }
@@ -558,12 +561,13 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             if (fallbackCountry) countryCode = fallbackCountry[1].toUpperCase();
                         }
 
-                        let fullCountry = countryCode;
-                        let flagEmoji = "🌍";
-                        if (countryMap[countryCode]) {
-                            fullCountry = countryMap[countryCode].name;
-                            flagEmoji = countryMap[countryCode].flag;
+                        // STRICT FILTER: Ignore any country not in the map
+                        if (!countryMap[countryCode]) {
+                            continue; 
                         }
+
+                        let fullCountry = countryMap[countryCode].name;
+                        let flagEmoji = countryMap[countryCode].flag;
 
                         // ✅ NUMBER EXTRACTION LOGIC
                         let maskedNumber = "Unknown";
@@ -583,9 +587,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
 
                         // ✅ BRANDING REPLACEMENT
-                        // ✅ 5. BRANDING REPLACEMENT
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
-
 
                         const design = 
                             `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
@@ -651,7 +653,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
         }
     }, 3000); 
 }
-
 
 
 

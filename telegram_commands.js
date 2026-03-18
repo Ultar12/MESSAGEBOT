@@ -531,7 +531,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             platform = "Facebook";
                         } 
 
-                        const countryMap = {
+                      const countryMap = {
                             "VE": { name: "Venezuela", flag: "🇻🇪" },
                             "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
                             "NG": { name: "Nigeria", flag: "🇳🇬" },
@@ -548,12 +548,16 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "GB": { name: "United Kingdom", flag: "🇬🇧" },
                             "BF": { name: "Burkina Faso", flag: "🇧🇫" },
                             "KG": { name: "Kyrgyzstan", flag: "🇰🇬" },
-                            "SN": { name: "Senegal", flag: "🇸🇳" }
+                            "SN": { name: "Senegal", flag: "🇸🇳" },
+                            "DE": { name: "Germany", flag: "🇩🇪" }, // <-- ADDED GERMANY
+                            "FR": { name: "France", flag: "🇫🇷" },
+                            "ES": { name: "Spain", flag: "🇪🇸" },
+                            "IT": { name: "Italy", flag: "🇮🇹" }
                         };
 
                         // ✅ COUNTRY DETECTION LOGIC
                         let countryCode = "Unknown";
-                        const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*(?:#|OTHER|WP|WA|WB|WS|FB))/i);
+                        const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*(?:#|OTHER|WP|WA|WB|WS|FB|📞|☎️))/i);
                         if (countryMatch) {
                             countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
                         } else {
@@ -572,7 +576,8 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         // ✅ NUMBER EXTRACTION LOGIC
                         let maskedNumber = "Unknown";
                         
-                        const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER)\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
+                        // 🚨 FIX: Added 📞 and ☎️ to the unified match
+                        const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER|📞|☎️)\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
 
                         if (unifiedMatch && unifiedMatch[1]) {
                             maskedNumber = unifiedMatch[1];
@@ -583,12 +588,12 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
 
-                        // 🚨 FIX 3: TELEGRAM CRASH PREVENTER
+                        // 🚨 FIX: TELEGRAM CRASH PREVENTER
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
 
                         // ✅ BRANDING REPLACEMENT
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
-
+ 
                         const design = 
                             `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
                             `┃❃╭──────────────\n` +

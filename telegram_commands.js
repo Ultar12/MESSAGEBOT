@@ -668,6 +668,94 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 }
 
                                 
+    // --- MEMORY: Track user search limits (5 per 24h) ---
+    const userSearchLimits = {};
+
+    // --- LISTENER: Trigger when a user sends exactly 4 digits ---
+    bot.onText(/^(\d{4})$/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        
+        // ONLY run this feature inside your main OTP Target Group
+        if (chatId.toString() !== "-1003645249777") return;
+
+        const userId = msg.from.id.toString();
+        const fourDigits = match[1];
+        const now = Date.now();
+
+        // 1. Initialize user limits if they don't exist
+        if (!userSearchLimits[userId]) {
+            userSearchLimits[userId] = { count: 0, firstSearch: now, lockedUntil: 0 };
+        }
+        
+        const limitData = userSearchLimits[userId];
+
+        // 2. RESTRICTION ENFORCEMENT: Check if they are locked out
+        if (limitData.lockedUntil > now) {
+            // Silently delete their message so the group doesn't get cluttered with spam
+            try { await bot.deleteMessage(chatId, msg.message_id); } catch(e){}
+            return;
+        }
+
+        // 3. RESET LIMIT: If 24 hours have passed since their first search, reset their count
+        if (now - limitData.firstSearch > 24 * 60 * 60 * 1000) {
+            limitData.count = 0;
+            limitData.firstSearch = now;
+        }
+
+        // 4. INCREMENT & ENFORCE 5/DAY LIMIT
+        limitData.count++;
+        if (limitData.count > 5) {
+            limitData.lockedUntil = now + (24 * 60 * 60 * 1000); // Lock for exactly 24 hours
+            return bot.sendMessage(chatId, `**[LIMIT EXCEEDED]**\n<a href="tg://user?id=${userId}">${msg.from.first_name}</a>, you have used your 5 free searches for today. You are restricted from using this feature for the next 24 hours.`, { parse_mode: 'HTML' });
+        }
+
+        // 5. INSTANT OTP SEARCH (Using UserBot)
+        try {
+            // Fetch the last 50 messages to bypass Telegram's search indexing delay
+            const recentMessages = await userBot.getMessages(chatId, { limit: 50 });
+
+            let foundCode = null;
+            
+            // GramJS dates are in seconds. 10 minutes = 600 seconds.
+            const tenMinsAgo = Math.floor(now / 1000) - 600;
+
+            for (const m of recentMessages) {
+                // Ignore empty messages or messages older than 10 minutes
+                if (!m.message || m.date < tenMinsAgo) continue;
+
+                // Quick check: Does the message even contain the 4 digits?
+                if (!m.message.includes(fourDigits)) continue;
+
+                // Strict Regex: Ensure the 4 digits belong to the phone number and extract the code
+                const numMatch = m.message.match(/Number\s*:\s*.*?(\d{4})\b/i);
+                const codeMatch = m.message.match(/Code\s*:\s*`?(\d{3,8})`?/i);
+
+                if (numMatch && numMatch[1] === fourDigits && codeMatch) {
+                    foundCode = codeMatch[1];
+                    break; // Stop searching once we find the newest match
+                }
+            }
+
+            // 6. REPLY TO USER
+            if (foundCode) {
+                const opts = {
+                    reply_to_message_id: msg.message_id,
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: `Copy: ${foundCode}`, copy_text: { text: foundCode }, style: 'success' }]
+                        ]
+                    }
+                };
+                bot.sendMessage(chatId, `**OTP FOUND!**\nHere is the latest code for \`...${fourDigits}\`\n\n*(Search ${limitData.count}/5 used today)*`, opts);
+            } else {
+                bot.sendMessage(chatId, `**NOT FOUND**\nNo OTP was found for \`...${fourDigits}\` in the last 10 minutes.\n\n*(Search ${limitData.count}/5 used today)*`, { reply_to_message_id: msg.message_id, parse_mode: 'Markdown' });
+            }
+
+        } catch (e) {
+            console.error("OTP Search Error:", e);
+        }
+    });
 
 
 

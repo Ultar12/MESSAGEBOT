@@ -1396,7 +1396,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // 5. INSTANT OTP SEARCH (Using UserBot)
         try {
             // Fetch the last 50 messages to bypass Telegram's search indexing delay
-            const recentMessages = await userBot.getMessages(chatId, { limit: 50 });
+            const recentMessages = await userBot.getMessages(chatId, { limit: 100 });
 
             let foundCode = null;
             

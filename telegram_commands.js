@@ -1339,8 +1339,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     const notifyDisconnection = () => {};
 
 
-        // --- MEMORY: Track user search limits (5 per 24h) ---
+            // --- MEMORY: Track user search limits (5 per 24h) ---
     const userSearchLimits = {};
+    
+    // Initialize the OTP Bot directly here so it sends the replies
+    const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
+    const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
     // --- LISTENER: Trigger when a user sends exactly 4 digits ---
     bot.onText(/^(\d{4})$/, async (msg, match) => {
@@ -1377,7 +1381,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         limitData.count++;
         if (limitData.count > 5) {
             limitData.lockedUntil = now + (24 * 60 * 60 * 1000); // Lock for exactly 24 hours
-            return bot.sendMessage(chatId, `**[LIMIT EXCEEDED]**\n<a href="tg://user?id=${userId}">${msg.from.first_name}</a>, you have used your 5 free searches for today. You are restricted from using this feature for the next 24 hours.`, { parse_mode: 'HTML' });
+            const limitMsg = await senderBot.sendMessage(chatId, `[LIMIT EXCEEDED]\n<a href="tg://user?id=${userId}">${msg.from.first_name}</a>, you have used your 5 free searches for today. You are restricted from using this feature for the next 24 hours.`, { parse_mode: 'HTML' }).catch(()=>{});
+            
+            // Delete both messages after 1 minute
+            setTimeout(async () => {
+                try { await bot.deleteMessage(chatId, msg.message_id); } catch(e){}
+                if (limitMsg && limitMsg.message_id) {
+                    try { await senderBot.deleteMessage(chatId, limitMsg.message_id); } catch(e){}
+                }
+            }, 60000);
+            return;
         }
 
         // 5. INSTANT OTP SEARCH (Using UserBot)
@@ -1394,39 +1407,47 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 // Ignore empty messages or messages older than 10 minutes
                 if (!m.message || m.date < tenMinsAgo) continue;
 
-                // Quick check: Does the message even contain the 4 digits?
-                if (!m.message.includes(fourDigits)) continue;
+                // Explicitly search for the 4 digits at the END of the "Number" line 
+                const numRegex = new RegExp(`Number[^\\n]*?${fourDigits}\\s*(?:\\n|$)`, 'i');
+                const codeMatch = m.message.match(/Code[^\n]*?(\d{3,8})/i);
 
-                // Strict Regex: Ensure the 4 digits belong to the phone number and extract the code
-                const numMatch = m.message.match(/Number\s*:\s*.*?(\d{4})\b/i);
-                const codeMatch = m.message.match(/Code\s*:\s*`?(\d{3,8})`?/i);
-
-                if (numMatch && numMatch[1] === fourDigits && codeMatch) {
+                if (numRegex.test(m.message) && codeMatch) {
                     foundCode = codeMatch[1];
                     break; // Stop searching once we find the newest match
                 }
             }
 
-            // 6. REPLY TO USER
+            // 6. REPLY TO USER (Using the OTP Bot)
+            let sentMsg = null;
+            
             if (foundCode) {
                 const opts = {
                     reply_to_message_id: msg.message_id,
                     parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: `Copy: ${foundCode}`, copy_text: { text: foundCode }, style: 'success' }]
+                            [{ text: `Copy: ${foundCode}`, copy_text: { text: foundCode } }]
                         ]
                     }
                 };
-                bot.sendMessage(chatId, `**OTP FOUND!**\nHere is the latest code for \`...${fourDigits}\`\n\n*(Search ${limitData.count}/5 used today)*`, opts);
+                sentMsg = await senderBot.sendMessage(chatId, `[OTP FOUND]\nHere is the latest code for \`...${fourDigits}\`\n\n*(Search ${limitData.count}/5 used today)*`, opts).catch(()=>{});
             } else {
-                bot.sendMessage(chatId, `**NOT FOUND**\nNo OTP was found for \`...${fourDigits}\` in the last 10 minutes.\n\n*(Search ${limitData.count}/5 used today)*`, { reply_to_message_id: msg.message_id, parse_mode: 'Markdown' });
+                sentMsg = await senderBot.sendMessage(chatId, `[NOT FOUND]\nNo OTP was found for \`...${fourDigits}\` in the last 10 minutes.\n\n*(Search ${limitData.count}/5 used today)*`, { reply_to_message_id: msg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
             }
+
+            // 7. THE CLEANUP CREW (Delete both messages after 1 minute / 60,000ms)
+            setTimeout(async () => {
+                try { await bot.deleteMessage(chatId, msg.message_id); } catch(e){}
+                if (sentMsg && sentMsg.message_id) {
+                    try { await senderBot.deleteMessage(chatId, sentMsg.message_id); } catch(e){}
+                }
+            }, 60000);
 
         } catch (e) {
             console.error("OTP Search Error:", e);
         }
     });
+
 
 
     // --- BURST FORWARD BROADCAST ---

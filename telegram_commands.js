@@ -1339,63 +1339,23 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     const notifyDisconnection = () => {};
 
 
-            // --- MEMORY: Track user search limits (5 per 24h) ---
-    const userSearchLimits = {};
-    
     // Initialize the OTP Bot directly here so it sends the replies
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
-    // --- LISTENER: Trigger when a user sends exactly 4 digits ---
-    bot.onText(/^(\d{4})$/, async (msg, match) => {
+    // --- LISTENER: Trigger when a user sends 3 or 4 digits (NO LIMITS) ---
+    bot.onText(/^(\d{3,4})$/, async (msg, match) => {
         const chatId = msg.chat.id;
         
         // ONLY run this feature inside your main OTP Target Group
         if (chatId.toString() !== "-1003645249777") return;
 
-        const userId = msg.from.id.toString();
-        const fourDigits = match[1];
+        const searchDigits = match[1]; // Grabs either the 3 or 4 digits they typed
         const now = Date.now();
 
-        // 1. Initialize user limits if they don't exist
-        if (!userSearchLimits[userId]) {
-            userSearchLimits[userId] = { count: 0, firstSearch: now, lockedUntil: 0 };
-        }
-        
-        const limitData = userSearchLimits[userId];
-
-        // 2. RESTRICTION ENFORCEMENT: Check if they are locked out
-        if (limitData.lockedUntil > now) {
-            // Silently delete their message so the group doesn't get cluttered with spam
-            try { await bot.deleteMessage(chatId, msg.message_id); } catch(e){}
-            return;
-        }
-
-        // 3. RESET LIMIT: If 24 hours have passed since their first search, reset their count
-        if (now - limitData.firstSearch > 24 * 60 * 60 * 1000) {
-            limitData.count = 0;
-            limitData.firstSearch = now;
-        }
-
-        // 4. INCREMENT & ENFORCE 5/DAY LIMIT
-        limitData.count++;
-        if (limitData.count > 5) {
-            limitData.lockedUntil = now + (24 * 60 * 60 * 1000); // Lock for exactly 24 hours
-            const limitMsg = await senderBot.sendMessage(chatId, `[LIMIT EXCEEDED]\n<a href="tg://user?id=${userId}">${msg.from.first_name}</a>, you have used your 5 free searches for today. You are restricted from using this feature for the next 24 hours.`, { parse_mode: 'HTML' }).catch(()=>{});
-            
-            // Delete both messages after 1 minute
-            setTimeout(async () => {
-                try { await bot.deleteMessage(chatId, msg.message_id); } catch(e){}
-                if (limitMsg && limitMsg.message_id) {
-                    try { await senderBot.deleteMessage(chatId, limitMsg.message_id); } catch(e){}
-                }
-            }, 60000);
-            return;
-        }
-
-        // 5. INSTANT OTP SEARCH (Using UserBot)
+        // 1. INSTANT OTP SEARCH (Using UserBot)
         try {
-            // Fetch the last 50 messages to bypass Telegram's search indexing delay
+            // Fetch the last 100 messages to bypass Telegram's search indexing delay
             const recentMessages = await userBot.getMessages(chatId, { limit: 100 });
 
             let foundCode = null;
@@ -1407,8 +1367,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 // Ignore empty messages or messages older than 10 minutes
                 if (!m.message || m.date < tenMinsAgo) continue;
 
-                // Explicitly search for the 4 digits at the END of the "Number" line 
-                const numRegex = new RegExp(`Number[^\\n]*?${fourDigits}\\s*(?:\\n|$)`, 'i');
+                // Explicitly search for the 3 or 4 digits at the END of the "Number" line 
+                const numRegex = new RegExp(`Number[^\\n]*?${searchDigits}\\s*(?:\\n|$)`, 'i');
                 const codeMatch = m.message.match(/Code[^\n]*?(\d{3,8})/i);
 
                 if (numRegex.test(m.message) && codeMatch) {
@@ -1417,7 +1377,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
             }
 
-            // 6. REPLY TO USER (Using the OTP Bot)
+            // 2. REPLY TO USER (Using the OTP Bot)
             let sentMsg = null;
             
             if (foundCode) {
@@ -1426,16 +1386,16 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: `Copy: ${foundCode}`, copy_text: { text: foundCode } }]
+                            [{ text: `📋 Copy: ${foundCode}`, copy_text: { text: foundCode } }]
                         ]
                     }
                 };
-                sentMsg = await senderBot.sendMessage(chatId, `[OTP FOUND]\nHere is the latest code for \`...${fourDigits}\`\n\n*(Search ${limitData.count}/5 used today)*`, opts).catch(()=>{});
+                sentMsg = await senderBot.sendMessage(chatId, `**OTP FOUND!**\nHere is the latest code for \`...${searchDigits}\``, opts).catch(()=>{});
             } else {
-                sentMsg = await senderBot.sendMessage(chatId, `[NOT FOUND]\nNo OTP was found for \`...${fourDigits}\` in the last 10 minutes.\n\n*(Search ${limitData.count}/5 used today)*`, { reply_to_message_id: msg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
+                sentMsg = await senderBot.sendMessage(chatId, `**NOT FOUND**\nNo OTP was found for \`...${searchDigits}\` in the last 10 minutes.`, { reply_to_message_id: msg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
             }
 
-            // 7. THE CLEANUP CREW (Delete both messages after 1 minute / 60,000ms)
+            // 3. THE CLEANUP CREW (Delete both messages after 1 minute / 60,000ms)
             setTimeout(async () => {
                 try { await bot.deleteMessage(chatId, msg.message_id); } catch(e){}
                 if (sentMsg && sentMsg.message_id) {

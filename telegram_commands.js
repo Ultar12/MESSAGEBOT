@@ -1386,7 +1386,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: `📋 Copy: ${foundCode}`, copy_text: { text: foundCode } }]
+                            [{ text: `Copy: ${foundCode}`, copy_text: { text: foundCode } }]
                         ]
                     }
                 };

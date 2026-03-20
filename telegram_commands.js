@@ -113,6 +113,35 @@ async function ensureRocketConnected() {
 }
 // ------------------------------------
 
+// 🚀 --- NEW GETNUM BOT SETUP (For @LolzFack_bot) --- 🚀
+const getnumApiId = parseInt(process.env.GETNUM_API_ID || "0"); 
+const getnumApiHash = process.env.GETNUM_API_HASH || "";
+const getnumStringSession = new StringSession(process.env.GETNUM_SESSION || ""); 
+
+let getnumUserBot = null;
+if (getnumApiId && getnumApiHash) {
+    getnumUserBot = new TelegramClient(getnumStringSession, getnumApiId, getnumApiHash, { 
+        connectionRetries: 5,
+        useWSS: true 
+    });
+}
+
+// Helper to keep the GETNUM account connected
+async function ensureGetnumConnected() {
+    if (!getnumUserBot) throw new Error("GETNUM UserBot credentials not set in Heroku Config Vars.");
+    if (!getnumUserBot.connected) {
+        console.log("[GETNUM BOT] Connecting...");
+        await getnumUserBot.connect();
+    }
+    try {
+        await getnumUserBot.getMe(); 
+    } catch (e) {
+        console.log("[GETNUM BOT] Session might be invalid. Re-authorizing...");
+        await getnumUserBot.connect();
+    }
+}
+// ------------------------------------
+
 
 /**
  * Finds and locks a dedicated sender, skipping any that have previously failed.
@@ -2654,160 +2683,66 @@ const getCountryPrefix = (text) => {
     return ""; 
 };
 
-
-bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
-    deleteUserCommand(bot, msg);
-    const chatId = msg.chat.id;
-    const userId = chatId.toString();
-    
-    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
-    const countLimit = parseInt(match[1]);
-
-    const opts = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: "ROCKET OTP", callback_data: `bot_rocket_${countLimit}` }],
-                [{ text: "UxOTP BOT", callback_data: `bot_uxotp_${countLimit}` }],
-                [{ text: "TEAM 56 (Richie)", callback_data: `bot_rishi_${countLimit}` }]
-            ]
-        }
-    };
-    bot.sendMessage(chatId, "Select the source bot to grab numbers:", opts);
-});
-
-bot.on('callback_query', async (callbackQuery) => {
-    const data = callbackQuery.data;
-    if (!data.startsWith('bot_')) return; 
-    
-    const chatId = callbackQuery.message.chat.id;
-    const [_, botType, amountStr] = data.split('_');
-    const countLimit = parseInt(amountStr);
-    
-    let targetBot = "";
-    if (botType === 'rishi') targetBot = "RishiXfreebot";
-    else if (botType === 'uxotp') targetBot = "UxOtpBOT";
-    else if (botType === 'rocket') targetBot = "ROCKETOTP_BOT";
-
-    let totalFetched = 0;
-    let currentBatch = [];
-
-    bot.answerCallbackQuery(callbackQuery.id);
-    bot.editMessageText(`Selected: ${targetBot}. Initializing human-like extraction...`, { chat_id: chatId, message_id: callbackQuery.message.message_id });
-
-    try {
-        const activeBotClient = botType === 'rocket' ? rocketUserBot : userBot;
-        const ensureConnection = botType === 'rocket' ? ensureRocketConnected : ensureConnected;
+        // --- /getnum : Smart LolzFack_bot Extractor (Using Dedicated Acc) ---
+    bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
         
-        await ensureConnection();
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+        const countLimit = parseInt(match[1]);
 
-        if (botType === 'rishi') {
-            await activeBotClient.sendMessage(targetBot, { message: "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫" });
-            bot.sendMessage(chatId, "[SENT] Get Number command. Select country manually in Rishi bot.");
-        } else if (botType === 'rocket') {
-            await activeBotClient.sendMessage(targetBot, { message: "📱 GET NUMBER" });
-            bot.sendMessage(chatId, "[SENT] Get Number. Go to @ROCKETOTP_BOT on your scraper account and click a country from the list manually.");
-        } else {
-            await activeBotClient.sendMessage(targetBot, { message: "/start" });
-            bot.sendMessage(chatId, "[SENT] UxOTP: Select country manually.");
-        }
+        try {
+            // ✅ Use the dedicated connection
+            await ensureGetnumConnected(); 
+            const targetBot = "LolzFack_bot";
 
-        let numberVisible = false;
-        let countryPrefix = "";
-        
-        while (!numberVisible) {
-            const res = await activeBotClient.getMessages(targetBot, { limit: 1 });
-            const text = res[0]?.message || "";
-            
-            if (botType === 'rishi' && text.includes("Number") && text.includes("+")) {
-                countryPrefix = getCountryPrefix(text);
-                numberVisible = true;
-            } else if (botType === 'uxotp' && text.includes("Numbers:")) {
-                countryPrefix = getCountryPrefix(text);
-                numberVisible = true;
-            } else if (botType === 'rocket' && text.includes("Numbers Assigned!")) {
-                numberVisible = true;
-            } else {
-                await randomDelay(2000, 3000); 
-            }
-        }
+            // 1. Initiate the command from the dedicated bot
+            await getnumUserBot.sendMessage(targetBot, { message: "📞 Get Number" }); 
 
-        bot.sendMessage(chatId, `[STARTED] Bot responded with numbers. Using anti-ban delays.`);
+            let statusMsg = await bot.sendMessage(chatId, `[SENT] \`📞 Get Number\` to @LolzFack_bot.\n\n⏳ **Please go to @LolzFack_bot on your GETNUM account now and select your country.**\nI am waiting for the numbers to appear...`, { parse_mode: 'Markdown' });
 
-        while (totalFetched < countLimit) {
-            await ensureConnection();
-            const response = await activeBotClient.getMessages(targetBot, { limit: 1 });
-            const currentMsg = response[0];
-            const text = currentMsg.message || "";
-            
-            let regex = /\d{10,15}/g;
-            if (botType === 'rishi' || botType === 'rocket') regex = /\+\d{10,15}/g;
-            
-            if ((botType === 'rocket' && text.includes("Numbers Assigned!")) || botType !== 'rocket') {
-                const phoneMatches = text.match(regex); 
-                
-                if (phoneMatches) {
-                    for (let rawNum of phoneMatches) {
-                        if (totalFetched >= countLimit) break;
+            let numberVisible = false;
+            let attempts = 0;
 
-                        let cleanNum = rawNum.replace("+", "").trim();
-                        if (countryPrefix && cleanNum.startsWith(countryPrefix)) {
-                            cleanNum = cleanNum.substring(countryPrefix.length);
-                        }
+            // 2. Wait for the user to pick a country (Up to 2 minutes timeout)
+            while (!numberVisible && attempts < 60) { 
+                const res = await getnumUserBot.getMessages(targetBot, { limit: 1 }); 
+                const text = res[0]?.message || "";
 
-                        if (cleanNum !== "8400094258" && cleanNum.length >= 7) {
-                            currentBatch.push(`\`${cleanNum}\``);
-                            totalFetched++;
-                        }
-
-                        if (currentBatch.length === 6) {
-                            await bot.sendMessage(chatId, `[BATCH] ${totalFetched - 5}-${totalFetched}\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                            currentBatch = [];
-                            await randomDelay(2000, 3500);
-                        }
-                    }
-                }
-            }
-
-            if (totalFetched < countLimit) {
-                let nextBtn = null;
-                if (currentMsg.replyMarkup) {
-                    for (const row of currentMsg.replyMarkup.rows) {
-                        for (const b of row.buttons) {
-                            const btnText = b.text.toLowerCase();
-                            if (btnText.includes("get next") || btnText.includes("new numbers") || btnText.includes("change number")) {
-                                nextBtn = b;
-                                break;
-                            }
-                        }
-                        if (nextBtn) break;
-                    }
-                }
-
-                if (nextBtn) {
-                    // Wait exactly 10 seconds before clicking the button
-                    await randomDelay(10000, 10500); 
-                    
-                    await currentMsg.click({ button: nextBtn });
-                    
-                    // Small delay after clicking to let the new message load
-                    await randomDelay(2000, 3000); 
+                if (text.includes("New Numbers:") && text.includes("copy")) {
+                    numberVisible = true;
                 } else {
-                    const fallbackCmd = botType === 'rocket' ? "📱 GET NUMBER" : "📱 𝐆𝐞𝐭 𝐍𝐮𝐦𝐛𝐞𝐫";
-                    await activeBotClient.sendMessage(targetBot, { message: fallbackCmd });
-                    await randomDelay(10000, 10500); 
+                    await delay(2000);
+                    attempts++;
                 }
             }
-        }
 
-        if (currentBatch.length > 0) {
-            await bot.sendMessage(chatId, `[BATCH] Final\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            if (!numberVisible) {
+                return bot.editMessageText(`[TIMEOUT] You didn't select a country in time. Try /getnum again.`, { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            // 3. Save the limit in memory for the callback
+            userState[chatId + '_getnum_limit'] = countLimit;
+
+            // 4. Ask the user for their preferred output format
+            bot.editMessageText(`**Country Selected!** Numbers are ready.\n\nHow do you want me to deliver the ${countLimit} numbers?`, {
+                chat_id: chatId,
+                message_id: statusMsg.message_id,
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Send in Batches", callback_data: "getnum_out_batch" }],
+                        [{ text: "Send as .TXT File", callback_data: "getnum_out_txt" }],
+                        [{ text: "Cancel", callback_data: "cancel_action" }]
+                    ]
+                }
+            });
+
+        } catch (e) {
+            bot.sendMessage(chatId, "[ERROR] " + e.message);
         }
-        bot.sendMessage(chatId, `[COMPLETED] Successfully grabbed ${totalFetched} numbers.`);
-        
-    } catch (e) {
-        bot.sendMessage(chatId, "[USERBOT ERROR] " + e.message);
-    }
-});
+    });
 
 
 
@@ -6312,6 +6247,133 @@ const cleanNumbers = matches.map(n => {
         }
 
 
+
+                // --- GETNUM EXECUTION (LolzFack_bot via Dedicated Acc) ---
+        if (data === 'getnum_out_batch' || data === 'getnum_out_txt') {
+            await bot.answerCallbackQuery(query.id);
+            const countLimit = userState[chatId + '_getnum_limit'];
+
+            if (!countLimit) return bot.sendMessage(chatId, "[ERROR] Session expired. Please use /getnum again.");
+            userState[chatId + '_getnum_limit'] = null; // clear memory
+
+            const isBatch = data === 'getnum_out_batch';
+            const targetBot = "LolzFack_bot";
+            let totalFetched = 0;
+            let fetchedNumbers = [];
+            let currentBatch = [];
+            let noNewNumsCount = 0; 
+
+            await bot.editMessageText(`**Scraping ${countLimit} numbers...**\nPlease wait...`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+
+            try {
+                // ✅ Use the dedicated connection
+                await ensureGetnumConnected(); 
+
+                while (totalFetched < countLimit) {
+                    const res = await getnumUserBot.getMessages(targetBot, { limit: 1 }); 
+                    const currentMsg = res[0];
+                    const text = currentMsg?.message || "";
+
+                    if (text.includes("New Numbers:")) {
+                        let newNumsFound = false;
+
+                        // 1. Extract Numbers from Buttons
+                        if (currentMsg.replyMarkup && currentMsg.replyMarkup.rows) {
+                            for (const row of currentMsg.replyMarkup.rows) {
+                                for (const b of row.buttons) {
+                                    const btnText = b.text || "";
+                                    
+                                    // Skip the red/dark action buttons
+                                    if (!btnText.toLowerCase().includes('change') && !btnText.toLowerCase().includes('help')) {
+                                        const match = btnText.match(/\d{9,15}/);
+                                        if (match) {
+                                            const num = match[0];
+                                            if (!fetchedNumbers.includes(num)) {
+                                                fetchedNumbers.push(num);
+                                                currentBatch.push(`\`${num}\``);
+                                                totalFetched++;
+                                                newNumsFound = true;
+                                                if (totalFetched >= countLimit) break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (totalFetched >= countLimit) break;
+                            }
+                        }
+
+                        // 2. Failsafe (if bot runs out of stock or gives identical numbers)
+                        if (!newNumsFound) {
+                            noNewNumsCount++;
+                            if (noNewNumsCount > 5) {
+                                await bot.sendMessage(chatId, "**Stopped Early:** @LolzFack_bot stopped giving new numbers (might be out of stock).", { parse_mode: 'Markdown' });
+                                break;
+                            }
+                        } else {
+                            noNewNumsCount = 0; 
+                        }
+
+                        // 3. Output in Batches (if selected)
+                        if (isBatch && currentBatch.length >= 6) {
+                            await bot.sendMessage(chatId, `[BATCH]\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                            currentBatch = [];
+                        }
+
+                        if (totalFetched >= countLimit) break;
+
+                        // 4. Click the "Change Number" Button
+                        let clicked = false;
+                        if (currentMsg.replyMarkup && currentMsg.replyMarkup.rows) {
+                            for (let r = 0; r < currentMsg.replyMarkup.rows.length; r++) {
+                                const row = currentMsg.replyMarkup.rows[r];
+                                for (let c = 0; c < row.buttons.length; c++) {
+                                    const btnText = row.buttons[c].text || "";
+                                    if (btnText.toLowerCase().includes("change number")) {
+                                        await currentMsg.click(r, c); // GramJS coordinate clicking
+                                        clicked = true;
+                                        break;
+                                    }
+                                }
+                                if (clicked) break;
+                            }
+                        }
+
+                        if (clicked) {
+                            await delay(4000); 
+                        } else {
+                            // Fallback if button goes missing
+                            await getnumUserBot.sendMessage(targetBot, { message: "📞 Get Number" }); 
+                            await delay(4000);
+                        }
+
+                    } else {
+                        // Message wasn't the target yet, wait and retry
+                        await delay(2000);
+                    }
+                }
+
+                // --- FINAL DELIVERY ---
+                if (isBatch && currentBatch.length > 0) {
+                    await bot.sendMessage(chatId, `[BATCH - FINAL]\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                }
+
+                if (!isBatch && fetchedNumbers.length > 0) {
+                    const buffer = Buffer.from(fetchedNumbers.join('\n'));
+                    await bot.sendDocument(chatId, buffer, {
+                        caption: `**Successfully extracted ${fetchedNumbers.length} numbers!**`,
+                        parse_mode: 'Markdown'
+                    }, { filename: `LolzFack_Numbers_${Date.now()}.txt`, contentType: 'text/plain' });
+                } else if (isBatch && fetchedNumbers.length > 0) {
+                    bot.sendMessage(chatId, `**Successfully extracted all ${totalFetched} numbers.**`, { parse_mode: 'Markdown' });
+                }
+
+            } catch (err) {
+                bot.sendMessage(chatId, "[ERROR] " + err.message);
+            }
+        }
+
+
+        
                 // --- XL COMMAND: STEP 1 (COUNTRY SELECTION) ---
         if (data.startsWith('xl_c_')) {
             const countryCode = data.replace('xl_c_', '');

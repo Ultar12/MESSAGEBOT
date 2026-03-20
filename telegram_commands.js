@@ -1343,7 +1343,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
-    // --- LISTENER: Trigger when a user sends 3 or 4 digits (NO LIMITS) ---
+        // --- LISTENER: Trigger when a user sends 3 or 4 digits (NO LIMITS) ---
     bot.onText(/^(\d{3,4})$/, async (msg, match) => {
         const chatId = msg.chat.id;
         
@@ -1353,7 +1353,18 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const searchDigits = match[1]; // Grabs either the 3 or 4 digits they typed
         const now = Date.now();
 
-        // 1. INSTANT OTP SEARCH (Using UserBot)
+        // 1. SEND LOADING ANIMATION MESSAGE FIRST
+        let loadingMsg = null;
+        try {
+            loadingMsg = await senderBot.sendMessage(chatId, `**Searching...**\nScanning recent OTPs for \`...${searchDigits}\`...`, { 
+                reply_to_message_id: msg.message_id, 
+                parse_mode: 'Markdown' 
+            });
+        } catch(e) {
+            console.error("Failed to send loading msg", e);
+        }
+
+        // 2. INSTANT OTP SEARCH (Using UserBot)
         try {
             // Fetch the last 100 messages to bypass Telegram's search indexing delay
             const recentMessages = await userBot.getMessages(chatId, { limit: 100 });
@@ -1377,38 +1388,45 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
             }
 
-            // 2. REPLY TO USER (Using the OTP Bot)
-            let sentMsg = null;
-            
-            if (foundCode) {
-                const opts = {
-                    reply_to_message_id: msg.message_id,
-                    parse_mode: 'Markdown',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: `Copy: ${foundCode}`, copy_text: { text: foundCode } }]
-                        ]
-                    }
-                };
-                sentMsg = await senderBot.sendMessage(chatId, `**OTP FOUND!**\nHere is the latest code for \`...${searchDigits}\``, opts).catch(()=>{});
-            } else {
-                sentMsg = await senderBot.sendMessage(chatId, `**NOT FOUND**\nNo OTP was found for \`...${searchDigits}\` in the last 10 minutes.`, { reply_to_message_id: msg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
+            // 3. EDIT THE LOADING MESSAGE WITH THE RESULT
+            if (loadingMsg) {
+                if (foundCode) {
+                    const opts = {
+                        chat_id: chatId,
+                        message_id: loadingMsg.message_id,
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: `Copy: ${foundCode}`, copy_text: { text: foundCode }, style: 'primary' }]
+                            ]
+                        }
+                    };
+                    await senderBot.editMessageText(`**OTP FOUND!**\nHere is the latest code for \`...${searchDigits}\``, opts).catch(()=>{});
+                } else {
+                    await senderBot.editMessageText(`**NOT FOUND**\nNo OTP was found for \`...${searchDigits}\` in the last 10 minutes.`, { 
+                        chat_id: chatId, 
+                        message_id: loadingMsg.message_id, 
+                        parse_mode: 'Markdown' 
+                    }).catch(()=>{});
+                }
             }
 
-            // 3. THE CLEANUP CREW (Delete both messages after 1 minute / 60,000ms)
+            // 4. THE CLEANUP CREW (Delete both messages after 1 minute / 60,000ms)
             setTimeout(async () => {
                 try { await bot.deleteMessage(chatId, msg.message_id); } catch(e){}
-                if (sentMsg && sentMsg.message_id) {
-                    try { await senderBot.deleteMessage(chatId, sentMsg.message_id); } catch(e){}
+                if (loadingMsg && loadingMsg.message_id) {
+                    try { await senderBot.deleteMessage(chatId, loadingMsg.message_id); } catch(e){}
                 }
             }, 60000);
 
         } catch (e) {
             console.error("OTP Search Error:", e);
+            // Clean up the loading message if the search crashed completely
+            if (loadingMsg && loadingMsg.message_id) {
+                try { await senderBot.deleteMessage(chatId, loadingMsg.message_id); } catch(err){}
+            }
         }
     });
-
-
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {

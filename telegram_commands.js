@@ -472,7 +472,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
     // ✅ ALL SOURCE GROUPS INCLUDED (With "otpbotsy")
-    const SOURCE_GROUPS = ["-1003644661262", "-1003518737176", "-1003389248033", "otpbotsy"]; 
+    const SOURCE_GROUPS = ["-1003644661262", "-1003518737176", "-1003389248033"]; 
 
     const groupStates = {};
     SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });
@@ -1147,8 +1147,7 @@ const userKeyboard = {
 const adminKeyboard = {
     keyboard: [
         [{ text: "Connect Account" }, { text: "My Numbers" }], // Replaced List All
-        [{ text: "/stats" }, { text: "Balance" }],
-        [{ text: "Clear Contact List" }]
+        [{ text: "/stats" }, { text: "Balance" }]
     ],
     resize_keyboard: true
 };

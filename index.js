@@ -916,7 +916,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     });
 
 
-        if (targetNumber && !sock.authState.creds.registered) {
+            if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(targetNumber);
@@ -925,31 +925,29 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
                 if (chatId) {
                     mainBot.sendMessage(chatId, 
-    `[PAIRING CODE GENERATED]\n\n` +
-    `Your code is: **${formattedCode}**\n\n` +
-    `Tap the button below to copy the code, then open the WhatsApp notification on your phone to link the device.`, 
-    { 
-        parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                // Row 1: The Copy Button
-                [{ text: `Copy Code: ${code}`, copy_text: { text: code } }],
-                
-                // Row 2: The Regenerate Button
-                [{ text: `Regenerate Code`, callback_data: `regen_pair_${phoneNumber}` }]
-            ]
-        }
-    }
-);
-
+                        `[PAIRING CODE GENERATED]\n\n` +
+                        `Your code is: **${formattedCode}**\n\n` +
+                        `Tap the button below to copy the code, then open the WhatsApp notification on your phone to link the device.`, 
+                        { 
+                            parse_mode: 'Markdown',
+                            reply_markup: {
+                                inline_keyboard: [
+                                    // Row 1: The Copy Button
+                                    [{ text: `Copy Code: ${code}`, copy_text: { text: code } }],
+                                    
+                                    // Row 2: The Regenerate Button (FIXED VARIABLE NAME)
+                                    [{ text: `Regenerate Code`, callback_data: `regen_pair_${targetNumber}` }]
+                                ]
+                            }
+                        }
+                    );
                 }
             } catch (e) {
-                if (chatId) mainBot.sendMessage(chatId, `[ERROR] Failed to request pairing code. Please ensure the number is correct and try again.`);
+                console.error("Pairing Error:", e);
+                if (chatId) mainBot.sendMessage(chatId, `[ERROR] Failed to request pairing code: ${e.message}`);
             }
         }, 3000);
     }
-
-}
 
 
 // --- GLOBAL USER INTERACTION MONITOR ---

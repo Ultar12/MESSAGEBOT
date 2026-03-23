@@ -37,6 +37,9 @@ const vzTimer = {};
 const mergeBuffer = {}; // <-- ADD THIS LINE FOR THE FILE MERGER
 const apiHash = process.env.TELEGRAM_API_HASH;
 const stringSession = new StringSession(process.env.TELEGRAM_SESSION || ""); 
+
+const pendingMobileSockets = {}; // Holds the Baileys socket while waiting for the SMS code
+
 // Initialize UserBot (Call this once in your index.js or startup)
 const userBot = new TelegramClient(stringSession, apiId, apiHash, { 
     connectionRetries: 10, // Increased retries for stability
@@ -1577,6 +1580,24 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     }
 
+
+
+        // --- /login : Primary Device (Mobile API) Login ---
+    bot.onText(/\/login/, (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        if (msg.chat.id.toString() !== ADMIN_ID) return;
+
+        userState[chatId] = 'WAITING_MOBILE_NUMBER';
+        bot.sendMessage(chatId, 
+            `**MOBILE API LOGIN**\n\n` +
+            `This will log the bot in as a **Primary Device** (like a real phone).\n\n` +
+            `Enter the phone number with country code (e.g., 2348123456789):`, 
+            { parse_mode: 'Markdown' }
+        );
+    });
+
+    
     // --- /st [r | nr] : Extract Registered or Not Registered numbers from Bio Checker files (TXT & XLSX) ---
     bot.onText(/\/st\s+(r|nr)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
@@ -5078,6 +5099,69 @@ const cleanNumbers = matches.map(n => {
                 console.error("Failed to auto-set antimsg:", e);
             }
             
+            return;
+        }
+
+
+
+                // --- MOBILE API: STEP 1 (Receive Phone Number & Request SMS) ---
+        if (userState[chatId] === 'WAITING_MOBILE_NUMBER') {
+            const phoneNumber = text.replace(/[^0-9]/g, '');
+            if (phoneNumber.length < 10) return bot.sendMessage(chatId, '❌ Invalid number format. Try again.');
+            
+            userState[chatId] = null; // Clear state
+            bot.sendMessage(chatId, `⏳ Requesting WhatsApp SMS code for +${phoneNumber}...`);
+
+            try {
+                // NOTE: You must have a function named 'startMobileRegistration' exported from your index.js
+                // that initializes the mobile socket and requests the code.
+                const tempSock = await startMobileRegistration(phoneNumber);
+                
+                if (tempSock) {
+                    pendingMobileSockets[chatId] = { sock: tempSock, phone: phoneNumber };
+                    userState[chatId] = 'WAITING_MOBILE_OTP';
+                    bot.sendMessage(chatId, `**SMS Requested!**\n\nPlease check the phone and enter the 6-digit code here:`, { parse_mode: 'Markdown' });
+                } else {
+                    bot.sendMessage(chatId, `Failed to initialize mobile socket.`);
+                }
+            } catch (e) {
+                bot.sendMessage(chatId, `Registration Error: ${e.message}`);
+            }
+            return;
+        }
+
+        // --- MOBILE API: STEP 2 (Receive SMS Code & Register) ---
+        if (userState[chatId] === 'WAITING_MOBILE_OTP') {
+            const otpCode = text.replace(/[^0-9]/g, '');
+            if (otpCode.length !== 6) return bot.sendMessage(chatId, 'The code must be exactly 6 digits. Try again:');
+            
+            const pendingData = pendingMobileSockets[chatId];
+            if (!pendingData || !pendingData.sock) {
+                userState[chatId] = null;
+                return bot.sendMessage(chatId, 'Session expired or lost. Please run /login again.');
+            }
+
+            userState[chatId] = null;
+            bot.sendMessage(chatId, `Verifying code ${otpCode}...`);
+
+            try {
+                // Submit the OTP to WhatsApp
+                const res = await pendingData.sock.register(otpCode);
+                
+                bot.sendMessage(chatId, `**MOBILE LOGIN SUCCESSFUL!**\n\n+${pendingData.phone} is now a Primary Device!`, { parse_mode: 'Markdown' });
+                
+                // Cleanup
+                delete pendingMobileSockets[chatId];
+                
+                // IMPORTANT: You now need to add this session to your active clients/database
+                // just like you do in your standard startClient() function.
+                
+            } catch (e) {
+                let errorMsg = e.message;
+                if (errorMsg.includes('code_incorrect')) errorMsg = "The SMS code was incorrect.";
+                bot.sendMessage(chatId, `Verification Failed: ${errorMsg}\n\nRun /login to try again.`);
+                delete pendingMobileSockets[chatId];
+            }
             return;
         }
 

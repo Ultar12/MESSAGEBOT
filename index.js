@@ -1024,7 +1024,7 @@ async function boot() {
     // Start the Telegram UserBot and the OTP Monitor
     await initUserBot(clients);
     
-    setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount);
+  setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount, startMobileRegistration);
 
     const savedSessions = await getAllSessions(null);
     for (const session of savedSessions) {

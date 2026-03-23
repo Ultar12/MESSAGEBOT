@@ -2042,7 +2042,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 });
 
 
-        // --- /checknum : True Deep Scan (Bypasses Ghost Registry) ---
+        
+    // --- /checknum : Deep Scan with Ghost Wipe Detection ---
     bot.onText(/\/checknum\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2063,79 +2064,52 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
         if (!sock) {
-            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected to perform deep check.");
+            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected to perform check.");
         }
 
         const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
         const jid = `${fullPhone}@s.whatsapp.net`;
 
         try {
-            bot.sendMessage(chatId, "[CHECKING] Performing true deep scan on +" + fullPhone + "...");
+            bot.sendMessage(chatId, "[CHECKING] Scanning +" + fullPhone + "...");
 
-            // 🚨 BYPASS PASSIVE CHECK: Always force the registration probe to get the TRUE ban status
-            try {
-                await sock.requestRegistrationCode({
-                    phoneNumber: "+" + fullPhone,
-                    method: 'sms',
-                    fields: {
-                        mcc: "624", // Default MCC, works globally for this check
-                        mnc: "01"
+            // 1. Passive Check (Hits the Ghost Registry)
+            const [waCheck] = await sock.onWhatsApp(jid);
+
+            if (waCheck && waCheck.exists) {
+                
+                // 2. Secondary "Profile Wipe" Check to detect Banned Ghosts
+                let isGhost = false;
+                try {
+                    // Attempt to fetch their "About" text. Banned accounts usually get this wiped immediately.
+                    await sock.fetchStatus(jid);
+                } catch (statusErr) {
+                    const errMsg = statusErr.message || "";
+                    if (errMsg.includes('401') || errMsg.includes('404') || errMsg.includes('not-authorized')) {
+                        isGhost = true; 
                     }
-                });
+                }
 
-                // If the probe succeeds without throwing an error, it means the number is NOT banned.
-                // NOW we do the passive check to see if it belongs to someone else.
-                const [exists] = await sock.onWhatsApp(jid);
-
-                if (exists && exists.exists) {
+                if (isGhost) {
                     bot.sendMessage(chatId, 
                         "[RESULT] +" + fullPhone + "\n" +
-                        "Status: ACTIVE (LOGGED IN)\n" +
-                        "Detail: Number is clean but currently live on another device."
+                        "Status: LIKELY BANNED (GHOST) 👻\n" +
+                        "Detail: Number is in the registry, but its profile data is wiped or locked down. This is highly likely a permanently banned 'ghost' account."
                     );
                 } else {
                     bot.sendMessage(chatId, 
                         "[RESULT] +" + fullPhone + "\n" +
-                        "Status: CLEAN / NOT REGISTERED\n" +
-                        "Detail: Number is completely clean and ready to use."
+                        "Status: ACTIVE\n" +
+                        "Detail: Number is currently live, registered, and returning valid profile data."
                     );
                 }
 
-            } catch (regErr) {
-                // If it hits this block, the WhatsApp security server actively rejected it
-                const reason = regErr.data?.reason || regErr.message || "unknown";
-
-                if (reason === 'blocked') {
-                    bot.sendMessage(chatId, 
-                        "[RESULT] +" + fullPhone + "\n" +
-                        "Status: TEMPORARY BAN / REVIEWABLE\n" +
-                        "Detail: This account is suspended. The Request a Review option is available."
-                    );
-                } else if (reason === 'banned') {
-                    bot.sendMessage(chatId, 
-                        "[RESULT] +" + fullPhone + "\n" +
-                        "Status: PERMANENT BAN\n" +
-                        "Detail: This number is blacklisted and cannot be reviewed."
-                    );
-                } else if (reason.includes('security') || reason === 'security_restricted') {
-                    bot.sendMessage(chatId, 
-                        "[RESULT] +" + fullPhone + "\n" +
-                        "Status: SECURITY LOCKED 🛡️\n" +
-                        "Detail: Login not available right now for security reasons. Wait 24-48 hours."
-                    );
-                } else if (reason.includes('rate') || reason === 'too_recent') {
-                    bot.sendMessage(chatId, 
-                        "[RESULT] +" + fullPhone + "\n" +
-                        "Status: RATE LIMITED ⏳\n" +
-                        "Detail: Too many attempts recently. Try again later."
-                    );
-                } else {
-                    bot.sendMessage(chatId, 
-                        "[RESULT] +" + fullPhone + "\n" +
-                        "Status: " + reason.toUpperCase() + "\n" +
-                        "Detail: Rejection reason from WhatsApp servers."
-                    );
-                }
+            } else {
+                bot.sendMessage(chatId, 
+                    "[RESULT] +" + fullPhone + "\n" +
+                    "Status: NOT REGISTERED / PURGED\n" +
+                    "Detail: This number is either completely clean or has been permanently banned and fully purged from WhatsApp's system."
+                );
             }
 
         } catch (e) {

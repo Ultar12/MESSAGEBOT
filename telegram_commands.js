@@ -2042,6 +2042,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 });
 
 
+        // --- /checknum : True Deep Scan (Bypasses Ghost Registry) ---
     bot.onText(/\/checknum\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2069,58 +2070,68 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         const jid = `${fullPhone}@s.whatsapp.net`;
 
         try {
-            bot.sendMessage(chatId, "[CHECKING] Performing deep scan on " + fullPhone + "...");
+            bot.sendMessage(chatId, "[CHECKING] Performing true deep scan on +" + fullPhone + "...");
 
-            // 1. Initial Existence Check
-            const [exists] = await sock.onWhatsApp(jid);
-
-            if (exists && exists.exists) {
-                return bot.sendMessage(chatId, 
-                    "[RESULT] " + fullPhone + "\n" +
-                    "Status: ACTIVE\n" +
-                    "Detail: Number is currently live and usable."
-                );
-            }
-
-            // 2. Registration Probe (Mock Attempt)
-            // This triggers the server to return the specific ban reason
+            // 🚨 BYPASS PASSIVE CHECK: Always force the registration probe to get the TRUE ban status
             try {
                 await sock.requestRegistrationCode({
                     phoneNumber: "+" + fullPhone,
                     method: 'sms',
                     fields: {
-                        mcc: "624", // Defaulting to Cameroon; adjust if needed based on res.code
+                        mcc: "624", // Default MCC, works globally for this check
                         mnc: "01"
                     }
                 });
 
-                // If it succeeds, the number is NOT banned, just not registered
-                bot.sendMessage(chatId, 
-                    "[RESULT] " + fullPhone + "\n" +
-                    "Status: NOT REGISTERED\n" +
-                    "Detail: Number is clean but no WhatsApp account exists yet."
-                );
+                // If the probe succeeds without throwing an error, it means the number is NOT banned.
+                // NOW we do the passive check to see if it belongs to someone else.
+                const [exists] = await sock.onWhatsApp(jid);
+
+                if (exists && exists.exists) {
+                    bot.sendMessage(chatId, 
+                        "[RESULT] +" + fullPhone + "\n" +
+                        "Status: ACTIVE (LOGGED IN)\n" +
+                        "Detail: Number is clean but currently live on another device."
+                    );
+                } else {
+                    bot.sendMessage(chatId, 
+                        "[RESULT] +" + fullPhone + "\n" +
+                        "Status: CLEAN / NOT REGISTERED\n" +
+                        "Detail: Number is completely clean and ready to use."
+                    );
+                }
 
             } catch (regErr) {
+                // If it hits this block, the WhatsApp security server actively rejected it
                 const reason = regErr.data?.reason || regErr.message || "unknown";
 
                 if (reason === 'blocked') {
-                    // This is the "Request a Review" status
                     bot.sendMessage(chatId, 
-                        "[RESULT] " + fullPhone + "\n" +
+                        "[RESULT] +" + fullPhone + "\n" +
                         "Status: TEMPORARY BAN / REVIEWABLE\n" +
                         "Detail: This account is suspended. The Request a Review option is available."
                     );
                 } else if (reason === 'banned') {
-                    // This is the Permanent Ban status
                     bot.sendMessage(chatId, 
-                        "[RESULT] " + fullPhone + "\n" +
+                        "[RESULT] +" + fullPhone + "\n" +
                         "Status: PERMANENT BAN\n" +
                         "Detail: This number is blacklisted and cannot be reviewed."
                     );
+                } else if (reason.includes('security') || reason === 'security_restricted') {
+                    bot.sendMessage(chatId, 
+                        "[RESULT] +" + fullPhone + "\n" +
+                        "Status: SECURITY LOCKED 🛡️\n" +
+                        "Detail: Login not available right now for security reasons. Wait 24-48 hours."
+                    );
+                } else if (reason.includes('rate') || reason === 'too_recent') {
+                    bot.sendMessage(chatId, 
+                        "[RESULT] +" + fullPhone + "\n" +
+                        "Status: RATE LIMITED ⏳\n" +
+                        "Detail: Too many attempts recently. Try again later."
+                    );
                 } else {
                     bot.sendMessage(chatId, 
-                        "[RESULT] " + fullPhone + "\n" +
+                        "[RESULT] +" + fullPhone + "\n" +
                         "Status: " + reason.toUpperCase() + "\n" +
                         "Detail: Rejection reason from WhatsApp servers."
                     );
@@ -2132,6 +2143,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, "[ERROR] Check failed: " + e.message);
         }
     });
+
 
     
 
@@ -4560,7 +4572,7 @@ bot.onText(/\/pdf/, async (msg) => {
         }
     });
 
-    // --- /profilepic command: Get profile picture of any WhatsApp number ---
+        // --- /profilepic command: Get HD profile picture of any WhatsApp number ---
     bot.onText(/\/profilepic\s+(\S+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         if (msg.chat.id.toString() !== ADMIN_ID) return;
@@ -4591,30 +4603,34 @@ bot.onText(/\/pdf/, async (msg) => {
                 displayNumber = cleanNum;
             }
 
-            bot.sendMessage(chatId, '[FETCHING] Profile picture for +' + displayNumber + '...');
+            bot.sendMessage(chatId, '[FETCHING] HD Profile picture for +' + displayNumber + '...');
 
-            // Try to get profile picture with different privacy levels
             let picUrl = null;
             
             try {
-                // Try getting the picture URL
-                picUrl = await sock.profilePictureUrl(targetJid);
+                // 🚨 FIX: Pass 'image' to fetch the full High-Definition picture instead of the blurry thumbnail
+                picUrl = await sock.profilePictureUrl(targetJid, 'image');
             } catch (picError) {
-                // If we get authorization error, provide fallback info
-                if (picError.message.includes('401') || picError.message.includes('403') || picError.message.includes('not authorized')) {
-                    bot.sendMessage(chatId, '[PRIVACY] +' + displayNumber + ' has restricted who can view their profile picture.\n[ALTERNATIVES] Try:\n1. Message them first\n2. Add to group\n3. Use a closer contact account');
-                    
-                    // Try to get other info about the contact
-                    try {
-                        const [result] = await sock.onWhatsApp(targetJid);
-                        if (result && result.exists) {
-                            return sendMenu(bot, chatId, '[INFO]\nNumber exists on WhatsApp\nProfile picture is private\nNumber: +' + displayNumber);
-                        }
-                    } catch (e) {}
-                    
-                    return;
-                } else {
-                    throw picError;
+                // Fallback: If HD fails (sometimes WA servers act up), try the standard preview before quitting
+                try {
+                    picUrl = await sock.profilePictureUrl(targetJid, 'preview');
+                } catch (fallbackError) {
+                    // If we get an authorization error, provide privacy info
+                    if (fallbackError.message.includes('401') || fallbackError.message.includes('403') || fallbackError.message.includes('not authorized') || picError.message.includes('not authorized')) {
+                        bot.sendMessage(chatId, '[PRIVACY] +' + displayNumber + ' has restricted who can view their profile picture.\n[ALTERNATIVES] Try:\n1. Message them first\n2. Add to group\n3. Use a closer contact account');
+                        
+                        // Try to get other info about the contact
+                        try {
+                            const [result] = await sock.onWhatsApp(targetJid);
+                            if (result && result.exists) {
+                                return sendMenu(bot, chatId, '[INFO]\nNumber exists on WhatsApp\nProfile picture is private\nNumber: +' + displayNumber);
+                            }
+                        } catch (e) {}
+                        
+                        return;
+                    } else {
+                        throw fallbackError;
+                    }
                 }
             }
 
@@ -4632,10 +4648,10 @@ bot.onText(/\/pdf/, async (msg) => {
                 const buffer = await response.buffer();
 
                 await bot.sendPhoto(chatId, buffer, {
-                    caption: '[PROFILE PIC]\nNumber: +' + displayNumber
+                    caption: `[HD PROFILE PIC]\nNumber: +${displayNumber}`
                 });
 
-                sendMenu(bot, chatId, '[SUCCESS] Profile picture sent.');
+                sendMenu(bot, chatId, '[SUCCESS] HD Profile picture sent.');
             } catch (downloadError) {
                 bot.sendMessage(chatId, '[ERROR] Failed to download image: ' + downloadError.message);
             }
@@ -4643,7 +4659,7 @@ bot.onText(/\/pdf/, async (msg) => {
         } catch (e) {
             // Check if it's a not-found or invalid number error
             if (e.message.includes('404') || e.message.includes('not found')) {
-                bot.sendMessage(chatId, '[ERROR] Number not found on WhatsApp.');
+                bot.sendMessage(chatId, '[ERROR] Number not found on WhatsApp (or no profile picture set).');
             } else if (e.message.includes('401') || e.message.includes('403')) {
                 bot.sendMessage(chatId, '[ERROR] Profile picture is private or account has restrictions.');
             } else {
@@ -4651,6 +4667,7 @@ bot.onText(/\/pdf/, async (msg) => {
             }
         }
     });
+
 
     bot.onText(/\/deluser\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);

@@ -475,6 +475,42 @@ async function sendDisconnectSummary() {
 }
 
 
+// Add this function to your index.js (where makeWASocket is imported)
+
+export async function startMobileRegistration(phoneNumber) {
+    const { state, saveCreds } = await useMultiFileAuthState(`auth_info_${phoneNumber}`);
+    
+    const sock = makeWASocket({
+        auth: state,
+        mobile: true, // 🚨 THE GOD-TIER SWITCH
+        printQRInTerminal: false,
+        browser: ['Android', 'Chrome', '11.0.0'], // Must spoof a mobile environment
+        version: [2, 2323, 4], // Spoof a valid WhatsApp app version
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    // If it's a brand new login, request the SMS code
+    if (!sock.authState.creds.registered) {
+        try {
+            // Request the SMS from WhatsApp servers
+            await sock.requestRegistrationCode({
+                phoneNumber: '+' + phoneNumber,
+                method: 'sms' // You can also use 'voice' if SMS fails
+            });
+            
+            // Return the socket so Telegram can hold it and pass the OTP later
+            return sock; 
+        } catch (err) {
+            console.error("Mobile Auth Error:", err);
+            throw err;
+        }
+    } else {
+        throw new Error("This number is already registered and logged in on the server.");
+    }
+}
+
+
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
     let cachedShortId = await getShortId(folder);
     if (!cachedShortId) {

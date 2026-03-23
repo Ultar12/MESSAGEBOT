@@ -2043,7 +2043,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
         
-    // --- /checknum : Deep Scan with Ghost Wipe Detection ---
+        // --- /checknum : Hyper-Strict Ghost Detection ---
     bot.onText(/\/checknum\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2078,29 +2078,35 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
             if (waCheck && waCheck.exists) {
                 
-                // 2. Secondary "Profile Wipe" Check to detect Banned Ghosts
+                // 2. HYPER-STRICT "Profile Wipe" Check
                 let isGhost = false;
+                let statusInfo = null;
+                
                 try {
-                    // Attempt to fetch their "About" text. Banned accounts usually get this wiped immediately.
-                    await sock.fetchStatus(jid);
-                } catch (statusErr) {
-                    const errMsg = statusErr.message || "";
-                    if (errMsg.includes('401') || errMsg.includes('404') || errMsg.includes('not-authorized')) {
-                        isGhost = true; 
+                    // Fetch the "About" text
+                    statusInfo = await sock.fetchStatus(jid);
+                    
+                    // 🚨 THE FIX: Check if the data is literally blank/null. 
+                    // Wiped banned accounts often return an empty object instead of an error.
+                    if (!statusInfo || !statusInfo.status) {
+                        isGhost = true;
                     }
+                } catch (statusErr) {
+                    // If it throws an actual 401/404 error, it's definitely wiped.
+                    isGhost = true; 
                 }
 
                 if (isGhost) {
                     bot.sendMessage(chatId, 
                         "[RESULT] +" + fullPhone + "\n" +
                         "Status: LIKELY BANNED (GHOST) 👻\n" +
-                        "Detail: Number is in the registry, but its profile data is wiped or locked down. This is highly likely a permanently banned 'ghost' account."
+                        "Detail: Number is in the registry, but its profile data is completely wiped or inaccessible. This is highly likely a permanently banned account."
                     );
                 } else {
                     bot.sendMessage(chatId, 
                         "[RESULT] +" + fullPhone + "\n" +
                         "Status: ACTIVE\n" +
-                        "Detail: Number is currently live, registered, and returning valid profile data."
+                        "Detail: Number is currently live and returned valid profile data: \n📝 '" + statusInfo.status + "'"
                     );
                 }
 
@@ -5656,7 +5662,11 @@ const cleanNumbers = matches.map(n => {
             return bot.editMessageText("Do you want to KEEP or STRIP the country code in the final text files?", { chat_id: chatId, message_id: query.message.message_id, reply_markup: opts.reply_markup });
         }
 
-        // --- /CONVT MENU 2: EXECUTION ---
+        
+                
+  
+
+                // --- /CONVT MENU 2: EXECUTION ---
         if (data === 'convt_out_keep' || data === 'convt_out_strip') {
             await bot.answerCallbackQuery(query.id);
             const fileData = userState[chatId + '_convt_file'];
@@ -5674,8 +5684,8 @@ const cleanNumbers = matches.map(n => {
                 const fileLink = await bot.getFileLink(fileData.id);
                 const response = await fetch(fileLink);
 
-                const groupedNumbers = {}; // Groups numbers based on user's choice
-                const groupNames = {};     // Holds clean names for the final output
+                const groupedNumbers = {}; 
+                const groupNames = {};     
 
                 if (fileData.name.endsWith('.xlsx')) {
                     const arrayBuffer = await response.arrayBuffer();
@@ -5684,22 +5694,53 @@ const cleanNumbers = matches.map(n => {
                     const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
                     if (sortMode === 'rng') {
-                        // GROUP BY EXCEL 'RANGE' COLUMN
-                        const parsedObjects = XLSX.utils.sheet_to_json(sheet);
-                        for (const row of parsedObjects) {
-                            const num = row['Number'] || row['number'] || row['Phone'] || row['phone'];
-                            const rangeName = row['Range'] || row['range'] || 'Unknown_Range';
+                        // 🚨 SMART HEADER HUNTER: Handles files where headers are pushed down
+                        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                        
+                        let rangeColIndex = -1;
+                        let numberColIndex = -1;
+                        let dataStartIndex = 1;
 
-                            if (num) {
-                                if (!groupedNumbers[rangeName]) {
-                                    groupedNumbers[rangeName] = [];
-                                    groupNames[rangeName] = `Range: ${rangeName}`;
-                                }
-                                groupedNumbers[rangeName].push(String(num));
+                        // Scan the first 10 rows to find where the actual headers are
+                        for (let i = 0; i < Math.min(10, rawData.length); i++) {
+                            const row = rawData[i];
+                            if (!Array.isArray(row)) continue;
+                            
+                            const lowerRow = row.map(cell => cell ? String(cell).toLowerCase().trim() : '');
+                            
+                            const rIdx = lowerRow.indexOf('range');
+                            let nIdx = lowerRow.indexOf('number');
+                            if (nIdx === -1) nIdx = lowerRow.indexOf('phone');
+
+                            if (rIdx !== -1 && nIdx !== -1) {
+                                rangeColIndex = rIdx;
+                                numberColIndex = nIdx;
+                                dataStartIndex = i + 1; // Data starts on the row immediately after headers
+                                break;
                             }
                         }
+
+                        if (rangeColIndex !== -1 && numberColIndex !== -1) {
+                            for (let i = dataStartIndex; i < rawData.length; i++) {
+                                const row = rawData[i];
+                                if (!Array.isArray(row)) continue;
+
+                                const num = row[numberColIndex];
+                                const rangeName = row[rangeColIndex] || 'Unknown_Range';
+
+                                if (num) {
+                                    if (!groupedNumbers[rangeName]) {
+                                        groupedNumbers[rangeName] = [];
+                                        groupNames[rangeName] = `Range: ${rangeName}`;
+                                    }
+                                    groupedNumbers[rangeName].push(String(num));
+                                }
+                            }
+                        } else {
+                            throw new Error("Could not find both 'Range' and 'Number' columns in the Excel file.");
+                        }
                     } else {
-                        // GROUP BY COUNTRY CODE (Your Original Method)
+                        // GROUP BY COUNTRY CODE
                         const parsedData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
                         parsedData.forEach(row => {
                             if (Array.isArray(row)) {
@@ -5753,18 +5794,16 @@ const cleanNumbers = matches.map(n => {
                 }
 
                 const keys = Object.keys(groupedNumbers);
-                if (keys.length === 0) return bot.sendMessage(chatId, "[RESULT] No valid numbers found to extract.");
+                if (keys.length === 0) return bot.sendMessage(chatId, "[RESULT] No valid numbers found to extract. Check your columns.");
 
                 bot.sendMessage(chatId, `[INFO] Found ${keys.length} group(s). Generating files...`);
 
-                // Send the files out one by one
                 for (const groupKey of keys) {
                     const rawArray = groupedNumbers[groupKey];
                     const outputArray = [];
-                    let totalProcessed = 0;
 
                     for (let num of rawArray) {
-                        num = num ? num.trim() : "";
+                        num = num ? String(num).trim() : "";
                         if (!num) continue;
 
                         const res = normalizeWithCountry(num);
@@ -5775,7 +5814,6 @@ const cleanNumbers = matches.map(n => {
                             } else {
                                 outputArray.push(res.num);
                             }
-                            totalProcessed++;
                         }
                     }
 
@@ -5797,7 +5835,7 @@ const cleanNumbers = matches.map(n => {
                             parse_mode: 'Markdown'
                         }, { filename: `converted_${safeName}_${suffix}.txt`, contentType: 'text/plain' });
 
-                        await new Promise(resolve => setTimeout(resolve, 800)); // Anti-flood delay
+                        await new Promise(resolve => setTimeout(resolve, 800)); 
                     }
                 }
 
@@ -5808,8 +5846,6 @@ const cleanNumbers = matches.map(n => {
                 bot.sendMessage(chatId, "[ERROR] Failed to convert file: " + err.message);
             }
         }
-  
-                
 
                 
                // --- SMART EXECUTION & RESUME ENGINE FOR TXT AND TTX ---
@@ -6659,6 +6695,33 @@ const cleanNumbers = matches.map(n => {
             await bot.answerCallbackQuery(query.id, { text: 'Withdrawal approved' });
             return;
         }
+
+                // --- REGENERATE PAIRING CODE ---
+        if (data.startsWith('regen_pair_')) {
+            await bot.answerCallbackQuery(query.id, 'Generating new code...');
+            const number = data.split('regen_pair_')[1]; // Extract the phone number from the button
+            
+            // 1. Edit the old message so the user knows it's working
+            try {
+                await bot.editMessageText(`**Regenerating new pairing code for +${number}...**`, { 
+                    chat_id: chatId, 
+                    message_id: query.message.message_id,
+                    parse_mode: 'Markdown'
+                });
+            } catch (e) {}
+
+            // 2. Generate a fresh session ID and restart the client
+            const sessionId = makeSessionId();
+            startClient(sessionId, number, chatId, userId);
+            
+            // 3. Auto-enable AntiMsg for the new session
+            try {
+                await setAntiMsgStatus(sessionId, true);
+            } catch (e) {}
+            
+            return;
+        }
+
 
         // Handle withdrawal rejection
         if (data.startsWith('reject_')) {

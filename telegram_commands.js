@@ -1364,7 +1364,7 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
  * @param {object} qrActiveState State tracking QR code generation.
  * @param {function} deleteUserAccount Function to delete a user account from DB.
  */
-export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null) {
+export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null, startMobileRegistration = null) {
 
     // NOTE: Returning a dummy function as the real notification logic is now centralized in index.js
     const notifyDisconnection = () => {};

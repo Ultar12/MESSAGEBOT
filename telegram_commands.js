@@ -21,6 +21,10 @@ import fs from 'fs';
 import TelegramBot from 'node-telegram-bot-api';
 import { pipeline } from 'node:stream/promises';
 import * as XLSX from 'xlsx';
+
+import libphonenumber from 'google-libphonenumber';
+const phoneUtil = libphonenumber.PhoneNumberUtil.getInstance();
+
 import fetch from 'node-fetch';
 
 // Global counter for statistics
@@ -1581,6 +1585,104 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         );
     }
 
+
+        // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---
+    bot.onText(/\/validate/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /validate");
+        }
+
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only validate .txt files.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading file and checking telecom rules locally...");
+
+        try {
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+
+            // Extract all digit strings
+            const matches = textData.match(/\d{7,15}/g) || [];
+            if (matches.length === 0) {
+                return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            const uniqueNumbers = [...new Set(matches)];
+            
+            const validNumbers = [];
+            const invalidNumbers = [];
+
+            // Run the local validation loop
+            for (const rawNum of uniqueNumbers) {
+                try {
+                    // Prepend '+' so the library auto-detects the country code
+                    const parsedNumber = phoneUtil.parseAndKeepRawInput('+' + rawNum);
+                    
+                    // isPossibleNumber checks length, isValidNumber checks strict carrier routing rules
+                    if (phoneUtil.isPossibleNumber(parsedNumber) && phoneUtil.isValidNumber(parsedNumber)) {
+                        validNumbers.push(rawNum);
+                    } else {
+                        invalidNumbers.push(rawNum);
+                    }
+                } catch (err) {
+                    // If the library throws a parsing error, the number format is completely broken
+                    invalidNumbers.push(rawNum);
+                }
+            }
+
+            // Build the final report
+            const finalStats = 
+                `[VALIDATION COMPLETE]\n\n` +
+                `Total Checked: ${uniqueNumbers.length}\n` +
+                `Valid (Safe to Scan): ${validNumbers.length}\n` +
+                `Invalid (Junk/Fake): ${invalidNumbers.length}\n\n` +
+                `The results have been categorized and attached.`;
+
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
+
+            if (validNumbers.length === 0 && invalidNumbers.length === 0) {
+                return bot.sendMessage(chatId, "[RESULT] File contained no readable digits.");
+            }
+
+            // 1. Send the Valid file if it has data
+            if (validNumbers.length > 0) {
+                const validBuffer = Buffer.from(validNumbers.join('\n'));
+                await bot.sendDocument(
+                    chatId, 
+                    validBuffer, 
+                    { caption: finalStats, parse_mode: 'Markdown' }, 
+                    { filename: `Valid_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
+                );
+            }
+
+            // 2. Send the Invalid file if it has data
+            if (invalidNumbers.length > 0) {
+                const invalidBuffer = Buffer.from(invalidNumbers.join('\n'));
+                // Only attach the full stats to the caption if we didn't already send it with the Valid file
+                const invalidCaption = validNumbers.length > 0 ? `[INVALID NUMBERS FILTERED]` : finalStats;
+                
+                await bot.sendDocument(
+                    chatId, 
+                    invalidBuffer, 
+                    { caption: invalidCaption, parse_mode: 'Markdown' }, 
+                    { filename: `Invalid_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
+                );
+            }
+
+        } catch (error) {
+            console.error(error);
+            bot.sendMessage(chatId, "[ERROR] Validation failed: " + error.message);
+        }
+    });
 
 
         // --- /login : Primary Device (Mobile API) Login ---

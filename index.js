@@ -948,6 +948,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }
         }, 3000);
     }
+}
 
 
 // --- GLOBAL USER INTERACTION MONITOR ---

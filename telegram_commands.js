@@ -3085,7 +3085,7 @@ bot.onText(/\/vz/, async (msg) => {
         }
     });
 
-    // --- /spynum: Retrieve caught numbers and reset the trap ---
+        // --- /spynum: Retrieve caught numbers and reset the trap ---
     bot.onText(/\/spynum/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -3099,18 +3099,29 @@ bot.onText(/\/vz/, async (msg) => {
 
         const foundArray = Array.from(spyFound);
         
-        bot.sendMessage(chatId, `[SPY REPORT] Caught ${foundArray.length} numbers!\n\nSending...`);
+        bot.sendMessage(chatId, `[SPY REPORT] Caught ${foundArray.length} numbers!\n\nSending in batches of 5...`);
 
-        for (let i = 0; i < foundArray.length; i += 10) {
-            const chunk = foundArray.slice(i, i + 10);
+        // Process numbers to strip the country codes for clean output
+        const strippedArray = foundArray.map(rawNum => {
+            const res = normalizeWithCountry(rawNum);
+            // If the normalizer recognizes it, return the local number without the country code.
+            return (res && res.num) ? res.num : rawNum;
+        });
+
+        // Send in smaller batches of 5
+        for (let i = 0; i < strippedArray.length; i += 5) {
+            const chunk = strippedArray.slice(i, i + 5);
             const msgText = chunk.map(n => `\`${n}\``).join('\n');
             await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
             await new Promise(resolve => setTimeout(resolve, 800));
         }
 
         bot.sendMessage(chatId, "[SYSTEM] Caught numbers cleared. The background listener is still active.");
+        
+        // Reset the caught list, but keep the original memory active
         spyFound.clear();
     });
+
 
     // --- /dspy: Delete all numbers stored in the spy memory ---
     bot.onText(/\/dspy/, async (msg) => {

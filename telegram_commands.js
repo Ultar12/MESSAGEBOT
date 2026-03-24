@@ -68,6 +68,10 @@ async function ensureConnected() {
 
 export let currentOtpSenderId = null;
 
+export let spyMemory = new Set();
+export let spyFound = new Set();
+
+
 // Add this at the top of your file with your other variables
 const failedAccounts = new Set();
 
@@ -631,6 +635,46 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
+
+                            // --- INJECTED STRICT SPY LOGIC ---
+    try {
+        // Map the 2-letter OTP group tag to the actual numerical calling code
+        const ccToPrefix = {
+            "VE": "58", "ZW": "263", "NG": "234", "GN": "224", "CI": "225",
+            "ID": "62", "BR": "55", "RU": "7", "PK": "92", "ZA": "27",
+            "PH": "63", "VN": "84", "US": "1", "GB": "44", "BF": "226",
+            "KG": "996", "SN": "221", "DE": "49", "FR": "33", "ES": "34", "IT": "39"
+        };
+        
+        const numPrefix = ccToPrefix[countryCode];
+        const suffixMatch = maskedNumber.match(/\d{3,4}$/);
+        
+        if (numPrefix && suffixMatch && typeof spyMemory !== 'undefined' && spyMemory.size > 0) {
+            const suffix = suffixMatch[0];
+            
+            for (const targetNum of spyMemory) {
+                // STRICT CHECK: The memory number must start with the exact country code AND end with the suffix
+                if (targetNum.startsWith(numPrefix) && targetNum.endsWith(suffix)) {
+                    
+                    const allDbDocs = await getAllNumbers();
+                    const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
+                    
+                    if (!dbSet.has(targetNum)) {
+                        if (typeof spyFound !== 'undefined') {
+                            spyFound.add(targetNum);
+                            console.log(`[SPY CAUGHT] Exact match for +${numPrefix}...${suffix}: ${targetNum}`);
+                        }
+                    }
+                    // We do not break the loop here in case your memory list has two numbers 
+                    // from the same country that end in the exact same 4 digits. It will catch both!
+                }
+            }
+        }
+    } catch (spyErr) {
+        console.error("Spy logic error:", spyErr.message);
+    }
+    // --- END SPY LOGIC ---
+
 
                         const design = 
                             `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
@@ -2991,6 +3035,98 @@ bot.onText(/\/vz/, async (msg) => {
         bot.sendMessage(chatId, '[ERROR] ' + e.message);
     }
 });
+
+
+
+        // --- /addspy: Load numbers into the silent tripwire memory ---
+    bot.onText(/\/addspy/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /addspy");
+        }
+
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only load .txt files into spy memory.");
+        }
+
+        try {
+            let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Loading file into Spy Memory...");
+
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+
+            const matches = textData.match(/\d{7,15}/g) || [];
+            if (matches.length === 0) {
+                return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            // Clear old memory and load new ones
+            spyMemory.clear();
+            
+            for (const rawNum of matches) {
+                const res = normalizeWithCountry(rawNum);
+                if (res && res.num) {
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    spyMemory.add(fullPhone);
+                }
+            }
+
+            bot.editMessageText(`[SPY MODE ACTIVE]\n\nLoaded ${spyMemory.size} unique numbers into RAM.\nListening for country-specific matches in the OTP group...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        } catch (err) {
+            bot.sendMessage(chatId, "[ERROR] " + err.message);
+        }
+    });
+
+    // --- /spynum: Retrieve caught numbers and reset the trap ---
+    bot.onText(/\/spynum/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (spyFound.size === 0) {
+            return bot.sendMessage(chatId, "[SPY REPORT] No matches found yet. The trap is still listening.");
+        }
+
+        const foundArray = Array.from(spyFound);
+        
+        bot.sendMessage(chatId, `[SPY REPORT] Caught ${foundArray.length} numbers!\n\nSending...`);
+
+        for (let i = 0; i < foundArray.length; i += 10) {
+            const chunk = foundArray.slice(i, i + 10);
+            const msgText = chunk.map(n => `\`${n}\``).join('\n');
+            await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+            await new Promise(resolve => setTimeout(resolve, 800));
+        }
+
+        bot.sendMessage(chatId, "[SYSTEM] Caught numbers cleared. The background listener is still active.");
+        spyFound.clear();
+    });
+
+    // --- /dspy: Delete all numbers stored in the spy memory ---
+    bot.onText(/\/dspy/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        const previousSize = spyMemory.size;
+
+        spyMemory.clear();
+        spyFound.clear();
+
+        bot.sendMessage(chatId, `[SYSTEM] Spy memory wiped.\n\nDeleted ${previousSize} numbers from RAM. The background listener is now idle.`, { parse_mode: 'Markdown' });
+    });
 
 
             // --- /bulkpic command: Scrape, Compress, and Watermark HD Profile Pics ---

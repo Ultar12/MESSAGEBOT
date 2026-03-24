@@ -14,6 +14,7 @@ import * as mammoth from 'mammoth';
 import path from 'path';
 import docxConverter from 'docx-pdf';
 import ExcelJS from 'exceljs';
+import sharp from 'sharp';
 import PDFDocument from 'pdfkit-table';
 import PDFPlain from 'pdfkit';
 import fs from 'fs'; 
@@ -2890,7 +2891,7 @@ bot.onText(/\/vz/, async (msg) => {
 });
 
 
-    // --- /bulkpic command: Scrape HD Profile Pics from a .txt file ---
+            // --- /bulkpic command: Scrape, Compress, and Watermark HD Profile Pics ---
     bot.onText(/\/bulkpic/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2898,7 +2899,6 @@ bot.onText(/\/vz/, async (msg) => {
 
         if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
         
-        // 1. Ensure they replied to a document
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
             return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file containing the numbers with /bulkpic", { parse_mode: 'Markdown' });
         }
@@ -2908,36 +2908,34 @@ bot.onText(/\/vz/, async (msg) => {
             return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for this command.");
         }
 
-        // Get first connected client
         const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
         if (!firstId) return bot.sendMessage(chatId, '[ERROR] No WhatsApp accounts connected.');
         const sock = clients[shortIdMap[firstId].folder];
 
-        const targetChannel = "-1003735392339"; // The OTP Sender Bot destination
+        const targetChannel = "-1003735392339"; 
 
         try {
-            let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading .txt file and extracting numbers...", { parse_mode: 'Markdown' });
+            let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading file and extracting numbers...", { parse_mode: 'Markdown' });
 
-            // 2. Download and read the .txt file
             const fileLink = await bot.getFileLink(doc.file_id);
             const response = await fetch(fileLink);
             const textData = await response.text();
 
-            // Extract all numbers (7 to 15 digits)
             const matches = textData.match(/\d{7,15}/g) || [];
             if (matches.length === 0) return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
 
-            // Remove duplicates to save time
             const uniqueNumbers = [...new Set(matches)];
             
-            await bot.editMessageText(`[SYSTEM] Found ${uniqueNumbers.length} unique numbers.\n\nStarting the HD Profile Scraping engine. This will take some time due to mandatory anti-ban delays...`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+            await bot.editMessageText(`[SYSTEM] Found ${uniqueNumbers.length} unique numbers.\n\nStarting the HD Profile Scraping engine. Watermarking and compression are active.`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
 
             let successCount = 0;
             let noPicCount = 0;
             let failCount = 0;
-            let currentAlbum = []; // Holds up to 10 photos
+            
+            // Dual-Album System
+            let adminAlbum = [];   // For you (with numbers)
+            let channelAlbum = []; // For the channel (photos only)
 
-            // 3. Loop through numbers safely
             for (let i = 0; i < uniqueNumbers.length; i++) {
                 const rawNum = uniqueNumbers[i];
                 
@@ -2946,62 +2944,93 @@ bot.onText(/\/vz/, async (msg) => {
                 const jid = `${fullPhone}@s.whatsapp.net`;
 
                 try {
-                    // Try to get HD Image
                     let picUrl = await sock.profilePictureUrl(jid, 'image').catch(() => null);
                     
-                    // Fallback to preview if HD fails
                     if (!picUrl) {
                         picUrl = await sock.profilePictureUrl(jid, 'preview').catch(() => null);
                     }
 
                     if (picUrl) {
-                        // Download the image buffer
                         const imgRes = await fetch(picUrl);
                         if (imgRes.ok) {
-                            const buffer = await imgRes.buffer();
+                            const rawBuffer = await imgRes.buffer();
                             
-                            // Add to Telegram Media Group array
-                            currentAlbum.push({
+                            // --- COMPRESSION AND WATERMARKING ---
+                            const processedBuffer = await sharp(rawBuffer)
+                                .resize(640, 640, { fit: 'inside', withoutEnlargement: true }) // Standardize size
+                                .composite([{
+                                    input: Buffer.from(`
+                                        <svg width="640" height="100">
+                                            <text x="620" y="80" text-anchor="end" font-size="42" fill="rgba(255, 255, 255, 0.8)" font-weight="bold" stroke="rgba(0, 0, 0, 0.8)" stroke-width="3" font-family="Arial">𝖀𝖑𝖙-𝕬𝕽</text>
+                                        </svg>
+                                    `),
+                                    gravity: 'southeast',
+                                    blend: 'over'
+                                }])
+                                .jpeg({ quality: 75 }) // Compress to save RAM and upload speed
+                                .toBuffer();
+                            
+                            // Admin view gets the phone number
+                            adminAlbum.push({
                                 type: 'photo',
-                                media: buffer,
+                                media: processedBuffer,
                                 caption: `+${fullPhone}`
                             });
+                            
+                            // Channel view gets absolutely nothing but the picture
+                            channelAlbum.push({
+                                type: 'photo',
+                                media: processedBuffer
+                            });
+
                             successCount++;
                         } else {
                             failCount++;
                         }
                     } else {
-                        noPicCount++; // No picture or restricted privacy
+                        noPicCount++; 
                     }
                 } catch (err) {
                     failCount++;
                 }
 
-                // 4. Send Album if it reaches 10 items OR if it is the very last number
-                if (currentAlbum.length === 10 || (i === uniqueNumbers.length - 1 && currentAlbum.length > 0)) {
+                // Live Progress Updater
+                if ((i + 1) % 5 === 0 || i === uniqueNumbers.length - 1) {
+                    const percent = Math.floor(((i + 1) / uniqueNumbers.length) * 100);
+                    const progressText = 
+                        `[SCRAPING IN PROGRESS] ${percent}%\n\n` +
+                        `Processed: ${i + 1} / ${uniqueNumbers.length}\n` +
+                        `Found HD: ${successCount}\n` +
+                        `No Pic/Private: ${noPicCount}\n` +
+                        `Errors: ${failCount}\n\n` +
+                        `Albums are being processed in batches of 10...`;
+                    
                     try {
-                        // Send to Admin
-                        await bot.sendMediaGroup(chatId, currentAlbum);
+                        await bot.editMessageText(progressText, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+                    } catch (editErr) {}
+                }
+
+                // Send Batch (Max 10 per album limit on Telegram)
+                if (adminAlbum.length === 10 || (i === uniqueNumbers.length - 1 && adminAlbum.length > 0)) {
+                    try {
+                        await bot.sendMediaGroup(chatId, adminAlbum);
                         
-                        // Send to the Target Channel via the local senderBot instance
                         if (typeof senderBot !== 'undefined') {
-                            await senderBot.sendMediaGroup(targetChannel, currentAlbum).catch(e => console.log("OTP Bot failed to send album:", e.message));
+                            await senderBot.sendMediaGroup(targetChannel, channelAlbum).catch(e => console.log("[ERROR] OTP Bot failed to send album:", e.message));
                         }
                     } catch (albumErr) {
                         console.error("Failed to send album batch:", albumErr.message);
                     }
-                    // Clear the album from memory to start the next batch safely
-                    currentAlbum = [];
+                    adminAlbum = [];
+                    channelAlbum = [];
                 }
 
-                // CRITICAL: Human-like delay to prevent instant ban (3 to 5 seconds)
                 if (i < uniqueNumbers.length - 1) {
                     const randomDelay = Math.floor(Math.random() * 2000) + 3000;
                     await new Promise(resolve => setTimeout(resolve, randomDelay));
                 }
             }
 
-            // 5. Send Final Stats
             const finalStats = 
                 `[BULK SCRAPE COMPLETE]\n\n` +
                 `Stats for ${doc.file_name}:\n` +
@@ -3009,8 +3038,9 @@ bot.onText(/\/vz/, async (msg) => {
                 `Found HD Pics: ${successCount}\n` +
                 `No Pic / Private: ${noPicCount}\n` +
                 `Failed/Errors: ${failCount}\n\n` +
-                `Albums have been delivered to you and the target channel.`;
+                `Albums delivered.`;
 
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
             bot.sendMessage(chatId, finalStats, { parse_mode: 'Markdown' });
 
         } catch (error) {
@@ -3018,6 +3048,7 @@ bot.onText(/\/vz/, async (msg) => {
             bot.sendMessage(chatId, "[CRITICAL ERROR] During bulk scan: " + error.message, { parse_mode: 'Markdown' });
         }
     });
+
 
     
     

@@ -2843,7 +2843,7 @@ const getCountryPrefix = (text) => {
 };
 
 
-        // --- /getnum : Smart h2iotp2bot Extractor with Live WA Verification ---
+       // --- /getnum : Smart h2iotp2bot Extractor with Live WA Verification & Progress ---
     bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2862,10 +2862,44 @@ const getCountryPrefix = (text) => {
         const sock = clients[activeFolders[0]];
 
         try {
-            // 2. Connect the dedicated GETNUM Telegram account
+            // 2. Ask user for Output Format using a Promise and Inline Keyboard
+            const outputMode = await new Promise((resolve) => {
+                let isResolved = false;
+                const opts = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Send as .txt File", callback_data: "getnum_file" }],
+                            [{ text: "Send in Chat (Batches)", callback_data: "getnum_chat" }]
+                        ]
+                    }
+                };
+                
+                bot.sendMessage(chatId, `[SETUP] Target: ${countLimit} numbers.\nHow would you like to receive the output?`, opts).then(promptMsg => {
+                    const listener = (query) => {
+                        if (query.message.message_id === promptMsg.message_id) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            bot.deleteMessage(chatId, promptMsg.message_id).catch(()=>{});
+                            resolve(query.data === 'getnum_file' ? 'file' : 'chat');
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    
+                    // Default to chat if no selection is made within 60 seconds
+                    setTimeout(() => {
+                        if (!isResolved) {
+                            bot.removeListener('callback_query', listener);
+                            bot.deleteMessage(chatId, promptMsg.message_id).catch(()=>{});
+                            resolve('chat'); 
+                        }
+                    }, 60000);
+                });
+            });
+
+            // 3. Connect the dedicated GETNUM Telegram account
             await ensureGetnumConnected(); 
 
-            // 3. Send /start to trigger the bot
+            // 4. Send /start to trigger the target bot
             await getnumUserBot.sendMessage(targetBot, { message: "/start" }); 
 
             let statusMsg = await bot.sendMessage(chatId, `[SENT] /start to @${targetBot}.\n\nPlease go to @${targetBot} on your GETNUM account now and select your country.\nI am waiting for the numbers to appear...`, { parse_mode: 'Markdown' });
@@ -2874,7 +2908,7 @@ const getCountryPrefix = (text) => {
             let attempts = 0;
             let targetMessage = null;
 
-            // 4. Wait for the user to pick a country (Look for the 'Change Numbers' button)
+            // Wait for the user to pick a country
             while (!countrySelected && attempts < 60) { 
                 const res = await getnumUserBot.getMessages(targetBot, { limit: 1 }); 
                 const currentMsg = res[0];
@@ -2901,18 +2935,26 @@ const getCountryPrefix = (text) => {
                 return bot.editMessageText(`[TIMEOUT] You didn't select a country in time. Try /getnum again.`, { chat_id: chatId, message_id: statusMsg.message_id });
             }
 
-            await bot.editMessageText(`[SYSTEM] Country Selected!\n\nStarting scraper and WhatsApp verification. This will take time to avoid banning your WA checker account...`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-
+            let totalChecked = 0;
             let totalVerified = 0;
             let seenNumbers = [];
             let currentBatch = [];
+            let allValidNumbers = []; // Used if outputMode is 'file'
             let noNewNumsCount = 0;
+
+            const updateProgress = async () => {
+                const text = `[SCRAPING IN PROGRESS]\n\nTarget: ${countLimit}\nExtracted from Bot: ${totalChecked}\nVerified on WhatsApp: ${totalVerified}\n\nRunning anti-ban delay protocols...`;
+                try {
+                    await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+                } catch (e) { /* Ignore identical message edit errors */ }
+            };
+
+            await updateProgress();
 
             // 5. Extraction and Verification Loop
             while (totalVerified < countLimit) {
                 const text = targetMessage.message || "";
                 
-                // Extract numbers matching formats like "+58 4267701609"
                 const rawMatches = text.match(/\+\d{1,4}\s?\d{7,14}/g) || [];
                 let newNumsFoundInLoop = false;
 
@@ -2925,6 +2967,7 @@ const getCountryPrefix = (text) => {
                     
                     seenNumbers.push(cleanNum); 
                     newNumsFoundInLoop = true;
+                    totalChecked++;
 
                     const res = normalizeWithCountry(cleanNum);
                     if (!res || !res.num) continue;
@@ -2936,26 +2979,35 @@ const getCountryPrefix = (text) => {
                     try {
                         const [waCheck] = await sock.onWhatsApp(jid);
                         if (waCheck && waCheck.exists) {
-                            currentBatch.push(`\`${fullPhone}\``);
                             totalVerified++;
                             
-                            // Send to chat in batches of 5
-                            if (currentBatch.length >= 5) {
-                                await bot.sendMessage(chatId, `[BATCH]\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                                currentBatch = [];
+                            if (outputMode === 'chat') {
+                                currentBatch.push(`\`${res.num}\``);
+                                if (currentBatch.length >= 5) {
+                                    await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                                    currentBatch = [];
+                                }
+                            } else {
+                                // outputMode === 'file'
+                                allValidNumbers.push(res.num);
                             }
                         }
                     } catch (e) {
                         console.error("WA Check Error:", e.message);
                     }
                     
-                    // CRITICAL ANTI-BAN DELAY (Do not lower this)
+                    // Update the progress dashboard every 2 numbers checked
+                    if (totalChecked % 2 === 0) {
+                        await updateProgress();
+                    }
+
+                    // CRITICAL ANTI-BAN DELAY
                     await delay(3000); 
                 }
 
                 if (totalVerified >= countLimit) break;
 
-                // Failsafe if the bot runs out of stock and repeats old numbers
+                // Failsafe if the bot runs out of stock
                 if (!newNumsFoundInLoop) {
                     noNewNumsCount++;
                     if (noNewNumsCount > 5) {
@@ -2966,7 +3018,7 @@ const getCountryPrefix = (text) => {
                     noNewNumsCount = 0;
                 }
 
-                // 6. Click "Change Numbers" to fetch the next page
+                // 6. Click "Change Numbers"
                 let clicked = false;
                 if (targetMessage.replyMarkup && targetMessage.replyMarkup.rows) {
                     for (let r = 0; r < targetMessage.replyMarkup.rows.length; r++) {
@@ -2974,7 +3026,7 @@ const getCountryPrefix = (text) => {
                         for (let c = 0; c < row.buttons.length; c++) {
                             const btnText = row.buttons[c].text || "";
                             if (btnText.toLowerCase().includes("change numbers")) {
-                                await targetMessage.click(r, c); // GramJS trigger
+                                await targetMessage.click(r, c);
                                 clicked = true;
                                 break;
                             }
@@ -2984,7 +3036,7 @@ const getCountryPrefix = (text) => {
                 }
 
                 if (clicked) {
-                    await delay(4000); // Wait for the bot to edit the list
+                    await delay(4000); 
                     const res = await getnumUserBot.getMessages(targetBot, { limit: 1 });
                     targetMessage = res[0];
                 } else {
@@ -2993,19 +3045,30 @@ const getCountryPrefix = (text) => {
                 }
             }
 
-            // Send any remaining numbers in the batch
-            if (currentBatch.length > 0) {
-                await bot.sendMessage(chatId, `[BATCH - FINAL]\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            // Final Output Delivery
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
+            
+            if (outputMode === 'chat' && currentBatch.length > 0) {
+                await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            } else if (outputMode === 'file' && allValidNumbers.length > 0) {
+                const fileBuffer = Buffer.from(allValidNumbers.join('\n'));
+                await bot.sendDocument(
+                    chatId, 
+                    fileBuffer, 
+                    { caption: `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers.`, parse_mode: 'Markdown' }, 
+                    { filename: `Extracted_WA_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
+                );
             }
 
-            bot.sendMessage(chatId, `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers.`, { parse_mode: 'Markdown' });
+            if (outputMode === 'chat') {
+                bot.sendMessage(chatId, `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers.`, { parse_mode: 'Markdown' });
+            }
 
         } catch (err) {
             bot.sendMessage(chatId, "[ERROR] " + err.message);
         }
     });
-
-
+ 
 
 
     // --- /savevz : Enter Venezuela Save Mode ---

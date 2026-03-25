@@ -2842,66 +2842,169 @@ const getCountryPrefix = (text) => {
     return ""; 
 };
 
-        // --- /getnum : Smart LolzFack_bot Extractor (Using Dedicated Acc) ---
+
+        // --- /getnum : Smart h2iotp2bot Extractor with Live WA Verification ---
     bot.onText(/\/getnum\s+(\d+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
         if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+        
         const countLimit = parseInt(match[1]);
+        const targetBot = "h2iotp2bot";
+
+        // 1. Ensure we have an active WA bot to verify the numbers
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) {
+            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected. I need an active WA connection to verify the numbers.");
+        }
+        const sock = clients[activeFolders[0]];
 
         try {
-            // ✅ Use the dedicated connection
+            // 2. Connect the dedicated GETNUM Telegram account
             await ensureGetnumConnected(); 
-            const targetBot = "LolzFack_bot";
 
-            // 1. Initiate the command from the dedicated bot
-            await getnumUserBot.sendMessage(targetBot, { message: "📞 Get Number" }); 
+            // 3. Send /start to trigger the bot
+            await getnumUserBot.sendMessage(targetBot, { message: "/start" }); 
 
-            let statusMsg = await bot.sendMessage(chatId, `[SENT] \`📞 Get Number\` to @LolzFack_bot.\n\n⏳ **Please go to @LolzFack_bot on your GETNUM account now and select your country.**\nI am waiting for the numbers to appear...`, { parse_mode: 'Markdown' });
+            let statusMsg = await bot.sendMessage(chatId, `[SENT] /start to @${targetBot}.\n\nPlease go to @${targetBot} on your GETNUM account now and select your country.\nI am waiting for the numbers to appear...`, { parse_mode: 'Markdown' });
 
-            let numberVisible = false;
+            let countrySelected = false;
             let attempts = 0;
+            let targetMessage = null;
 
-            // 2. Wait for the user to pick a country (Up to 2 minutes timeout)
-            while (!numberVisible && attempts < 60) { 
+            // 4. Wait for the user to pick a country (Look for the 'Change Numbers' button)
+            while (!countrySelected && attempts < 60) { 
                 const res = await getnumUserBot.getMessages(targetBot, { limit: 1 }); 
-                const text = res[0]?.message || "";
+                const currentMsg = res[0];
 
-                if (text.includes("New Numbers:") && text.includes("copy")) {
-                    numberVisible = true;
-                } else {
+                if (currentMsg && currentMsg.replyMarkup && currentMsg.replyMarkup.rows) {
+                    for (const row of currentMsg.replyMarkup.rows) {
+                        for (const b of row.buttons) {
+                            if ((b.text || "").toLowerCase().includes("change numbers")) {
+                                countrySelected = true;
+                                targetMessage = currentMsg;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (!countrySelected) {
                     await delay(2000);
                     attempts++;
                 }
             }
 
-            if (!numberVisible) {
+            if (!countrySelected) {
                 return bot.editMessageText(`[TIMEOUT] You didn't select a country in time. Try /getnum again.`, { chat_id: chatId, message_id: statusMsg.message_id });
             }
 
-            // 3. Save the limit in memory for the callback
-            userState[chatId + '_getnum_limit'] = countLimit;
+            await bot.editMessageText(`[SYSTEM] Country Selected!\n\nStarting scraper and WhatsApp verification. This will take time to avoid banning your WA checker account...`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
 
-            // 4. Ask the user for their preferred output format
-            bot.editMessageText(`**Country Selected!** Numbers are ready.\n\nHow do you want me to deliver the ${countLimit} numbers?`, {
-                chat_id: chatId,
-                message_id: statusMsg.message_id,
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "Send in Batches", callback_data: "getnum_out_batch" }],
-                        [{ text: "Send as .TXT File", callback_data: "getnum_out_txt" }],
-                        [{ text: "Cancel", callback_data: "cancel_action" }]
-                    ]
+            let totalVerified = 0;
+            let seenNumbers = [];
+            let currentBatch = [];
+            let noNewNumsCount = 0;
+
+            // 5. Extraction and Verification Loop
+            while (totalVerified < countLimit) {
+                const text = targetMessage.message || "";
+                
+                // Extract numbers matching formats like "+58 4267701609"
+                const rawMatches = text.match(/\+\d{1,4}\s?\d{7,14}/g) || [];
+                let newNumsFoundInLoop = false;
+
+                for (const raw of rawMatches) {
+                    if (totalVerified >= countLimit) break;
+
+                    const cleanNum = raw.replace(/\D/g, ''); 
+                    
+                    if (seenNumbers.includes(cleanNum)) continue; 
+                    
+                    seenNumbers.push(cleanNum); 
+                    newNumsFoundInLoop = true;
+
+                    const res = normalizeWithCountry(cleanNum);
+                    if (!res || !res.num) continue;
+                    
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    const jid = `${fullPhone}@s.whatsapp.net`;
+
+                    // --- LIVE WHATSAPP CHECK ---
+                    try {
+                        const [waCheck] = await sock.onWhatsApp(jid);
+                        if (waCheck && waCheck.exists) {
+                            currentBatch.push(`\`${fullPhone}\``);
+                            totalVerified++;
+                            
+                            // Send to chat in batches of 5
+                            if (currentBatch.length >= 5) {
+                                await bot.sendMessage(chatId, `[BATCH]\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                                currentBatch = [];
+                            }
+                        }
+                    } catch (e) {
+                        console.error("WA Check Error:", e.message);
+                    }
+                    
+                    // CRITICAL ANTI-BAN DELAY (Do not lower this)
+                    await delay(3000); 
                 }
-            });
 
-        } catch (e) {
-            bot.sendMessage(chatId, "[ERROR] " + e.message);
+                if (totalVerified >= countLimit) break;
+
+                // Failsafe if the bot runs out of stock and repeats old numbers
+                if (!newNumsFoundInLoop) {
+                    noNewNumsCount++;
+                    if (noNewNumsCount > 5) {
+                        await bot.sendMessage(chatId, "[WARNING] The target bot stopped generating new numbers. Stopping early.", { parse_mode: 'Markdown' });
+                        break;
+                    }
+                } else {
+                    noNewNumsCount = 0;
+                }
+
+                // 6. Click "Change Numbers" to fetch the next page
+                let clicked = false;
+                if (targetMessage.replyMarkup && targetMessage.replyMarkup.rows) {
+                    for (let r = 0; r < targetMessage.replyMarkup.rows.length; r++) {
+                        const row = targetMessage.replyMarkup.rows[r];
+                        for (let c = 0; c < row.buttons.length; c++) {
+                            const btnText = row.buttons[c].text || "";
+                            if (btnText.toLowerCase().includes("change numbers")) {
+                                await targetMessage.click(r, c); // GramJS trigger
+                                clicked = true;
+                                break;
+                            }
+                        }
+                        if (clicked) break;
+                    }
+                }
+
+                if (clicked) {
+                    await delay(4000); // Wait for the bot to edit the list
+                    const res = await getnumUserBot.getMessages(targetBot, { limit: 1 });
+                    targetMessage = res[0];
+                } else {
+                    await bot.sendMessage(chatId, "[ERROR] Could not find 'Change Numbers' button. Stopping.", { parse_mode: 'Markdown' });
+                    break;
+                }
+            }
+
+            // Send any remaining numbers in the batch
+            if (currentBatch.length > 0) {
+                await bot.sendMessage(chatId, `[BATCH - FINAL]\n\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            }
+
+            bot.sendMessage(chatId, `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers.`, { parse_mode: 'Markdown' });
+
+        } catch (err) {
+            bot.sendMessage(chatId, "[ERROR] " + err.message);
         }
     });
+
 
 
 
@@ -4265,86 +4368,6 @@ bot.onText(/\/vz/, async (msg) => {
     });
 
 
-            // --- /dv Command: Download Telegram File Link and Send as TXT Document ---
-    // Usage: /dv <telegram_file_link> (Converts content to TXT)
-    bot.onText(/\/dv\s+(\S+)/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        const userId = msg.chat.id.toString();
-        const chatId = msg.chat.id;
-        
-        // Authorization Check
-        if (userId !== ADMIN_ID && !SUBADMINS.includes(userId)) {
-            return; // Silently ignore if not admin or subadmin
-        }
-        
-        const fileLink = match[1]; 
-        
-        if (!fileLink || (!fileLink.startsWith('http://') && !fileLink.startsWith('https://'))) {
-            return bot.sendMessage(chatId, '[ERROR] Usage: /dv <telegram_file_link>. The link must start with http:// or https://');
-        }
-
-        try {
-            bot.sendMessage(chatId, '[DOWNLOADING] Fetching file from link...');
-
-            // 1. Fetch the file content robustly using buffer
-            const response = await fetch(fileLink);
-
-            if (!response.ok) {
-                return bot.sendMessage(chatId, `[ERROR] Failed to download file. HTTP Status: ${response.status}`);
-            }
-
-            const fileBuffer = await response.buffer();
-            
-            // --- FIX START: Convert Buffer to Text and Force TXT Output ---
-            
-            // 2. Convert the raw buffer to a clean text string (handles VCF, HTML, or raw text)
-            const rawTextContent = fileBuffer.toString('utf-8');
-            
-            // 3. Import necessary modules (fs and path)
-            const fs = await import('fs');
-            const path = await import('path');
-            
-            // 4. Force a .txt filename and create the temporary file path
-            const fileName = `downloaded_content_${Date.now()}.txt`;
-            const tempDir = '/tmp';
-            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-            const filePath = path.join(tempDir, fileName);
-
-            // Write the text content (not the raw buffer) to the new .txt file
-            fs.writeFileSync(filePath, rawTextContent);
-            
-            // --- FIX END ---
-            
-            // 5. Send the file back to the user
-            await bot.sendDocument(chatId, filePath, {
-                // Use the length of the new text content for size reporting
-                caption: `[DOWNLOAD COMPLETE]\nFile: **${fileName}** (${(rawTextContent.length / 1024).toFixed(2)} KB)\n**Format Forced to TXT.**`,
-                parse_mode: 'Markdown',
-                // Explicitly set the filename and MIME type to ensure TXT display
-                filename: fileName, 
-                contentType: 'text/plain' 
-            });
-
-            // 6. Clean up the temporary file
-            fs.unlinkSync(filePath);
-
-            sendMenu(bot, chatId, '[SUCCESS] Document sent.');
-
-        } catch (e) {
-            console.error('[DV_ERROR]', e.message);
-            
-            let userError = `[ERROR] Could not complete download: ${e.message}.`;
-            if (fileLink.includes('t.me')) {
-                 userError += `\n**HINT:** Direct links (e.g., from bot.getFileLink) work best. Public preview pages (t.me) often download HTML.`;
-            }
-            
-            bot.sendMessage(chatId, userError, { parse_mode: 'Markdown' });
-        }
-    });
-
-
-
-    
 
     const alarmTimers = {}; 
 
@@ -4560,204 +4583,6 @@ bot.onText(/\/vz/, async (msg) => {
         } catch (e) {
             console.error("Check Error:", e.message);
             bot.sendMessage(chatId, "[ERROR] Check failed: " + e.message);
-        }
-    });
-
-    // --- /scrape command: Join group link and extract members as VCF ---
-    bot.onText(/\/scrape\s+(\S+)/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
-        const chatId = msg.chat.id;
-        let groupLink = match[1];
-
-        // Get first connected client
-        const firstId = Object.keys(shortIdMap).find(id => clients[shortIdMap[id].folder]);
-        if (!firstId) return bot.sendMessage(chatId, '[ERROR] Pair an account first.');
-        const sock = clients[shortIdMap[firstId].folder];
-
-        try {
-            bot.sendMessage(chatId, '[SCRAPING] Joining group...');
-
-            // Extract invite code from link
-            let inviteCode = null;
-            if (groupLink.includes('chat.whatsapp.com/')) {
-                inviteCode = groupLink.split('chat.whatsapp.com/')[1];
-                // Remove any trailing characters
-                inviteCode = inviteCode.split(/[\s?#&]/)[0];
-            } else {
-                return bot.sendMessage(chatId, '[ERROR] Invalid WhatsApp group link format.\nExpected: https://chat.whatsapp.com/XXXXXX');
-            }
-
-            bot.sendMessage(chatId, '[INFO] Invite code: ' + inviteCode.substring(0, 10) + '...');
-
-            // Join group
-            let groupJid = null;
-            try {
-                groupJid = await sock.groupAcceptInvite(inviteCode);
-            } catch (joinError) {
-                bot.sendMessage(chatId, '[ERROR] Failed to join group: ' + joinError.message);
-                
-                // Provide more specific error messages
-                if (joinError.message.includes('400') || joinError.message.includes('bad request')) {
-                    bot.sendMessage(chatId, '[HINT] Possible causes:\n1. Link is expired\n2. Already in group\n3. Removed from group\n4. Group settings restrict joining');
-                }
-                return;
-            }
-
-            bot.sendMessage(chatId, '[JOINED] Group: ' + groupJid + '\n[FETCHING] Members...');
-
-            // Get group metadata (handle both jid and lid formats)
-            let groupMetadata = null;
-            try {
-                // Try with jid first
-                groupMetadata = await sock.groupMetadata(groupJid);
-                if (!groupMetadata || !groupMetadata.participants) {
-                    // Try with lid format if jid fails
-                    const lidFormat = groupJid.replace('@g.us', '@lid');
-                    groupMetadata = await sock.groupMetadata(lidFormat);
-                }
-            } catch (metaError) {
-                bot.sendMessage(chatId, '[WARNING] ' + metaError.message + '. Trying alternative format...');
-                try {
-                    // Try alternative format
-                    const altFormat = groupJid.includes('@lid') ? groupJid.replace('@lid', '@g.us') : groupJid.replace('@g.us', '@lid');
-                    groupMetadata = await sock.groupMetadata(altFormat);
-                } catch (e2) {
-                    return bot.sendMessage(chatId, '[ERROR] Failed to fetch group data: ' + e2.message);
-                }
-            }
-
-            if (!groupMetadata || !groupMetadata.participants) {
-                return bot.sendMessage(chatId, '[ERROR] No participants found.');
-            }
-
-            // Extract all members - handle all ID formats and admin properties
-            let allParticipants = groupMetadata.participants
-                .map(p => {
-                    // Remove all possible suffixes from ID
-                    let phoneNumber = p.id;
-                    [
-                        '@s.whatsapp.net',
-                        '@lid',
-                        '@g.us'
-                    ].forEach(suffix => {
-                        phoneNumber = phoneNumber.replace(suffix, '');
-                    });
-
-                    // Check admin status (multiple properties for compatibility)
-                    const isAdmin = p.admin || p.isAdmin || p.isSuperAdmin;
-                    const isOwner = p.owner || false;
-
-                    return {
-                        id: phoneNumber,
-                        admin: isAdmin,
-                        owner: isOwner,
-                        joinedAt: p.joinedTimestamp
-                    };
-                })
-                .filter(p => p.id && p.id.length >= 7 && p.id.length <= 15);
-
-            // First try: exclude admins and owner
-            let members = allParticipants
-                .filter(p => !p.admin && !p.owner)
-                .map(p => p.id);
-            
-            // If only 1-2 non-admin members or none found, include all (some groups have no clear role info)
-            if (members.length <= 2 && allParticipants.length > members.length) {
-                bot.sendMessage(chatId, '[INFO] Few non-admin members detected. Scraping all members...');
-                members = allParticipants.map(p => p.id);
-            } else if (members.length === 0) {
-                bot.sendMessage(chatId, '[INFO] No admins detected. Scraping all ' + allParticipants.length + ' members...');
-                members = allParticipants.map(p => p.id);
-            }
-
-            if (members.length === 0) {
-                return bot.sendMessage(chatId, '[ERROR] No members found.');
-            }
-
-            bot.sendMessage(chatId, '[SCRAPED] ' + members.length + ' members found.\n[GENERATING] VCF directly from group data...');
-
-            // WORKAROUND: Use members directly from group metadata
-            // Some groups use LID format which can't be converted - save them as-is
-            let phoneNumbers = [];
-            
-            for (let i = 0; i < members.length; i++) {
-                const memberId = members[i];
-                
-                // Only add if it looks like a valid phone number (all digits, proper length)
-                if (/^\d{7,15}$/.test(memberId)) {
-                    phoneNumbers.push(memberId);
-                } else {
-                    // Try one more thing: check if it's actually a valid WhatsApp number
-                    try {
-                        const jid = `${memberId}@s.whatsapp.net`;
-                        const [result] = await sock.onWhatsApp(jid);
-                        if (result && result.exists) {
-                            phoneNumbers.push(memberId);
-                        }
-                    } catch (e) {
-                        // Skip invalid numbers
-                        continue;
-                    }
-                }
-                
-                // Show progress
-                if ((i + 1) % 20 === 0) {
-                    bot.sendMessage(chatId, '[PROGRESS] Processing ' + (i + 1) + '/' + members.length + '...');
-                }
-            }
-
-            if (phoneNumbers.length === 0) {
-                // LAST RESORT: Just save all members as-is, they might work
-                phoneNumbers = members;
-                bot.sendMessage(chatId, '[WARNING] Saving raw IDs from group (may be LIDs)...');
-            }
-
-            bot.sendMessage(chatId, '[PROCESSED] ' + phoneNumbers.length + ' numbers extracted.\n[GENERATING] VCF...');
-
-            // Remove duplicates
-            let uniqueNumbers = new Set(phoneNumbers);
-            
-            // Generate VCF content
-            let vcfContent = 'BEGIN:VCARD\nVERSION:3.0\nFN:Group Members\nEND:VCARD\n\n';
-            let validCount = 0;
-            
-            uniqueNumbers.forEach((num) => {
-                // Clean the number - remove any non-digits
-                const cleanNum = num.replace(/\D/g, '');
-                if (cleanNum && cleanNum.length >= 7 && cleanNum.length <= 15) {
-                    vcfContent += 'BEGIN:VCARD\nVERSION:3.0\nFN:Member ' + (validCount + 1) + '\nTEL:+' + cleanNum + '\nEND:VCARD\n';
-                    validCount++;
-                }
-            });
-
-            // Create temporary file and send
-            const fs = await import('fs');
-            const path = await import('path');
-            const tempDir = '/tmp';
-            const fileName = `scraped_members_${Date.now()}.vcf`;
-            const filePath = path.join(tempDir, fileName);
-
-            fs.writeFileSync(filePath, vcfContent);
-
-            // Send file
-            await bot.sendDocument(chatId, filePath);
-            
-            // Clean up temp file
-            fs.unlinkSync(filePath);
-
-            // Leave the group after scraping
-            try {
-                bot.sendMessage(chatId, '[CLEANUP] Leaving group...');
-                await sock.groupLeave(groupJid);
-            } catch (leaveError) {
-                bot.sendMessage(chatId, '[WARNING] Could not leave group: ' + leaveError.message);
-            }
-
-            sendMenu(bot, chatId, '[SUCCESS]\nScraped: ' + validCount + ' members\nLeft group\nVCF sent');
-
-        } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] Scrape failed: ' + e.message);
         }
     });
 

@@ -3008,16 +3008,6 @@ const getCountryPrefix = (text) => {
                 if (totalVerified >= countLimit) break;
 
                 // Failsafe if the bot runs out of stock
-                if (!newNumsFoundInLoop) {
-                    noNewNumsCount++;
-                    if (noNewNumsCount > 5) {
-                        await bot.sendMessage(chatId, "[WARNING] The target bot stopped generating new numbers. Stopping early.", { parse_mode: 'Markdown' });
-                        break;
-                    }
-                } else {
-                    noNewNumsCount = 0;
-                }
-
                 // 6. Click "Change Numbers"
                 let clicked = false;
                 if (targetMessage.replyMarkup && targetMessage.replyMarkup.rows) {
@@ -3036,13 +3026,38 @@ const getCountryPrefix = (text) => {
                 }
 
                 if (clicked) {
-                    await delay(4000); 
-                    const res = await getnumUserBot.getMessages(targetBot, { limit: 1 });
-                    targetMessage = res[0];
+                    await delay(4000); // Wait for the target bot to edit the list
+                    
+                    // UPGRADE: Fetch the last 10 messages and ignore the OTP spam
+                    const res = await getnumUserBot.getMessages(targetBot, { limit: 10 });
+                    let foundMenu = false;
+
+                    for (const msg of res) {
+                        if (msg.replyMarkup && msg.replyMarkup.rows) {
+                            for (const row of msg.replyMarkup.rows) {
+                                for (const b of row.buttons) {
+                                    if ((b.text || "").toLowerCase().includes("change numbers")) {
+                                        targetMessage = msg;
+                                        foundMenu = true;
+                                        break;
+                                    }
+                                }
+                                if (foundMenu) break;
+                            }
+                        }
+                        if (foundMenu) break;
+                    }
+
+                    if (!foundMenu) {
+                        await bot.sendMessage(chatId, "[ERROR] Scanned the last 10 messages but could not find the 'Change Numbers' button. Stopping.", { parse_mode: 'Markdown' });
+                        break;
+                    }
+                    
                 } else {
-                    await bot.sendMessage(chatId, "[ERROR] Could not find 'Change Numbers' button. Stopping.", { parse_mode: 'Markdown' });
+                    await bot.sendMessage(chatId, "[ERROR] Could not click the 'Change Numbers' button. Stopping.", { parse_mode: 'Markdown' });
                     break;
                 }
+
             }
 
             // Final Output Delivery

@@ -2823,6 +2823,200 @@ bot.onText(/\/nums/, async (msg) => {
 });
 
 
+       // --- /vt command: Vietnam Number Analyzer and Sorter ---
+    bot.onText(/\/vt/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /vt");
+        }
+
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only analyze .txt files.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading and analyzing Vietnam prefixes...");
+
+        try {
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+
+            // Extract all digit strings that could potentially be numbers
+            const rawMatches = textData.match(/\d{9,15}/g) || [];
+            if (rawMatches.length === 0) {
+                return bot.editMessageText("[ERROR] No valid numerical data found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            const uniqueRaw = [...new Set(rawMatches)];
+            
+            // Buckets for Vietnam prefixes
+            const vnBuckets = {
+                '03': [], // Viettel
+                '05': [], // Vietnamobile / Gmobile
+                '07': [], // Mobifone
+                '08': [], // Vinaphone / Viettel / ITelecom
+                '09': []  // Classic Mobile (All Carriers)
+            };
+
+            let totalValid = 0;
+
+            // Strict Validation & Sorting Loop
+            for (const raw of uniqueRaw) {
+                let clean = raw.replace(/\D/g, '');
+                
+                // Strip country code and leading zeros to normalize
+                if (clean.startsWith('84')) clean = clean.substring(2);
+                if (clean.startsWith('0')) clean = clean.substring(1);
+
+                // Vietnam mobile numbers are exactly 9 digits after the '0' or '84', starting with 3, 5, 7, 8, or 9
+                if (clean.length === 9 && /^[35789]/.test(clean)) {
+                    const prefix = '0' + clean.charAt(0);
+                    // Format for final output (Standardized with 84 country code)
+                    const finalNum = `84${clean}`; 
+                    
+                    if (vnBuckets[prefix]) {
+                        vnBuckets[prefix].push(finalNum);
+                        totalValid++;
+                    }
+                }
+            }
+
+            if (totalValid === 0) {
+                return bot.editMessageText("[REPORT] Scan complete. Found 0 valid Vietnam mobile numbers in this file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            // Prepare the Stats and the First Keyboard (Prefix Selection)
+            let statsText = `[VIETNAM DATA REPORT]\n\nTotal Valid VN Numbers: ${totalValid}\n\nBreakdown by Prefix:\n`;
+            let prefixButtons = [];
+
+            for (const [prefix, nums] of Object.entries(vnBuckets)) {
+                if (nums.length > 0) {
+                    statsText += `- Prefix ${prefix}: ${nums.length} numbers\n`;
+                    prefixButtons.push({ text: `Extract ${prefix} Only (${nums.length})`, callback_data: `vt_prefix_${prefix}` });
+                }
+            }
+            statsText += `\nWhich data segment would you like to extract?`;
+
+            // Format buttons neatly (2 per row)
+            const keyboardRows = [];
+            for (let i = 0; i < prefixButtons.length; i += 2) {
+                keyboardRows.push(prefixButtons.slice(i, i + 2));
+            }
+            keyboardRows.push([{ text: `Extract ALL Valid Numbers (${totalValid})`, callback_data: "vt_prefix_all" }]);
+
+            // INTERACTIVE STEP 1: Wait for Prefix Selection
+            const selectedPrefix = await new Promise((resolve) => {
+                let isResolved = false;
+                
+                bot.editMessageText(statsText, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    reply_markup: { inline_keyboard: keyboardRows }
+                }).then(() => {
+                    const listener = (query) => {
+                        if (query.message.message_id === statusMsg.message_id && query.data.startsWith('vt_prefix_')) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            resolve(query.data.replace('vt_prefix_', ''));
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    
+                    setTimeout(() => {
+                        if (!isResolved) {
+                            bot.removeListener('callback_query', listener);
+                            resolve(null);
+                        }
+                    }, 60000); // 60 second timeout
+                });
+            });
+
+            if (!selectedPrefix) {
+                return bot.editMessageText("[TIMEOUT] You did not select a prefix in time. Command aborted.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            // Gather the requested numbers based on the choice
+            let finalArray = [];
+            let segmentName = "";
+            if (selectedPrefix === 'all') {
+                for (const nums of Object.values(vnBuckets)) finalArray.push(...nums);
+                segmentName = "All Valid VN Numbers";
+            } else {
+                finalArray = vnBuckets[selectedPrefix];
+                segmentName = `Prefix ${selectedPrefix}`;
+            }
+
+            // INTERACTIVE STEP 2: Wait for Output Format Selection
+            const outputMode = await new Promise((resolve) => {
+                let isResolved = false;
+                const opts = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Send as .txt File", callback_data: "vt_out_file" }],
+                            [{ text: "Send in Chat (Batches)", callback_data: "vt_out_chat" }]
+                        ]
+                    }
+                };
+                
+                bot.editMessageText(`[SELECTION CONFIRMED]\nTarget: ${segmentName}\nCount: ${finalArray.length}\n\nHow would you like to receive the output?`, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    ...opts
+                }).then(() => {
+                    const listener = (query) => {
+                        if (query.message.message_id === statusMsg.message_id && query.data.startsWith('vt_out_')) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            resolve(query.data === 'vt_out_file' ? 'file' : 'chat');
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    
+                    setTimeout(() => {
+                        if (!isResolved) {
+                            bot.removeListener('callback_query', listener);
+                            resolve('chat'); // Default to chat on timeout
+                        }
+                    }, 60000);
+                });
+            });
+
+            // Clean up the prompt message
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
+
+            // Output the Data
+            if (outputMode === 'chat') {
+                bot.sendMessage(chatId, `[DELIVERY] ${segmentName}\nSending in batches of 10...`);
+                for (let i = 0; i < finalArray.length; i += 10) {
+                    const chunk = finalArray.slice(i, i + 10);
+                    const msgText = chunk.map(n => `\`${n}\``).join('\n');
+                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                    await new Promise(r => setTimeout(r, 800)); // Rate limit protection
+                }
+                bot.sendMessage(chatId, "[SYSTEM] Delivery complete.");
+            } else {
+                const fileBuffer = Buffer.from(finalArray.join('\n'));
+                await bot.sendDocument(
+                    chatId, 
+                    fileBuffer, 
+                    { caption: `[DELIVERY COMPLETE]\nSegment: ${segmentName}\nTotal: ${finalArray.length}` }, 
+                    { filename: `VN_${segmentName.replace(/\s/g, '_')}_${Date.now()}.txt`, contentType: 'text/plain' }
+                );
+            }
+
+        } catch (error) {
+            console.error(error);
+            bot.sendMessage(chatId, "[ERROR] Analysis failed: " + error.message);
+        }
+    });
+ 
+
 
 // --- Helper: Get Random Delay ---
 const randomDelay = (min, max) => {

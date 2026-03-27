@@ -636,44 +636,65 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
 
-                            // --- INJECTED STRICT SPY LOGIC ---
-    try {
-        // Map the 2-letter OTP group tag to the actual numerical calling code
-        const ccToPrefix = {
-            "VE": "58", "ZW": "263", "NG": "234", "GN": "224", "CI": "225",
-            "ID": "62", "BR": "55", "RU": "7", "PK": "92", "ZA": "27",
-            "PH": "63", "VN": "84", "US": "1", "GB": "44", "BF": "226",
-            "KG": "996", "SN": "221", "DE": "49", "FR": "33", "ES": "34", "IT": "39"
-        };
-        
-        const numPrefix = ccToPrefix[countryCode];
-        const suffixMatch = maskedNumber.match(/\d{3,4}$/);
-        
-        if (numPrefix && suffixMatch && typeof spyMemory !== 'undefined' && spyMemory.size > 0) {
-            const suffix = suffixMatch[0];
-            
-            for (const targetNum of spyMemory) {
-                // STRICT CHECK: The memory number must start with the exact country code AND end with the suffix
-                if (targetNum.startsWith(numPrefix) && targetNum.endsWith(suffix)) {
-                    
-                    const allDbDocs = await getAllNumbers();
-                    const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
-                    
-                    if (!dbSet.has(targetNum)) {
-                        if (typeof spyFound !== 'undefined') {
-                            spyFound.add(targetNum);
-                            console.log(`[SPY CAUGHT] Exact match for +${numPrefix}...${suffix}: ${targetNum}`);
+                                                   // --- INJECTED STRICT SPY LOGIC ---
+                        try {
+                            // Map the 2-letter OTP group tag to the actual numerical calling code
+                            const ccToPrefix = {
+                                "VE": "58", "ZW": "263", "NG": "234", "GN": "224", "CI": "225",
+                                "ID": "62", "BR": "55", "RU": "7", "PK": "92", "ZA": "27",
+                                "PH": "63", "VN": "84", "US": "1", "GB": "44", "BF": "226",
+                                "KG": "996", "SN": "221", "DE": "49", "FR": "33", "ES": "34", "IT": "39"
+                            };
+                            
+                            const numPrefix = ccToPrefix[countryCode];
+                            const suffixMatch = maskedNumber.match(/\d{3,4}$/);
+                            
+                            if (numPrefix && suffixMatch && typeof spyMemory !== 'undefined' && spyMemory.size > 0) {
+                                const suffix = suffixMatch[0];
+                                
+                                for (const targetNum of spyMemory) {
+                                    // STRICT CHECK: The memory number must start with exact country code AND end with suffix
+                                    if (targetNum.startsWith(numPrefix) && targetNum.endsWith(suffix)) {
+                                        
+                                        const allDbDocs = await getAllNumbers();
+                                        const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
+                                        
+                                        if (!dbSet.has(targetNum)) {
+                                            if (typeof spyFound !== 'undefined' && !spyFound.has(targetNum)) {
+                                                
+                                                // --- NEW WA LIVE CHECK BEFORE SAVING ---
+                                                const sock = getDedicatedSender(activeClients);
+                                                
+                                                if (sock) {
+                                                    const jid = `${targetNum}@s.whatsapp.net`;
+                                                    try {
+                                                        const [waCheck] = await sock.onWhatsApp(jid);
+                                                        
+                                                        if (waCheck && waCheck.exists) {
+                                                            spyFound.add(targetNum);
+                                                            console.log(`[SPY CAUGHT & VERIFIED] Active number saved: ${targetNum}`);
+                                                        } else {
+                                                            console.log(`[SPY IGNORED] Matched but DEAD on WhatsApp: ${targetNum}`);
+                                                        }
+                                                    } catch (waErr) {
+                                                        console.error("Spy WA Check failed:", waErr.message);
+                                                    }
+                                                } else {
+                                                    // Fallback: If no WA bot is connected right now, save it blindly so you don't lose the catch
+                                                    spyFound.add(targetNum);
+                                                    console.log(`[SPY CAUGHT] Saved blindly (no WA bot connected): ${targetNum}`);
+                                                }
+                                                
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (spyErr) {
+                            console.error("Spy logic error:", spyErr.message);
                         }
-                    }
-                    // We do not break the loop here in case your memory list has two numbers 
-                    // from the same country that end in the exact same 4 digits. It will catch both!
-                }
-            }
-        }
-    } catch (spyErr) {
-        console.error("Spy logic error:", spyErr.message);
-    }
-    // --- END SPY LOGIC ---
+                        // --- END SPY LOGIC ---
+
 
 
                         const design = 
@@ -3522,7 +3543,7 @@ bot.onText(/\/vz/, async (msg) => {
 
 
 
-            // --- /addspy: Load active WA numbers into the silent tripwire memory (Appends to existing memory) ---
+                // --- /addspy: Load numbers into the silent tripwire memory (Appends to existing) ---
     bot.onText(/\/addspy/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -3539,77 +3560,34 @@ bot.onText(/\/vz/, async (msg) => {
             return bot.sendMessage(chatId, "[ERROR] I can only load .txt files into spy memory.");
         }
 
-        // 1. Ensure we have an active WA bot to verify the numbers
-        const activeFolders = Object.keys(clients).filter(f => clients[f]);
-        if (activeFolders.length === 0) {
-            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected. I need an active WA connection to verify the numbers.");
-        }
-        const sock = clients[activeFolders[0]];
-
         try {
-            let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading file to scan for active numbers...");
+            let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Loading file into Spy Memory...");
 
             const fileLink = await bot.getFileLink(doc.file_id);
             const response = await fetch(fileLink);
             const textData = await response.text();
 
-            // Extract unique numbers to avoid duplicate processing
             const matches = textData.match(/\d{7,15}/g) || [];
             if (matches.length === 0) {
-                return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+                return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
             }
 
-            const uniqueMatches = [...new Set(matches)];
-            
             let addedCount = 0;
-            let deadCount = 0;
-            let skippedCount = 0;
-
-            await bot.editMessageText(`[SPY SCANNING]\n\nFound ${uniqueMatches.length} raw numbers in file.\nStarting Live WhatsApp Verification...\n(This takes ~3 seconds per number to prevent bans)`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-            // LOOP & VERIFY (Notice spyMemory.clear() is gone, so it appends)
-            for (let i = 0; i < uniqueMatches.length; i++) {
-                const rawNum = uniqueMatches[i];
+            
+            // NOTE: spyMemory.clear() is completely removed so multiple files stack in RAM
+            for (const rawNum of matches) {
                 const res = normalizeWithCountry(rawNum);
-                
                 if (res && res.num) {
                     const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
                     
-                    // If it is already in memory from a previous file, skip the heavy WA check
-                    if (spyMemory.has(fullPhone)) {
-                        skippedCount++;
-                        continue;
+                    if (!spyMemory.has(fullPhone)) {
+                        spyMemory.add(fullPhone);
+                        addedCount++;
                     }
-
-                    const jid = `${fullPhone}@s.whatsapp.net`;
-
-                    try {
-                        // --- LIVE WHATSAPP CHECK ---
-                        const [waCheck] = await sock.onWhatsApp(jid);
-                        
-                        if (waCheck && waCheck.exists) {
-                            spyMemory.add(fullPhone); // Append to memory
-                            addedCount++;
-                        } else {
-                            deadCount++; // Number is dead, ignore it
-                        }
-                    } catch (e) {
-                        console.error("Spy WA Check Error:", e.message);
-                    }
-
-                    // Update the dashboard every 5 numbers so you know it hasn't frozen
-                    if ((i + 1) % 5 === 0) {
-                        try {
-                            await bot.editMessageText(`[SPY SCANNING]\n\nProcessing: ${i + 1} / ${uniqueMatches.length}\nActive Added: ${addedCount}\nDead Ignored: ${deadCount}\nAlready in Memory: ${skippedCount}\n\nRunning anti-ban delay...`, { chat_id: chatId, message_id: statusMsg.message_id });
-                        } catch (err) {} 
-                    }
-
-                    // CRITICAL ANTI-BAN DELAY
-                    await delay(3000); 
                 }
             }
 
-            bot.editMessageText(`[SPY MODE ACTIVE]\n\nFile Scan Complete!\nAdded Active: ${addedCount}\nDead Ignored: ${deadCount}\n\nTotal Numbers in RAM: ${spyMemory.size}\nListening for matches in the OTP group...`, { chat_id: chatId, message_id: statusMsg.message_id });
+            bot.editMessageText(`[SPY MODE ACTIVE]\n\nAdded ${addedCount} new numbers from this file.\nTotal numbers currently in RAM: ${spyMemory.size}\n\nListening for matches in the OTP group...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
         } catch (err) {
             bot.sendMessage(chatId, "[ERROR] " + err.message);

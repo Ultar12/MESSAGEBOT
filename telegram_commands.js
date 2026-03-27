@@ -5842,7 +5842,7 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-          if (userState[chatId] === 'WAITING_SPLIT_COUNT') {
+                  if (userState[chatId] === 'WAITING_SPLIT_COUNT') {
             const parts = parseInt(text.trim());
             
             // Safety checks
@@ -5912,7 +5912,7 @@ const cleanNumbers = matches.map(n => {
                         try {
                             const res = normalizeWithCountry(num);
                             if (res && res.num) {
-                                num = res.num; // Use the stripped local number
+                                num = res.num; 
                             }
                         } catch (e) {
                             // If normalizer fails, fallback to the raw digits
@@ -5939,11 +5939,20 @@ const cleanNumbers = matches.map(n => {
                     const chunk = processedLines.slice(i * chunkSize, (i + 1) * chunkSize);
                     if (chunk.length === 0) continue;
 
-                    // --- FORMAT CHUNK: 5 numbers then 2 blank lines ---
+                    // --- FORMAT CHUNK: Batches of 5 with centered numbers ---
                     let formattedText = "";
+                    let batchNumber = 1;
+                    
                     for (let j = 0; j < chunk.length; j++) {
+                        // If this is the very first number of a 5-block, add the batch header
+                        if (j % 5 === 0) {
+                            formattedText += `    ${batchNumber}    \n`;
+                            batchNumber++;
+                        }
+
                         formattedText += chunk[j];
                         
+                        // If it's the 5th number in the block (and not the end of the file), add blank lines
                         if ((j + 1) % 5 === 0 && j !== chunk.length - 1) {
                             formattedText += "\n\n\n"; 
                         } else if (j !== chunk.length - 1) {
@@ -5970,6 +5979,7 @@ const cleanNumbers = matches.map(n => {
             }
             return; 
         }
+
 
 
 

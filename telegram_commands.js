@@ -3288,27 +3288,113 @@ const getCountryPrefix = (text) => {
  
 
 
-    // --- /savevz : Enter Venezuela Save Mode ---
-    // Automatically converts 041... to 5841... and saves to DB
-    bot.onText(/\/savevz/, async (msg) => {
+        // --- /channel [Country]: Forward File to TG Channel & WA Group + .tag ---
+    bot.onText(/\/channel(?:\s+(.+))?/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
 
-        // Authorization Check
-        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-        // Set State
-        userState[chatId] = 'SAVE_MODE_VENEZUELA';
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt or .xlsx file with /channel [CountryName]\nExample: /channel Vietnam");
+        }
 
-        bot.sendMessage(chatId, 
-            '🇻🇪 **VENEZUELA SAVE MODE ACTIVE** 🇻🇪\n\n' +
-            'Forward your messages now.\n' +
-            'I will extract numbers like `0416...` and save them as `58416...`\n\n' +
-            'Type `STOP` or `/done` to exit this mode.',
-            { parse_mode: 'Markdown' }
-        );
+        const doc = msg.reply_to_message.document;
+        const fileName = doc.file_name.toLowerCase();
+        
+        if (!fileName.endsWith('.txt') && !fileName.endsWith('.xlsx')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only process and count .txt or .xlsx files.");
+        }
+
+        const countryName = match[1] ? match[1].trim() : "Unknown Region";
+        
+        // --- CONFIGURATION ---
+        const targetChannelId = process.env.MAIN_CHANNEL_ID || "-1001234567890"; // Telegram Channel ID
+        const otpGroupLink = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Telegram Tap-to-Join link
+        const waGroupId = process.env.WA_TARGET_GROUP || "1234567890-123456@g.us"; // WhatsApp Group JID
+
+        let statusMsg = await bot.sendMessage(chatId, `[PROCESSING] Scanning ${doc.file_name} to count numbers...`);
+
+        try {
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const buffer = await response.arrayBuffer(); 
+            const nodeBuffer = Buffer.from(buffer);
+            
+            let totalNumbers = 0;
+
+            // Count logic
+            if (fileName.endsWith('.txt')) {
+                const textData = nodeBuffer.toString('utf-8');
+                const matches = textData.match(/\d{8,15}/g) || [];
+                totalNumbers = matches.length;
+            } else if (fileName.endsWith('.xlsx')) {
+                try {
+                    const XLSX = require('xlsx'); 
+                    const workbook = XLSX.read(nodeBuffer, { type: 'buffer' });
+                    const sheetName = workbook.SheetNames[0];
+                    const sheet = workbook.Sheets[sheetName];
+                    const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                    
+                    const flatData = data.flat().join(' ');
+                    const matches = flatData.match(/\d{8,15}/g) || [];
+                    totalNumbers = matches.length;
+                } catch (err) {
+                    return bot.editMessageText("[ERROR] Failed to parse .xlsx file. Did you run 'npm install xlsx'?", { chat_id: chatId, message_id: statusMsg.message_id });
+                }
+            }
+
+            // --- 1. POST TO TELEGRAM CHANNEL ---
+            const captionText = `📌 **Country:** ${countryName}\n📊 **Total Numbers:** ${totalNumbers}\n\n🔗 [Tap here to join our OTP Group](${otpGroupLink})`;
+
+            await bot.sendDocument(targetChannelId, doc.file_id, {
+                caption: captionText,
+                parse_mode: 'Markdown'
+            });
+
+            // --- 2. POST TO WHATSAPP GROUP & REPLY ---
+            let waStatus = "Skipped (No WA bot connected)";
+            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+            
+            if (activeFolders.length > 0) {
+                const sock = clients[activeFolders[0]]; // Grab the first connected WA bot
+                
+                try {
+                    const mimeType = fileName.endsWith('.xlsx') 
+                        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+                        : 'text/plain';
+
+                    // Send the document to WhatsApp
+                    const waDocMsg = await sock.sendMessage(waGroupId, {
+                        document: nodeBuffer,
+                        mimetype: mimeType,
+                        fileName: doc.file_name,
+                        caption: `📌 ${countryName} | 📊 ${totalNumbers} Numbers`
+                    });
+
+                    // Wait 2 seconds to ensure the file is processed by WA servers, then reply
+                    await delay(2000);
+                    await sock.sendMessage(waGroupId, {
+                        text: ".tag"
+                    }, { quoted: waDocMsg }); // The 'quoted' parameter makes it reply to the file
+
+                    waStatus = "Success";
+                } catch (waErr) {
+                    console.error("WA Send Error:", waErr);
+                    waStatus = "Failed";
+                }
+            }
+
+            bot.editMessageText(`[SUCCESS] Distribution Complete!\n\nTarget: ${countryName}\nCount: ${totalNumbers}\nTG Channel: Success\nWA Group: ${waStatus}`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        } catch (error) {
+            console.error("Distribution Error:", error);
+            bot.editMessageText(`[ERROR] Process failed: ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        }
     });
+
+
 
 
 

@@ -3569,42 +3569,100 @@ bot.onText(/\/vz/, async (msg) => {
         }
     });
 
-        // --- /spynum: Retrieve caught numbers and reset the trap ---
-    bot.onText(/\/spynum/, async (msg) => {
+            // --- /addspy: Load active WA numbers into the silent tripwire memory (Appends to existing memory) ---
+    bot.onText(/\/addspy/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
 
         if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-        if (spyFound.size === 0) {
-            return bot.sendMessage(chatId, "[SPY REPORT] No matches found yet. The trap is still listening.");
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /addspy");
         }
 
-        const foundArray = Array.from(spyFound);
-        
-        bot.sendMessage(chatId, `[SPY REPORT] Caught ${foundArray.length} numbers!\n\nSending in batches of 5...`);
-
-        // Process numbers to strip the country codes for clean output
-        const strippedArray = foundArray.map(rawNum => {
-            const res = normalizeWithCountry(rawNum);
-            // If the normalizer recognizes it, return the local number without the country code.
-            return (res && res.num) ? res.num : rawNum;
-        });
-
-        // Send in smaller batches of 5
-        for (let i = 0; i < strippedArray.length; i += 5) {
-            const chunk = strippedArray.slice(i, i + 5);
-            const msgText = chunk.map(n => `\`${n}\``).join('\n');
-            await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-            await new Promise(resolve => setTimeout(resolve, 800));
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only load .txt files into spy memory.");
         }
 
-        bot.sendMessage(chatId, "[SYSTEM] Caught numbers cleared. The background listener is still active.");
-        
-        // Reset the caught list, but keep the original memory active
-        spyFound.clear();
+        // 1. Ensure we have an active WA bot to verify the numbers
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) {
+            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected. I need an active WA connection to verify the numbers.");
+        }
+        const sock = clients[activeFolders[0]];
+
+        try {
+            let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading file to scan for active numbers...");
+
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+
+            // Extract unique numbers to avoid duplicate processing
+            const matches = textData.match(/\d{7,15}/g) || [];
+            if (matches.length === 0) {
+                return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            const uniqueMatches = [...new Set(matches)];
+            
+            let addedCount = 0;
+            let deadCount = 0;
+            let skippedCount = 0;
+
+            await bot.editMessageText(`[SPY SCANNING]\n\nFound ${uniqueMatches.length} raw numbers in file.\nStarting Live WhatsApp Verification...\n(This takes ~3 seconds per number to prevent bans)`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+            // LOOP & VERIFY (Notice spyMemory.clear() is gone, so it appends)
+            for (let i = 0; i < uniqueMatches.length; i++) {
+                const rawNum = uniqueMatches[i];
+                const res = normalizeWithCountry(rawNum);
+                
+                if (res && res.num) {
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    
+                    // If it is already in memory from a previous file, skip the heavy WA check
+                    if (spyMemory.has(fullPhone)) {
+                        skippedCount++;
+                        continue;
+                    }
+
+                    const jid = `${fullPhone}@s.whatsapp.net`;
+
+                    try {
+                        // --- LIVE WHATSAPP CHECK ---
+                        const [waCheck] = await sock.onWhatsApp(jid);
+                        
+                        if (waCheck && waCheck.exists) {
+                            spyMemory.add(fullPhone); // Append to memory
+                            addedCount++;
+                        } else {
+                            deadCount++; // Number is dead, ignore it
+                        }
+                    } catch (e) {
+                        console.error("Spy WA Check Error:", e.message);
+                    }
+
+                    // Update the dashboard every 5 numbers so you know it hasn't frozen
+                    if ((i + 1) % 5 === 0) {
+                        try {
+                            await bot.editMessageText(`[SPY SCANNING]\n\nProcessing: ${i + 1} / ${uniqueMatches.length}\nActive Added: ${addedCount}\nDead Ignored: ${deadCount}\nAlready in Memory: ${skippedCount}\n\nRunning anti-ban delay...`, { chat_id: chatId, message_id: statusMsg.message_id });
+                        } catch (err) {} 
+                    }
+
+                    // CRITICAL ANTI-BAN DELAY
+                    await delay(3000); 
+                }
+            }
+
+            bot.editMessageText(`[SPY MODE ACTIVE]\n\nFile Scan Complete!\nAdded Active: ${addedCount}\nDead Ignored: ${deadCount}\n\nTotal Numbers in RAM: ${spyMemory.size}\nListening for matches in the OTP group...`, { chat_id: chatId, message_id: statusMsg.message_id });
+
+        } catch (err) {
+            bot.sendMessage(chatId, "[ERROR] " + err.message);
+        }
     });
+
 
 
     // --- /dspy: Delete all numbers stored in the spy memory ---

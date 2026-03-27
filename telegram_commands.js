@@ -3288,7 +3288,7 @@ const getCountryPrefix = (text) => {
  
 
 
-        // --- /channel [Country]: Forward File to TG Channel & WA Group + .tag ---
+     // --- /channel [Country]: Forward File to TG Channel & WA Group + Auto-Delete ---
     bot.onText(/\/channel(?:\s+(.+))?/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -3310,8 +3310,8 @@ const getCountryPrefix = (text) => {
         const countryName = match[1] ? match[1].trim() : "Unknown Region";
         
         // --- CONFIGURATION ---
-        const targetChannelId = process.env.MAIN_CHANNEL_ID || "-1003844497723"; // Telegram Channel ID
-        const otpGroupLink = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Telegram Tap-to-Join link
+        const targetChannelId = "-1003844497723"; // Your hardcoded Channel ID
+        const otpGroupLink = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Replace with your Tap-to-Join link
         const waGroupId = process.env.WA_TARGET_GROUP || "1234567890-123456@g.us"; // WhatsApp Group JID
 
         let statusMsg = await bot.sendMessage(chatId, `[PROCESSING] Scanning ${doc.file_name} to count numbers...`);
@@ -3346,7 +3346,7 @@ const getCountryPrefix = (text) => {
             }
 
             // --- 1. POST TO TELEGRAM CHANNEL ---
-            const captionText = `📌 **Country:** ${countryName}\n📊 **Total Numbers:** ${totalNumbers}\n\n🔗 [Tap here to join our OTP Group](${otpGroupLink})`;
+            const captionText = `Country: ${countryName}\nTotal Numbers: ${totalNumbers}\n\n[OTP Group](${otpGroupLink})`;
 
             await bot.sendDocument(targetChannelId, doc.file_id, {
                 caption: captionText,
@@ -3358,7 +3358,7 @@ const getCountryPrefix = (text) => {
             const activeFolders = Object.keys(clients).filter(f => clients[f]);
             
             if (activeFolders.length > 0) {
-                const sock = clients[activeFolders[0]]; // Grab the first connected WA bot
+                const sock = clients[activeFolders[0]]; 
                 
                 try {
                     const mimeType = fileName.endsWith('.xlsx') 
@@ -3370,16 +3370,33 @@ const getCountryPrefix = (text) => {
                         document: nodeBuffer,
                         mimetype: mimeType,
                         fileName: doc.file_name,
-                        caption: `📌 ${countryName} | 📊 ${totalNumbers} Numbers`
+                        caption: `Country: ${countryName} | ${totalNumbers} Numbers`
                     });
 
-                    // Wait 2 seconds to ensure the file is processed by WA servers, then reply
+                    // Wait 2 seconds, then reply with .tag
                     await delay(2000);
-                    await sock.sendMessage(waGroupId, {
+                    const tagMsg = await sock.sendMessage(waGroupId, {
                         text: ".tag"
-                    }, { quoted: waDocMsg }); // The 'quoted' parameter makes it reply to the file
+                    }, { quoted: waDocMsg });
 
-                    waStatus = "Success";
+                    waStatus = "Success (Auto-deleting in 30s)";
+
+                    // Background Timer for Deletion
+                    setTimeout(async () => {
+                        try {
+                            // Delete the .tag message first
+                            await sock.sendMessage(waGroupId, { delete: tagMsg.key });
+                            
+                            // Wait 1 second to prevent WhatsApp from rejecting rapid requests
+                            await delay(1000); 
+                            
+                            // Delete the document message
+                            await sock.sendMessage(waGroupId, { delete: waDocMsg.key });
+                        } catch (delErr) {
+                            console.error("WA Deletion Error:", delErr.message);
+                        }
+                    }, 30000); // 30 seconds
+
                 } catch (waErr) {
                     console.error("WA Send Error:", waErr);
                     waStatus = "Failed";
@@ -3393,8 +3410,6 @@ const getCountryPrefix = (text) => {
             bot.editMessageText(`[ERROR] Process failed: ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
     });
-
-
 
 
 

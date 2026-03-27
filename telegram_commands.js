@@ -2020,8 +2020,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
-        // --- /split : Split a TXT file into equal parts ---
-    bot.onText(/\/split/, async (msg) => {
+    // --- /split [Country]: Initiate File Splitting ---
+    bot.onText(/\/split(?:\s+(.+))?/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
@@ -2029,25 +2029,26 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Please reply to a .txt file with /split');
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /split [CountryName]\nExample: /split Germany");
         }
 
-        const fileName = msg.reply_to_message.document.file_name || '';
-        if (fileName.toLowerCase().endsWith('.xlsx')) {
-            return bot.sendMessage(chatId, '[ERROR] This command only works on .txt or .vcf files.');
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only split .txt files.");
         }
 
-        // Save state and file ID
+        // Capture the text typed after the command, default to "Data" if left blank
+        const customCountry = match[1] ? match[1].trim() : "Data";
+
         userState[chatId] = 'WAITING_SPLIT_COUNT';
-        userState[chatId + '_split_file'] = msg.reply_to_message.document.file_id;
+        userState[chatId + '_split_file'] = doc.file_id;
+        
+        // Save the custom label to RAM so the next step can use it
+        userState[chatId + '_split_country'] = customCountry; 
 
-        bot.sendMessage(chatId, 
-            `**FILE SPLITTER**\n\n` +
-            `How many parts do you want to divide this file into?\n\n` +
-            `*(Example: Send \`6\` to split 6,000 numbers into 6 files of 1,000)*`, 
-            { parse_mode: 'Markdown', reply_markup: { force_reply: true } }
-        );
+        bot.sendMessage(chatId, `[SPLIT INITIATED]\nTarget File: ${doc.file_name}\nLabel: ${customCountry}\n\nReply to this message with the number of parts you want to split this file into (e.g., 5).`);
     });
+
 
 
         // --- USERBOT PRIVATE GROUP FINDER ---
@@ -5740,20 +5741,50 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                if (userState[chatId] === 'WAITING_SPLIT_COUNT') {
+          if (userState[chatId] === 'WAITING_SPLIT_COUNT') {
             const parts = parseInt(text.trim());
             
             // Safety checks
             if (isNaN(parts) || parts <= 1 || parts > 50) {
                 userState[chatId] = null;
+                userState[chatId + '_split_country'] = null;
                 return bot.sendMessage(chatId, '[ERROR] Invalid amount. Please enter a number between 2 and 50. Process cancelled.');
             }
 
             const fileId = userState[chatId + '_split_file'];
+            const rawCountryName = userState[chatId + '_split_country'] || "Data";
+            const safeCountryName = rawCountryName.replace(/\s+/g, '_');
+            
             userState[chatId] = null;
             userState[chatId + '_split_file'] = null;
+            userState[chatId + '_split_country'] = null;
 
             if (!fileId) return bot.sendMessage(chatId, '[ERROR] File expired. Please reply to the file again.');
+
+            // --- WIZARD: Ask about Country Codes ---
+            const stripMode = await new Promise((resolve) => {
+                let isResolved = false;
+                bot.sendMessage(chatId, `[FORMAT SELECTION]\nDo you want to strip the country codes from the numbers before splitting?`, {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Yes, Strip Country Codes", callback_data: "split_strip_yes" }],
+                            [{ text: "No, Keep Numbers As-Is", callback_data: "split_strip_no" }]
+                        ]
+                    }
+                }).then(promptMsg => {
+                    const listener = (query) => {
+                        if (query.message.message_id === promptMsg.message_id && query.data.startsWith('split_strip_')) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            bot.deleteMessage(chatId, promptMsg.message_id).catch(()=>{});
+                            resolve(query.data === 'split_strip_yes');
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    // Default to NOT stripping if no selection is made in 60 seconds
+                    setTimeout(() => { if (!isResolved) { bot.removeListener('callback_query', listener); resolve(false); } }, 60000);
+                });
+            });
 
             let statusMsg = await bot.sendMessage(chatId, `[PROCESSING] Downloading and dividing file into ${parts} parts...`);
 
@@ -5762,44 +5793,49 @@ const cleanNumbers = matches.map(n => {
                 const response = await fetch(fileLink);
                 const rawText = await response.text();
 
-                // Extract all non-empty lines and strip stray spaces
-                const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+                // Extract all non-empty lines
+                const rawLines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
 
-                if (lines.length === 0) {
+                if (rawLines.length === 0) {
                     await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
                     return bot.sendMessage(chatId, '[ERROR] The file appears to be empty.');
                 }
 
-                if (lines.length < parts) {
-                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-                    return bot.sendMessage(chatId, `[ERROR] The file only has ${lines.length} numbers. Cannot split into ${parts} parts.`);
+                // Process numbers based on user selection
+                let processedLines = [];
+                for (const line of rawLines) {
+                    let num = line.replace(/\D/g, ''); // Extract only digits
+                    if (num.length === 0) continue;
+                    
+                    if (stripMode) {
+                        try {
+                            const res = normalizeWithCountry(num);
+                            if (res && res.num) {
+                                num = res.num; // Use the stripped local number
+                            }
+                        } catch (e) {
+                            // If normalizer fails, fallback to the raw digits
+                        }
+                    }
+                    processedLines.push(num);
                 }
 
-                // --- AUTO-DETECT COUNTRY NAME ---
-                let countryName = "Data";
-                const testNum = lines[0].replace(/\D/g, ''); // Strip everything but digits
-                
-                // Map common prefixes to country names for the file output
-                if (testNum.startsWith('84')) countryName = "Vietnam";
-                else if (testNum.startsWith('58')) countryName = "Venezuela";
-                else if (testNum.startsWith('234')) countryName = "Nigeria";
-                else if (testNum.startsWith('224')) countryName = "Guinea";
-                else if (testNum.startsWith('225')) countryName = "Ivory_Coast";
-                else if (testNum.startsWith('62')) countryName = "Indonesia";
-                else if (testNum.startsWith('55')) countryName = "Brazil";
-                else if (testNum.startsWith('27')) countryName = "South_Africa";
+                if (processedLines.length < parts) {
+                    await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                    return bot.sendMessage(chatId, `[ERROR] The file only has ${processedLines.length} valid numbers. Cannot split into ${parts} parts.`);
+                }
 
                 // Calculate chunk size
-                const chunkSize = Math.ceil(lines.length / parts);
+                const chunkSize = Math.ceil(processedLines.length / parts);
                 
                 await bot.editMessageText(
-                    `[SPLITTING IN PROGRESS]\n\nTotal Numbers: ${lines.length}\nFiles: ${parts}\nDetected Region: ${countryName}\nSize per file: ~${chunkSize} numbers\n\nUploading...`,
+                    `[SPLITTING IN PROGRESS]\n\nTotal Numbers: ${processedLines.length}\nFiles: ${parts}\nLabel: ${safeCountryName}\nFormat: ${stripMode ? 'Country Codes Stripped' : 'Original Format'}\nSize per file: ~${chunkSize} numbers\n\nUploading...`,
                     { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
                 );
 
                 // Slice, Format, and Send Files
                 for (let i = 0; i < parts; i++) {
-                    const chunk = lines.slice(i * chunkSize, (i + 1) * chunkSize);
+                    const chunk = processedLines.slice(i * chunkSize, (i + 1) * chunkSize);
                     if (chunk.length === 0) continue;
 
                     // --- FORMAT CHUNK: 5 numbers then 2 blank lines ---
@@ -5807,11 +5843,10 @@ const cleanNumbers = matches.map(n => {
                     for (let j = 0; j < chunk.length; j++) {
                         formattedText += chunk[j];
                         
-                        // Add two blank lines after every 5th number, except at the very end of the file
                         if ((j + 1) % 5 === 0 && j !== chunk.length - 1) {
                             formattedText += "\n\n\n"; 
                         } else if (j !== chunk.length - 1) {
-                            formattedText += "\n"; // Standard single line break
+                            formattedText += "\n"; 
                         }
                     }
 
@@ -5821,11 +5856,10 @@ const cleanNumbers = matches.map(n => {
                         chatId, 
                         buffer, 
                         { caption: `[Part ${i + 1} of ${parts}]\nTotal: ${chunk.length} numbers`, parse_mode: 'Markdown' }, 
-                        // Generates: Ultar_Sync_Vietnam_1.txt
-                        { filename: `Ultar_Sync_${countryName}_${i + 1}.txt`, contentType: 'text/plain' } 
+                        { filename: `Ultar_Sync_${safeCountryName}_${i + 1}.txt`, contentType: 'text/plain' } 
                     );
                     
-                    await delay(1200); // 1.2 second delay to prevent Telegram FloodWait errors
+                    await delay(1200); 
                 }
 
                 bot.sendMessage(chatId, `[SPLIT COMPLETE] Successfully generated ${parts} formatted files.`, { parse_mode: 'Markdown' });
@@ -5835,6 +5869,7 @@ const cleanNumbers = matches.map(n => {
             }
             return; 
         }
+
 
 
 

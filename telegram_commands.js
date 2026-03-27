@@ -3310,7 +3310,7 @@ const getCountryPrefix = (text) => {
         const countryName = match[1] ? match[1].trim() : "Unknown Region";
         
         // --- CONFIGURATION ---
-        const targetChannelId = process.env.MAIN_CHANNEL_ID || "-1001234567890"; // Telegram Channel ID
+        const targetChannelId = process.env.MAIN_CHANNEL_ID || "-1003844497723"; // Telegram Channel ID
         const otpGroupLink = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Telegram Tap-to-Join link
         const waGroupId = process.env.WA_TARGET_GROUP || "1234567890-123456@g.us"; // WhatsApp Group JID
 

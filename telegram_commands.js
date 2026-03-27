@@ -235,13 +235,19 @@ export async function syncDatabaseWithChat() {
         // 1. Fetch the last 5000 messages from the chat using the PAYME UserBot
         const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
         const chatNumbers = new Set();
+        
+        // --- NEW: Track duplicates for Telegram Chat cleanup ---
+        const seenNumbersInChat = new Set();
+        const duplicateMessageIds = [];
 
-             // 2. Extract and normalize all numbers from the chat
+        // 2. Extract and normalize all numbers from the chat
         for (const msg of messages) {
             if (msg.message) {
                 const foundNumbers = msg.message.match(/\d{7,15}/g); 
                 
                 if (foundNumbers) {
+                    let hasDuplicate = false;
+
                     for (let rawNum of foundNumbers) {
                         
                         // FORCE VENEZUELA COUNTRY CODE
@@ -254,13 +260,39 @@ export async function syncDatabaseWithChat() {
                         const res = normalizeWithCountry(rawNum);
                         if (res && res.num) {
                             const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                            chatNumbers.add(fullPhone);
+                            
+                            // Check if we already saw this exact number in the chat
+                            if (seenNumbersInChat.has(fullPhone)) {
+                                hasDuplicate = true;
+                            } else {
+                                seenNumbersInChat.add(fullPhone);
+                                chatNumbers.add(fullPhone);
+                            }
                         }
+                    }
+
+                    // If the message contained a duplicate number, flag it for deletion
+                    if (hasDuplicate) {
+                        duplicateMessageIds.push(msg.id);
                     }
                 }
             }
         }
 
+        // --- NEW: Execute Telegram Chat Cleanup ---
+        if (duplicateMessageIds.length > 0) {
+            // Delete in batches of 100 to prevent Telegram FloodWait errors
+            for (let i = 0; i < duplicateMessageIds.length; i += 100) {
+                const chunk = duplicateMessageIds.slice(i, i + 100);
+                try {
+                    await paymeUserBot.deleteMessages(PAYME_CHAT_USERNAME, chunk, { revoke: true });
+                    await delay(1000); // 1-second delay between batch deletions
+                } catch (delErr) {
+                    console.error("[SYNC] Failed to delete a batch of duplicates:", delErr.message);
+                }
+            }
+            console.log(`[SYNC] Cleaned up ${duplicateMessageIds.length} duplicate messages from the Telegram chat.`);
+        }
 
         // 3. Fetch all current numbers from your Database
         const allDbDocs = await getAllNumbers(); 
@@ -308,6 +340,7 @@ export async function syncDatabaseWithChat() {
         console.error("[SYNC ERROR] Failed to sync database:", error.message);
     }
 }
+
 
 
 // --- HYBRID 24-HOUR CHANNEL SCANNER ---

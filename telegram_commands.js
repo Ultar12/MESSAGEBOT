@@ -2823,7 +2823,7 @@ bot.onText(/\/nums/, async (msg) => {
 });
 
 
-       // --- /vt command: Vietnam Number Analyzer and Sorter ---
+    // --- /vt command: Vietnam Number Analyzer and Sorter (Refined) ---
     bot.onText(/\/vt/, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2847,7 +2847,7 @@ bot.onText(/\/nums/, async (msg) => {
             const response = await fetch(fileLink);
             const textData = await response.text();
 
-            // Extract all digit strings that could potentially be numbers
+            // Extract all digit strings
             const rawMatches = textData.match(/\d{9,15}/g) || [];
             if (rawMatches.length === 0) {
                 return bot.editMessageText("[ERROR] No valid numerical data found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
@@ -2861,7 +2861,7 @@ bot.onText(/\/nums/, async (msg) => {
                 '05': [], // Vietnamobile / Gmobile
                 '07': [], // Mobifone
                 '08': [], // Vinaphone / Viettel / ITelecom
-                '09': []  // Classic Mobile (All Carriers)
+                '09': []  // Classic Mobile
             };
 
             let totalValid = 0;
@@ -2870,18 +2870,16 @@ bot.onText(/\/nums/, async (msg) => {
             for (const raw of uniqueRaw) {
                 let clean = raw.replace(/\D/g, '');
                 
-                // Strip country code and leading zeros to normalize
+                // Strip country code and leading zeros to normalize down to the core 9 digits
                 if (clean.startsWith('84')) clean = clean.substring(2);
                 if (clean.startsWith('0')) clean = clean.substring(1);
 
-                // Vietnam mobile numbers are exactly 9 digits after the '0' or '84', starting with 3, 5, 7, 8, or 9
                 if (clean.length === 9 && /^[35789]/.test(clean)) {
                     const prefix = '0' + clean.charAt(0);
-                    // Format for final output (Standardized with 84 country code)
-                    const finalNum = `84${clean}`; 
                     
+                    // We only store the 9-digit core right now. We format it later based on user choice.
                     if (vnBuckets[prefix]) {
-                        vnBuckets[prefix].push(finalNum);
+                        vnBuckets[prefix].push(clean);
                         totalValid++;
                     }
                 }
@@ -2891,7 +2889,7 @@ bot.onText(/\/nums/, async (msg) => {
                 return bot.editMessageText("[REPORT] Scan complete. Found 0 valid Vietnam mobile numbers in this file.", { chat_id: chatId, message_id: statusMsg.message_id });
             }
 
-            // Prepare the Stats and the First Keyboard (Prefix Selection)
+            // --- WIZARD STEP 1: Prefix Selection ---
             let statsText = `[VIETNAM DATA REPORT]\n\nTotal Valid VN Numbers: ${totalValid}\n\nBreakdown by Prefix:\n`;
             let prefixButtons = [];
 
@@ -2903,14 +2901,12 @@ bot.onText(/\/nums/, async (msg) => {
             }
             statsText += `\nWhich data segment would you like to extract?`;
 
-            // Format buttons neatly (2 per row)
             const keyboardRows = [];
             for (let i = 0; i < prefixButtons.length; i += 2) {
                 keyboardRows.push(prefixButtons.slice(i, i + 2));
             }
             keyboardRows.push([{ text: `Extract ALL Valid Numbers (${totalValid})`, callback_data: "vt_prefix_all" }]);
 
-            // INTERACTIVE STEP 1: Wait for Prefix Selection
             const selectedPrefix = await new Promise((resolve) => {
                 let isResolved = false;
                 
@@ -2927,13 +2923,7 @@ bot.onText(/\/nums/, async (msg) => {
                         }
                     };
                     bot.on('callback_query', listener);
-                    
-                    setTimeout(() => {
-                        if (!isResolved) {
-                            bot.removeListener('callback_query', listener);
-                            resolve(null);
-                        }
-                    }, 60000); // 60 second timeout
+                    setTimeout(() => { if (!isResolved) { bot.removeListener('callback_query', listener); resolve(null); } }, 60000);
                 });
             });
 
@@ -2941,33 +2931,56 @@ bot.onText(/\/nums/, async (msg) => {
                 return bot.editMessageText("[TIMEOUT] You did not select a prefix in time. Command aborted.", { chat_id: chatId, message_id: statusMsg.message_id });
             }
 
-            // Gather the requested numbers based on the choice
-            let finalArray = [];
+            let coreNumbersArray = [];
             let segmentName = "";
             if (selectedPrefix === 'all') {
-                for (const nums of Object.values(vnBuckets)) finalArray.push(...nums);
+                for (const nums of Object.values(vnBuckets)) coreNumbersArray.push(...nums);
                 segmentName = "All Valid VN Numbers";
             } else {
-                finalArray = vnBuckets[selectedPrefix];
+                coreNumbersArray = vnBuckets[selectedPrefix];
                 segmentName = `Prefix ${selectedPrefix}`;
             }
 
-            // INTERACTIVE STEP 2: Wait for Output Format Selection
+            // --- WIZARD STEP 2: Format Selection ---
+            const formatMode = await new Promise((resolve) => {
+                let isResolved = false;
+                bot.editMessageText(`[FORMAT SELECTION]\nTarget: ${segmentName}\nCount: ${coreNumbersArray.length}\n\nHow should the numbers be formatted?`, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Include Country Code (84...)", callback_data: "vt_fmt_84" }],
+                            [{ text: "Local Format (0...)", callback_data: "vt_fmt_0" }]
+                        ]
+                    }
+                }).then(() => {
+                    const listener = (query) => {
+                        if (query.message.message_id === statusMsg.message_id && query.data.startsWith('vt_fmt_')) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            resolve(query.data.replace('vt_fmt_', ''));
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    setTimeout(() => { if (!isResolved) { bot.removeListener('callback_query', listener); resolve('84'); } }, 60000);
+                });
+            });
+
+            // Apply the chosen formatting rule to the entire array
+            const finalArray = coreNumbersArray.map(num => formatMode === '84' ? `84${num}` : `0${num}`);
+
+            // --- WIZARD STEP 3: Output Mode Selection ---
             const outputMode = await new Promise((resolve) => {
                 let isResolved = false;
-                const opts = {
+                bot.editMessageText(`[OUTPUT SELECTION]\nTarget: ${segmentName}\nCount: ${finalArray.length}\nFormat: ${formatMode === '84' ? '+84' : 'Local 0'}\n\nHow would you like to receive the output?`, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
                     reply_markup: {
                         inline_keyboard: [
                             [{ text: "Send as .txt File", callback_data: "vt_out_file" }],
                             [{ text: "Send in Chat (Batches)", callback_data: "vt_out_chat" }]
                         ]
                     }
-                };
-                
-                bot.editMessageText(`[SELECTION CONFIRMED]\nTarget: ${segmentName}\nCount: ${finalArray.length}\n\nHow would you like to receive the output?`, {
-                    chat_id: chatId,
-                    message_id: statusMsg.message_id,
-                    ...opts
                 }).then(() => {
                     const listener = (query) => {
                         if (query.message.message_id === statusMsg.message_id && query.data.startsWith('vt_out_')) {
@@ -2977,22 +2990,16 @@ bot.onText(/\/nums/, async (msg) => {
                         }
                     };
                     bot.on('callback_query', listener);
-                    
-                    setTimeout(() => {
-                        if (!isResolved) {
-                            bot.removeListener('callback_query', listener);
-                            resolve('chat'); // Default to chat on timeout
-                        }
-                    }, 60000);
+                    setTimeout(() => { if (!isResolved) { bot.removeListener('callback_query', listener); resolve('chat'); } }, 60000);
                 });
             });
 
             // Clean up the prompt message
             try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
 
-            // Output the Data
+            // --- FINAL DELIVERY ---
             if (outputMode === 'chat') {
-                bot.sendMessage(chatId, `[DELIVERY] ${segmentName}\nSending in batches of 10...`);
+                bot.sendMessage(chatId, `[DELIVERY] ${segmentName}\nFormat: ${formatMode === '84' ? 'Country Code Included' : 'Local Format'}\nSending in batches of 10...`);
                 for (let i = 0; i < finalArray.length; i += 10) {
                     const chunk = finalArray.slice(i, i + 10);
                     const msgText = chunk.map(n => `\`${n}\``).join('\n');
@@ -3006,7 +3013,7 @@ bot.onText(/\/nums/, async (msg) => {
                     chatId, 
                     fileBuffer, 
                     { caption: `[DELIVERY COMPLETE]\nSegment: ${segmentName}\nTotal: ${finalArray.length}` }, 
-                    { filename: `VN_${segmentName.replace(/\s/g, '_')}_${Date.now()}.txt`, contentType: 'text/plain' }
+                    { filename: `Ultar_Sync_VN_${segmentName.replace(/\s/g, '_')}_${Date.now()}.txt`, contentType: 'text/plain' }
                 );
             }
 
@@ -3015,7 +3022,7 @@ bot.onText(/\/nums/, async (msg) => {
             bot.sendMessage(chatId, "[ERROR] Analysis failed: " + error.message);
         }
     });
- 
+
 
 
 // --- Helper: Get Random Delay ---
@@ -5733,8 +5740,7 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                // --- FILE SPLITTER EXECUTION ---
-        if (userState[chatId] === 'WAITING_SPLIT_COUNT') {
+                if (userState[chatId] === 'WAITING_SPLIT_COUNT') {
             const parts = parseInt(text.trim());
             
             // Safety checks
@@ -5756,8 +5762,8 @@ const cleanNumbers = matches.map(n => {
                 const response = await fetch(fileLink);
                 const rawText = await response.text();
 
-                // Extract all non-empty lines
-                const lines = rawText.split(/\r?\n/).filter(l => l.trim().length > 0);
+                // Extract all non-empty lines and strip stray spaces
+                const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
 
                 if (lines.length === 0) {
                     await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
@@ -5769,38 +5775,67 @@ const cleanNumbers = matches.map(n => {
                     return bot.sendMessage(chatId, `[ERROR] The file only has ${lines.length} numbers. Cannot split into ${parts} parts.`);
                 }
 
+                // --- AUTO-DETECT COUNTRY NAME ---
+                let countryName = "Data";
+                const testNum = lines[0].replace(/\D/g, ''); // Strip everything but digits
+                
+                // Map common prefixes to country names for the file output
+                if (testNum.startsWith('84')) countryName = "Vietnam";
+                else if (testNum.startsWith('58')) countryName = "Venezuela";
+                else if (testNum.startsWith('234')) countryName = "Nigeria";
+                else if (testNum.startsWith('224')) countryName = "Guinea";
+                else if (testNum.startsWith('225')) countryName = "Ivory_Coast";
+                else if (testNum.startsWith('62')) countryName = "Indonesia";
+                else if (testNum.startsWith('55')) countryName = "Brazil";
+                else if (testNum.startsWith('27')) countryName = "South_Africa";
+
                 // Calculate chunk size
                 const chunkSize = Math.ceil(lines.length / parts);
                 
                 await bot.editMessageText(
-                    `**SPLITTING IN PROGRESS**\n\nTotal Numbers: ${lines.length}\nFiles: ${parts}\nSize per file: ~${chunkSize} numbers\n\nUploading...`,
+                    `[SPLITTING IN PROGRESS]\n\nTotal Numbers: ${lines.length}\nFiles: ${parts}\nDetected Region: ${countryName}\nSize per file: ~${chunkSize} numbers\n\nUploading...`,
                     { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
                 );
 
-                // Slice and send files
+                // Slice, Format, and Send Files
                 for (let i = 0; i < parts; i++) {
                     const chunk = lines.slice(i * chunkSize, (i + 1) * chunkSize);
                     if (chunk.length === 0) continue;
 
-                    const buffer = Buffer.from(chunk.join('\n'));
+                    // --- FORMAT CHUNK: 5 numbers then 2 blank lines ---
+                    let formattedText = "";
+                    for (let j = 0; j < chunk.length; j++) {
+                        formattedText += chunk[j];
+                        
+                        // Add two blank lines after every 5th number, except at the very end of the file
+                        if ((j + 1) % 5 === 0 && j !== chunk.length - 1) {
+                            formattedText += "\n\n\n"; 
+                        } else if (j !== chunk.length - 1) {
+                            formattedText += "\n"; // Standard single line break
+                        }
+                    }
+
+                    const buffer = Buffer.from(formattedText);
                     
                     await bot.sendDocument(
                         chatId, 
                         buffer, 
-                        { caption: `**Part ${i + 1} of ${parts}**\nTotal: ${chunk.length} numbers`, parse_mode: 'Markdown' }, 
-                        { filename: `Split_Part_${i + 1}.txt`, contentType: 'text/plain' }
+                        { caption: `[Part ${i + 1} of ${parts}]\nTotal: ${chunk.length} numbers`, parse_mode: 'Markdown' }, 
+                        // Generates: Ultar_Sync_Vietnam_1.txt
+                        { filename: `Ultar_Sync_${countryName}_${i + 1}.txt`, contentType: 'text/plain' } 
                     );
                     
                     await delay(1200); // 1.2 second delay to prevent Telegram FloodWait errors
                 }
 
-                bot.sendMessage(chatId, `**SPLIT COMPLETE!** Successfully generated ${parts} files.`, { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, `[SPLIT COMPLETE] Successfully generated ${parts} formatted files.`, { parse_mode: 'Markdown' });
 
             } catch (e) {
                 bot.sendMessage(chatId, `[ERROR] ${e.message}`);
             }
-            return; // Stop processing so it doesn't trigger the main menu
+            return; 
         }
+
 
 
 

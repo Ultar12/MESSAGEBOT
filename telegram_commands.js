@@ -3522,53 +3522,6 @@ bot.onText(/\/vz/, async (msg) => {
 
 
 
-        // --- /addspy: Load numbers into the silent tripwire memory ---
-    bot.onText(/\/addspy/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
-
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /addspy");
-        }
-
-        const doc = msg.reply_to_message.document;
-        if (!doc.file_name.endsWith('.txt')) {
-            return bot.sendMessage(chatId, "[ERROR] I can only load .txt files into spy memory.");
-        }
-
-        try {
-            let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Loading file into Spy Memory...");
-
-            const fileLink = await bot.getFileLink(doc.file_id);
-            const response = await fetch(fileLink);
-            const textData = await response.text();
-
-            const matches = textData.match(/\d{7,15}/g) || [];
-            if (matches.length === 0) {
-                return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
-            }
-
-            // Clear old memory and load new ones
-            spyMemory.clear();
-            
-            for (const rawNum of matches) {
-                const res = normalizeWithCountry(rawNum);
-                if (res && res.num) {
-                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                    spyMemory.add(fullPhone);
-                }
-            }
-
-            bot.editMessageText(`[SPY MODE ACTIVE]\n\nLoaded ${spyMemory.size} unique numbers into RAM.\nListening for country-specific matches in the OTP group...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-        } catch (err) {
-            bot.sendMessage(chatId, "[ERROR] " + err.message);
-        }
-    });
-
             // --- /addspy: Load active WA numbers into the silent tripwire memory (Appends to existing memory) ---
     bot.onText(/\/addspy/, async (msg) => {
         deleteUserCommand(bot, msg);
@@ -3661,6 +3614,45 @@ bot.onText(/\/vz/, async (msg) => {
         } catch (err) {
             bot.sendMessage(chatId, "[ERROR] " + err.message);
         }
+    });
+
+
+            // --- /addspy: Load active WA numbers into the silent tripwire memory (Appends to existing memory) ---
+        // --- /spynum: Retrieve caught numbers and reset the trap ---
+    bot.onText(/\/spynum/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (spyFound.size === 0) {
+            return bot.sendMessage(chatId, "[SPY REPORT] No matches found yet. The trap is still listening.");
+        }
+
+        const foundArray = Array.from(spyFound);
+        
+        bot.sendMessage(chatId, `[SPY REPORT] Caught ${foundArray.length} numbers!\n\nSending in batches of 5...`);
+
+        // Process numbers to strip the country codes for clean output
+        const strippedArray = foundArray.map(rawNum => {
+            const res = normalizeWithCountry(rawNum);
+            // If the normalizer recognizes it, return the local number without the country code.
+            return (res && res.num) ? res.num : rawNum;
+        });
+
+        // Send in smaller batches of 5
+        for (let i = 0; i < strippedArray.length; i += 5) {
+            const chunk = strippedArray.slice(i, i + 5);
+            const msgText = chunk.map(n => `\`${n}\``).join('\n');
+            await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+            await new Promise(resolve => setTimeout(resolve, 800));
+        }
+
+        bot.sendMessage(chatId, "[SYSTEM] Caught numbers cleared. The background listener is still active.");
+        
+        // Reset the caught list, but keep the original memory active
+        spyFound.clear();
     });
 
 

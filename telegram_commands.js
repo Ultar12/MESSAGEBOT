@@ -1917,6 +1917,206 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         }
     });
 
+
+        // --- /de command: Germany Number Analyzer and Sorter (High Specificity) ---
+    bot.onText(/\/de/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /de");
+        }
+
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only analyze .txt files.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading and analyzing German prefixes...");
+
+        try {
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+
+            // Extract all digit strings
+            const rawMatches = textData.match(/\d{10,15}/g) || [];
+            if (rawMatches.length === 0) {
+                return bot.editMessageText("[ERROR] No valid numerical data found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            const uniqueRaw = [...new Set(rawMatches)];
+            
+            // Dynamic buckets for highly specific German prefixes
+            const deBuckets = {};
+            let totalValid = 0;
+
+            // Strict Validation & Sorting Loop for Germany
+            for (const raw of uniqueRaw) {
+                let clean = raw.replace(/\D/g, '');
+                
+                // Strip country code and leading zeros down to the core mobile number
+                if (clean.startsWith('49')) clean = clean.substring(2);
+                if (clean.startsWith('0')) clean = clean.substring(1);
+
+                // German mobile numbers always start with 15, 16, or 17
+                if (clean.length >= 10 && clean.length <= 12 && /^(15|16|17)/.test(clean)) {
+                    // Group by the first 5 digits (e.g., 15510, 15511, 15758)
+                    const prefix = clean.substring(0, 5);
+                    
+                    if (!deBuckets[prefix]) {
+                        deBuckets[prefix] = [];
+                    }
+                    deBuckets[prefix].push(clean);
+                    totalValid++;
+                }
+            }
+
+            if (totalValid === 0) {
+                return bot.editMessageText("[REPORT] Scan complete. Found 0 valid German mobile numbers in this file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            // --- WIZARD STEP 1: Prefix Selection ---
+            let statsText = `[GERMANY DATA REPORT]\n\nTotal Valid DE Numbers: ${totalValid}\n\nBreakdown by Prefix:\n`;
+            let prefixButtons = [];
+
+            // Sort prefixes numerically so the menu looks organized
+            const sortedPrefixes = Object.keys(deBuckets).sort();
+
+            for (const prefix of sortedPrefixes) {
+                const nums = deBuckets[prefix];
+                statsText += `- Prefix 0${prefix}: ${nums.length} numbers\n`;
+                prefixButtons.push({ text: `Extract 0${prefix} (${nums.length})`, callback_data: `de_prefix_${prefix}` });
+            }
+            statsText += `\nWhich data segment would you like to extract?`;
+
+            // Build rows of 3 buttons to prevent taking up the whole screen
+            const keyboardRows = [];
+            for (let i = 0; i < prefixButtons.length; i += 3) {
+                keyboardRows.push(prefixButtons.slice(i, i + 3));
+            }
+            keyboardRows.push([{ text: `Extract ALL Valid Numbers (${totalValid})`, callback_data: "de_prefix_all" }]);
+
+            const selectedPrefix = await new Promise((resolve) => {
+                let isResolved = false;
+                
+                bot.editMessageText(statsText, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    reply_markup: { inline_keyboard: keyboardRows }
+                }).then(() => {
+                    const listener = (query) => {
+                        if (query.message.message_id === statusMsg.message_id && query.data.startsWith('de_prefix_')) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            resolve(query.data.replace('de_prefix_', ''));
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    setTimeout(() => { if (!isResolved) { bot.removeListener('callback_query', listener); resolve(null); } }, 60000);
+                });
+            });
+
+            if (!selectedPrefix) {
+                return bot.editMessageText("[TIMEOUT] You did not select a prefix in time. Command aborted.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            let coreNumbersArray = [];
+            let segmentName = "";
+            if (selectedPrefix === 'all') {
+                for (const nums of Object.values(deBuckets)) coreNumbersArray.push(...nums);
+                segmentName = "All Valid DE Numbers";
+            } else {
+                coreNumbersArray = deBuckets[selectedPrefix];
+                segmentName = `Prefix 0${selectedPrefix}`;
+            }
+
+            // --- WIZARD STEP 2: Format Selection ---
+            const formatMode = await new Promise((resolve) => {
+                let isResolved = false;
+                bot.editMessageText(`[FORMAT SELECTION]\nTarget: ${segmentName}\nCount: ${coreNumbersArray.length}\n\nHow should the numbers be formatted?`, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Include Country Code (49...)", callback_data: "de_fmt_49" }],
+                            [{ text: "Local Format (0...)", callback_data: "de_fmt_0" }]
+                        ]
+                    }
+                }).then(() => {
+                    const listener = (query) => {
+                        if (query.message.message_id === statusMsg.message_id && query.data.startsWith('de_fmt_')) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            resolve(query.data.replace('de_fmt_', ''));
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    setTimeout(() => { if (!isResolved) { bot.removeListener('callback_query', listener); resolve('49'); } }, 60000);
+                });
+            });
+
+            // Apply the chosen formatting rule to the entire array
+            const finalArray = coreNumbersArray.map(num => formatMode === '49' ? `49${num}` : `0${num}`);
+
+            // --- WIZARD STEP 3: Output Mode Selection ---
+            const outputMode = await new Promise((resolve) => {
+                let isResolved = false;
+                bot.editMessageText(`[OUTPUT SELECTION]\nTarget: ${segmentName}\nCount: ${finalArray.length}\nFormat: ${formatMode === '49' ? '+49' : 'Local 0'}\n\nHow would you like to receive the output?`, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Send as .txt File", callback_data: "de_out_file" }],
+                            [{ text: "Send in Chat (Batches)", callback_data: "de_out_chat" }]
+                        ]
+                    }
+                }).then(() => {
+                    const listener = (query) => {
+                        if (query.message.message_id === statusMsg.message_id && query.data.startsWith('de_out_')) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            resolve(query.data === 'de_out_file' ? 'file' : 'chat');
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    setTimeout(() => { if (!isResolved) { bot.removeListener('callback_query', listener); resolve('chat'); } }, 60000);
+                });
+            });
+
+            // Clean up the prompt message
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
+
+            // --- FINAL DELIVERY ---
+            if (outputMode === 'chat') {
+                bot.sendMessage(chatId, `[DELIVERY] ${segmentName}\nFormat: ${formatMode === '49' ? 'Country Code Included' : 'Local Format'}\nSending in batches of 10...`);
+                for (let i = 0; i < finalArray.length; i += 10) {
+                    const chunk = finalArray.slice(i, i + 10);
+                    const msgText = chunk.map(n => `\`${n}\``).join('\n');
+                    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+                    await new Promise(r => setTimeout(r, 800)); // Rate limit protection
+                }
+                bot.sendMessage(chatId, "[SYSTEM] Delivery complete.");
+            } else {
+                const fileBuffer = Buffer.from(finalArray.join('\n'));
+                await bot.sendDocument(
+                    chatId, 
+                    fileBuffer, 
+                    { caption: `[DELIVERY COMPLETE]\nSegment: ${segmentName}\nTotal: ${finalArray.length}` }, 
+                    { filename: `Ultar_Sync_DE_${segmentName.replace(/\s/g, '_')}_${Date.now()}.txt`, contentType: 'text/plain' }
+                );
+            }
+
+        } catch (error) {
+            console.error(error);
+            bot.sendMessage(chatId, "[ERROR] Analysis failed: " + error.message);
+        }
+    });
+
+
     // --- /lastseen [number] ---
     bot.onText(/\/lastseen\s+(\d+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);

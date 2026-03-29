@@ -4647,10 +4647,10 @@ bot.onText(/\/vz/, async (msg) => {
         const INVITE_LINK = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Put your actual tap-to-join link here
 
         if (!userBot || !userBot.connected) {
-            return bot.sendMessage(chatId, "❌ [ERROR] UserBot is not connected. I need the UserBot active to execute this.");
+            return bot.sendMessage(chatId, "[ERROR] UserBot is not connected. I need the UserBot active to execute this.");
         }
 
-        let statusMsg = await bot.sendMessage(chatId, `⏳ Attempting to force-add ${targetUser}...`);
+        let statusMsg = await bot.sendMessage(chatId, `Attempting to force-add ${targetUser}...`);
 
         try {
             // STEP 1: Try to force-add them silently
@@ -4659,7 +4659,7 @@ bot.onText(/\/vz/, async (msg) => {
                 users: [targetUser]
             }));
 
-            bot.editMessageText(`✅ **[SUCCESS]**\nSuccessfully added ${targetUser} directly to the group!`, { 
+            bot.editMessageText(`**[SUCCESS]**\nSuccessfully added ${targetUser} directly to the group!`, { 
                 chat_id: chatId, 
                 message_id: statusMsg.message_id,
                 parse_mode: 'Markdown'
@@ -4670,14 +4670,14 @@ bot.onText(/\/vz/, async (msg) => {
             
             // If they are already in the group, stop immediately.
             if (errorText.includes("USER_ALREADY_PARTICIPANT")) {
-                return bot.editMessageText(`⚠️ ${targetUser} is already inside the group.`, { chat_id: chatId, message_id: statusMsg.message_id });
+                return bot.editMessageText(`${targetUser} is already inside the group.`, { chat_id: chatId, message_id: statusMsg.message_id });
             } else if (errorText.includes("USERNAME_INVALID") || errorText.includes("ResolveUsername")) {
-                return bot.editMessageText(`❌ **[ERROR]** This username does not exist on Telegram.`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+                return bot.editMessageText(`**[ERROR]** This username does not exist on Telegram.`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
             }
 
             // STEP 2: The Fallback Protocol (Direct Message)
             try {
-                await bot.editMessageText(`⚠️ **[BLOCKED]** Privacy settings prevented the direct add.\n\n🔄 Attempting to send the invite link directly to their DM...`, { 
+                await bot.editMessageText(`**[BLOCKED]** Privacy settings prevented the direct add.\n\nAttempting to send the invite link directly to their DM...`, { 
                     chat_id: chatId, 
                     message_id: statusMsg.message_id,
                     parse_mode: 'Markdown'
@@ -4688,7 +4688,7 @@ bot.onText(/\/vz/, async (msg) => {
                     message: `Hello! You have been invited to join our group. Click the link below to enter:\n\n${INVITE_LINK}\n\n_Note: This invite link will expire and be deleted in 24 hours._`
                 });
 
-                await bot.editMessageText(`✅ **[DM SENT]**\nCould not force-add, but successfully dropped the invite link into ${targetUser}'s DMs!\n\n🕒 The message will self-destruct in exactly 24 hours.`, { 
+                await bot.editMessageText(`**[DM SENT]**\nCould not force-add, but successfully dropped the invite link into ${targetUser}'s DMs!\n\n🕒 The message will self-destruct in exactly 24 hours.`, { 
                     chat_id: chatId, 
                     message_id: statusMsg.message_id,
                     parse_mode: 'Markdown'
@@ -4708,7 +4708,7 @@ bot.onText(/\/vz/, async (msg) => {
 
             } catch (dmErr) {
                 // If the DM fails, it usually means the target user has blocked the UserBot account
-                bot.editMessageText(`❌ **[FATAL ERROR]**\nCould not force-add AND could not send a DM to ${targetUser}.\n\nReason: _${dmErr.message}_\n(They may have blocked the account or have absolute privacy enabled).`, { 
+                bot.editMessageText(`**[FATAL ERROR]**\nCould not force-add AND could not send a DM to ${targetUser}.\n\nReason: _${dmErr.message}_\n(They may have blocked the account or have absolute privacy enabled).`, { 
                     chat_id: chatId, 
                     message_id: statusMsg.message_id,
                     parse_mode: 'Markdown'

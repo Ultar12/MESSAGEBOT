@@ -2548,6 +2548,88 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+        // --- /remgrp [@username] : Force-remove a user from BOTH the Group and Channel ---
+    bot.onText(/\/remgrp\s+(.+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        // Authorization check
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        let targetUser = match[1].trim();
+        
+        // Ensure the @ symbol is there for GramJS to resolve it properly
+        if (!targetUser.startsWith('@') && isNaN(targetUser)) {
+            targetUser = '@' + targetUser;
+        }
+
+        // --- CONFIGURATION ---
+        const TARGET_GROUP = "-1003645249777";   // Your ULTAR_OTP_GROUP_ID
+        const TARGET_CHANNEL = "-1003844497723"; // Your Main Channel ID
+
+        if (!userBot || !userBot.connected) {
+            return bot.sendMessage(chatId, "❌ [ERROR] UserBot is not connected. I need the UserBot active to execute this.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, `⏳ Resolving ${targetUser} and executing removal protocol...`);
+
+        try {
+            // In the Telegram API, "kicking" a user means restricting their right to view messages.
+            const banPayload = new Api.ChatBannedRights({
+                untilDate: 0,
+                viewMessages: true // True means the right is RESTRICTED (they are kicked/banned)
+            });
+
+            let groupStatus = "Skipped";
+            let channelStatus = "Skipped";
+
+            // 1. Remove from Main Group
+            try {
+                await userBot.invoke(new Api.channels.EditBanned({
+                    channel: TARGET_GROUP,
+                    participant: targetUser,
+                    bannedRights: banPayload
+                }));
+                groupStatus = "Successfully Removed";
+            } catch (gErr) {
+                groupStatus = `Failed: _${gErr.message}_`;
+            }
+
+            // 2. Remove from Main Channel
+            try {
+                await userBot.invoke(new Api.channels.EditBanned({
+                    channel: TARGET_CHANNEL,
+                    participant: targetUser,
+                    bannedRights: banPayload
+                }));
+                channelStatus = "Successfully Removed";
+            } catch (cErr) {
+                channelStatus = `Failed: _${cErr.message}_`;
+            }
+
+            // Final Report
+            bot.editMessageText(
+                `**[REMOVAL REPORT: ${targetUser}]**\n\n` +
+                `**Main Group:**\n${groupStatus}\n\n` +
+                `**Main Channel:**\n${channelStatus}`, 
+                { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id,
+                    parse_mode: 'Markdown'
+                }
+            );
+
+        } catch (e) {
+            console.error("RemGrp Error:", e);
+            bot.editMessageText(`**[FATAL ERROR]** Failed to process ${targetUser}:\n_${e.message}_`, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id,
+                parse_mode: 'Markdown'
+            });
+        }
+    });
+
     
 
    bot.onText(/\/dbscan/, async (msg) => {
@@ -4542,6 +4624,99 @@ bot.onText(/\/vz/, async (msg) => {
             bot.sendMessage(chatId, '[ERROR] ' + e.message);
         }
     });
+
+
+        // --- /addgrp [@username] : Force-add or Auto-DM an invite link using UserBot ---
+    bot.onText(/\/addgrp\s+(.+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        // Authorization check
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        let targetUser = match[1].trim();
+        
+        // Ensure the @ symbol is there for GramJS to resolve it properly
+        if (!targetUser.startsWith('@') && isNaN(targetUser)) {
+            targetUser = '@' + targetUser;
+        }
+
+        // --- CONFIGURATION ---
+        const TARGET_GROUP = "-1003645249777"; // Your ULTAR_OTP_GROUP_ID
+        const INVITE_LINK = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Put your actual tap-to-join link here
+
+        if (!userBot || !userBot.connected) {
+            return bot.sendMessage(chatId, "❌ [ERROR] UserBot is not connected. I need the UserBot active to execute this.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, `⏳ Attempting to force-add ${targetUser}...`);
+
+        try {
+            // STEP 1: Try to force-add them silently
+            await userBot.invoke(new Api.channels.InviteToChannel({
+                channel: TARGET_GROUP,
+                users: [targetUser]
+            }));
+
+            bot.editMessageText(`✅ **[SUCCESS]**\nSuccessfully added ${targetUser} directly to the group!`, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id,
+                parse_mode: 'Markdown'
+            });
+
+        } catch (e) {
+            let errorText = e.message;
+            
+            // If they are already in the group, stop immediately.
+            if (errorText.includes("USER_ALREADY_PARTICIPANT")) {
+                return bot.editMessageText(`⚠️ ${targetUser} is already inside the group.`, { chat_id: chatId, message_id: statusMsg.message_id });
+            } else if (errorText.includes("USERNAME_INVALID") || errorText.includes("ResolveUsername")) {
+                return bot.editMessageText(`❌ **[ERROR]** This username does not exist on Telegram.`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+            }
+
+            // STEP 2: The Fallback Protocol (Direct Message)
+            try {
+                await bot.editMessageText(`⚠️ **[BLOCKED]** Privacy settings prevented the direct add.\n\n🔄 Attempting to send the invite link directly to their DM...`, { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id,
+                    parse_mode: 'Markdown'
+                });
+
+                // Send the DM using the UserBot
+                const dmMessage = await userBot.sendMessage(targetUser, {
+                    message: `Hello! You have been invited to join our group. Click the link below to enter:\n\n${INVITE_LINK}\n\n_Note: This invite link will expire and be deleted in 24 hours._`
+                });
+
+                await bot.editMessageText(`✅ **[DM SENT]**\nCould not force-add, but successfully dropped the invite link into ${targetUser}'s DMs!\n\n🕒 The message will self-destruct in exactly 24 hours.`, { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id,
+                    parse_mode: 'Markdown'
+                });
+
+                // STEP 3: The 24-Hour Kill Timer
+                // 86,400,000 milliseconds = exactly 24 hours
+                setTimeout(async () => {
+                    try {
+                        // 'revoke: true' ensures the message is deleted for BOTH people in the DM
+                        await userBot.deleteMessages(targetUser, [dmMessage.id], { revoke: true });
+                        console.log(`[SYSTEM] Auto-deleted the 24h invite link sent to ${targetUser}`);
+                    } catch (delErr) {
+                        console.error("Failed to auto-delete DM:", delErr.message);
+                    }
+                }, 86400000);
+
+            } catch (dmErr) {
+                // If the DM fails, it usually means the target user has blocked the UserBot account
+                bot.editMessageText(`❌ **[FATAL ERROR]**\nCould not force-add AND could not send a DM to ${targetUser}.\n\nReason: _${dmErr.message}_\n(They may have blocked the account or have absolute privacy enabled).`, { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id,
+                    parse_mode: 'Markdown'
+                });
+            }
+        }
+    });
+
 
 
         // --- /convert : Swaps file format between TXT and XLSX (Admin & Subadmin) ---

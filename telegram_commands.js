@@ -1475,7 +1475,139 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     // Initialize the OTP Bot directly here so it sends the replies
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
-    const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
+    const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: true });
+
+    // Memory to track users who haven't verified yet and their 1-hour kill timers
+const pendingVerifications = {};
+const OTP_GROUP_ID = "-1003645249777"; // Your main group ID
+
+
+        // --- 1. GATEKEEPER: OTP Bot Welcomes & Mutes ---
+    senderBot.on('new_chat_members', async (msg) => {
+        if (msg.chat.id.toString() !== OTP_GROUP_ID) return;
+
+        for (const newUser of msg.new_chat_members) {
+            if (newUser.is_bot) continue;
+            const userId = newUser.id.toString();
+
+            // Mute the user instantly
+            try {
+                await senderBot.restrictChatMember(OTP_GROUP_ID, userId, {
+                    can_send_messages: false,
+                    can_send_media_messages: false,
+                    can_send_other_messages: false,
+                    can_add_web_page_previews: false
+                });
+            } catch (e) {
+                console.error("Failed to mute. Ensure OTP Bot is Admin in the group.", e.message);
+                continue;
+            }
+
+            // Send Welcome Message with Deep Link to the OTP Bot's DMs
+            const botInfo = await senderBot.getMe();
+            const welcomeMsg = await senderBot.sendMessage(OTP_GROUP_ID,
+                `👋 Welcome [${newUser.first_name}](tg://user?id=${userId})!\n\n` +
+                `⚠️ **ACTION REQUIRED:** You are currently muted to prevent spam.\n` +
+                `To unlock your account, you must DM me and complete verification within **1 hour**, or you will be automatically removed.`,
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [[{ text: 'DM Me to Verify', url: `https://t.me/${botInfo.username}?start=m4u` }]]
+                    }
+                }
+            );
+
+            // 1-Hour Kill Timer
+            const timer = setTimeout(async () => {
+                if (pendingVerifications[userId]) {
+                    try {
+                        await senderBot.banChatMember(OTP_GROUP_ID, userId);
+                        await senderBot.unbanChatMember(OTP_GROUP_ID, userId); 
+                        await senderBot.sendMessage(OTP_GROUP_ID, `👢 Removed [${newUser.first_name}](tg://user?id=${userId}) for failing to verify in time.`, { parse_mode: 'Markdown' });
+                    } catch (e) {}
+                    delete pendingVerifications[userId]; 
+                }
+            }, 3600000); 
+
+            pendingVerifications[userId] = { timer, msgId: welcomeMsg.message_id };
+        }
+    });
+
+    // --- 2. DM INTERCEPTOR: OTP Bot receives /start m4u ---
+    senderBot.onText(/\/start/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        const fullText = msg.text || ""; 
+
+        // Check if they came from the group button or have a pending timer
+        if (fullText.includes('m4u') || pendingVerifications[userId]) {
+            const m4uLink = process.env.M4UGROUP || "https://t.me/M4UNigeria"; // Put your actual link here
+            
+            return senderBot.sendMessage(chatId,
+                `**M4U GROUP VERIFICATION** 🛡️\n\n` +
+                `To unlock your account in the main OTP group, you must join our partner network:\n\n` +
+                `🔗 **[Join M4U Group Here](${m4uLink})**\n\n` +
+                `Once you have successfully joined, click the Verify button below.`,
+                {
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: true,
+                    reply_markup: {
+                        inline_keyboard: [[{ text: "✅ I have joined, Verify Me", callback_data: "verify_m4u" }]]
+                    }
+                }
+            );
+        }
+    });
+
+    // --- 3. LIVE API CHECK: OTP Bot verifies via UserBot ---
+    senderBot.on('callback_query', async (query) => {
+        const chatId = query.message.chat.id;
+        const userId = query.from.id.toString();
+        const data = query.data;
+
+        if (data === 'verify_m4u') {
+            const m4uId = process.env.M4UID; // Ensure this is set in Heroku!
+
+            if (!userBot || !userBot.connected) {
+                return senderBot.answerCallbackQuery(query.id, { text: "System offline. Try again later.", show_alert: true });
+            }
+
+            await senderBot.answerCallbackQuery(query.id, { text: "Checking your status securely..." });
+
+            try {
+                // UserBot checks the M4U group
+                const channelEntity = await userBot.getEntity(m4uId);
+                await userBot.invoke(new Api.channels.GetParticipant({
+                    channel: channelEntity,
+                    participant: userId
+                }));
+
+                // If successful, unmute them in the OTP Group
+                await senderBot.restrictChatMember(OTP_GROUP_ID, userId, {
+                    can_send_messages: true,
+                    can_send_media_messages: true,
+                    can_send_other_messages: true,
+                    can_add_web_page_previews: true
+                });
+
+                // Disarm Timer
+                if (pendingVerifications[userId]) {
+                    clearTimeout(pendingVerifications[userId].timer);
+                    delete pendingVerifications[userId];
+                }
+
+                senderBot.editMessageText(`✅ **VERIFICATION SUCCESSFUL**\n\nYou are now unmuted in the OTP group. Welcome to the family!`, {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    parse_mode: 'Markdown'
+                });
+
+            } catch (e) {
+                senderBot.sendMessage(chatId, `❌ **VERIFICATION FAILED**\n\nI just checked, and you have not joined the M4U group yet. Please join using the link and try again.`);
+            }
+        }
+    });
+
 
         // --- LISTENER: Trigger when a user sends 3 or 4 digits (NO LIMITS) ---
     bot.onText(/^(\d{3,4})$/, async (msg, match) => {

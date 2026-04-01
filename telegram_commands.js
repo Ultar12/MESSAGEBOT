@@ -2163,8 +2163,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 { 
                     caption: `**REFORMAT COMPLETE**\n\nTotal Numbers: ${rawLines.length}\nFormat: 5 per batch (Split Style)`, 
                     parse_mode: 'Markdown' 
-                }, 
-                { filename: `Reformatted_${doc.file_name}`, contentType: 'text/plain' }
+                },
+                { filename: `Ultar_Sync_${doc.file_name}`, contentType: 'text/plain' }
             );
 
         } catch (error) {

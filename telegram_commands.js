@@ -2101,7 +2101,77 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.sendMessage(chatId, "[ERROR] Analysis failed: " + error.message);
         }
     });
-  
+
+    
+      // --- TEMPORARY COMMAND: /reformat (Applies 5-per-batch formatting to old files) ---
+    bot.onText(/\/reformat/, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /reformat");
+        }
+
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only reformat .txt files.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, "Downloading and applying batch formatting...");
+
+        try {
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const rawText = await response.text();
+
+            // Extract all numbers (cleans out any weird characters)
+            const rawLines = rawText.split(/\r?\n/).map(l => l.trim().replace(/\D/g, '')).filter(l => l.length > 0);
+
+            if (rawLines.length === 0) {
+                return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            // Apply the 5-per-batch formatting
+            let formattedText = "";
+            let batchNum = 1;
+            for (let j = 0; j < rawLines.length; j++) {
+                // Add batch header for every 5th number
+                if (j % 5 === 0) {
+                    formattedText += `    ${batchNum}    \n`;
+                    batchNum++;
+                }
+                formattedText += rawLines[j];
+                
+                // Add spacing between batches
+                if ((j + 1) % 5 === 0 && j !== rawLines.length - 1) {
+                    formattedText += "\n\n\n"; 
+                } else if (j !== rawLines.length - 1) {
+                    formattedText += "\n"; 
+                }
+            }
+
+            const buffer = Buffer.from(formattedText);
+
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+
+            await bot.sendDocument(
+                chatId, 
+                buffer, 
+                { 
+                    caption: `**REFORMAT COMPLETE**\n\nTotal Numbers: ${rawLines.length}\nFormat: 5 per batch (Split Style)`, 
+                    parse_mode: 'Markdown' 
+                }, 
+                { filename: `Reformatted_${doc.file_name}`, contentType: 'text/plain' }
+            );
+
+        } catch (error) {
+            bot.editMessageText(`**[ERROR]** ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+        }
+    });
+
 
     // --- /txt [Reply to file] ---
     bot.onText(/\/txt/, async (msg) => {

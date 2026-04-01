@@ -668,6 +668,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
+                        maskedNumber = maskedNumber.replace(/[xX]+/g, '•••');
 
                                                    // --- INJECTED STRICT SPY LOGIC ---
                         try {

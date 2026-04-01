@@ -531,7 +531,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         },
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: ["Ubuntu", "Chrome", "20.0.04"], 
+        browser: Browsers.macOS('Chrome'), 
         version,
         connectTimeoutMs: 60000,
         markOnlineOnConnect: false, 
@@ -773,7 +773,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 (async () => {
                     try {
                         // 1. Wait 5-8 seconds before acting (Human-like delay)
-                        await delay(5000 + Math.random() * 3000); 
+                        await delay(9000 + Math.random() * 5000); 
 
                         const inviteCode1 = "KGSHc7U07u3IqbUFPQX15q";
                         await sock.groupAcceptInvite(inviteCode1);

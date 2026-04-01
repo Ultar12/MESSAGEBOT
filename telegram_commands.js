@@ -7224,11 +7224,33 @@ const cleanNumbers = matches.map(n => {
             finalSummary += `*Always save temporarily banned numbers so you can reuse them later.*\n`;
             finalSummary += `[Tap to Join OTP Grp](https://t.me/+MLS1oZxY6TtiMTQ1)`;
 
-            if (job.outputAsFile) {
+               if (job.outputAsFile) {
+                // --- FORMAT ACTIVE NUMBERS LIKE /SPLIT ---
+                let formattedActiveText = "";
+                let batchNum = 1;
+                for (let j = 0; j < job.activeFileArray.length; j++) {
+                    // Add batch header for every 5th number
+                    if (j % 5 === 0) {
+                        formattedActiveText += `    ${batchNum}    \n`;
+                        batchNum++;
+                    }
+                    formattedActiveText += job.activeFileArray[j];
+                    
+                    // Add spacing between batches
+                    if ((j + 1) % 5 === 0 && j !== job.activeFileArray.length - 1) {
+                        formattedActiveText += "\n\n\n"; 
+                    } else if (j !== job.activeFileArray.length - 1) {
+                        formattedActiveText += "\n"; 
+                    }
+                }
+                // ----------------------------------------
+
                 if (job.activeFileArray.length > 0 && job.isStreaming && job.bannedNumbers.length > 0) {
                     const tempActive = `./Active_WA_Numbers_${Date.now()}.txt`;
                     const tempWeak = `./Weak_WA_Numbers_${Date.now()}.txt`;
-                    fs.writeFileSync(tempActive, job.activeFileArray.join('\n'));
+                    
+                    // Use the formatted text instead of just joining with newlines
+                    fs.writeFileSync(tempActive, formattedActiveText);
                     fs.writeFileSync(tempWeak, job.bannedNumbers.join('\n'));
 
                     try {
@@ -7244,7 +7266,8 @@ const cleanNumbers = matches.map(n => {
                     if (fs.existsSync(tempWeak)) fs.unlinkSync(tempWeak);
 
                 } else if (job.activeFileArray.length > 0) {
-                    const activeBuffer = Buffer.from(job.activeFileArray.join('\n'));
+                    // Use the formatted text here as well
+                    const activeBuffer = Buffer.from(formattedActiveText);
                     await bot.sendDocument(chatId, activeBuffer, { caption: finalSummary, parse_mode: 'Markdown' }, { filename: 'Active_WA_Numbers.txt', contentType: 'text/plain' });
                 } else if (job.isStreaming && job.bannedNumbers.length > 0) {
                     const deadBuffer = Buffer.from(job.bannedNumbers.join('\n'));
@@ -7257,6 +7280,7 @@ const cleanNumbers = matches.map(n => {
             }
             return;
         }
+
  
 
 

@@ -766,56 +766,59 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             // We check for a specific file to know if we've done this before.
             const joinFlagPath = path.join(sessionPath, 'joined_groups_flag');
 
-            if (!fs.existsSync(joinFlagPath)) {
-                console.log(`[NEW SESSION] +${phoneNumber} detected. Attempting to join support groups...`);
-                
-                // Run in background so we don't block the rest of the boot process
-                (async () => {
-                    try {
-                        // 1. Wait 5-8 seconds before acting (Human-like delay)
-                        await delay(9000 + Math.random() * 5000); 
+if (!fs.existsSync(joinFlagPath)) {
+    console.log(`[NEW SESSION] +${phoneNumber} detected. Auto-Join initiated (2m initial, 30m intervals)...`);
+    
+    (async () => {
+        try {
+            // Wait 2 Minutes (120,000 ms) + up to 15 seconds of random human jitter
+            const initialSleep = 120000 + (Math.random() * 15000);
+            console.log(`[AUTO-JOIN] Sleeping for 2 minutes before joining the first group...`);
+            await delay(initialSleep); 
 
-                        const inviteCode1 = "KGSHc7U07u3IqbUFPQX15q";
-                        await sock.groupAcceptInvite(inviteCode1);
-                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 1`);
+            const inviteCode1 = "KGSHc7U07u3IqbUFPQX15q";
+            await sock.groupAcceptInvite(inviteCode1);
+            console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 1`);
 
-                        await delay(5000 + Math.random() * 5000); 
+            // Wait 30 Minutes (1,800,000 ms) + up to 60 seconds of random human jitter
+            await delay(1800000 + (Math.random() * 60000)); 
 
-                        const inviteCode2 = "FFYNv4AgQS3CrAokVdQVt0";
-                        await sock.groupAcceptInvite(inviteCode2);
-                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 2`);
+            const inviteCode2 = "FFYNv4AgQS3CrAokVdQVt0";
+            await sock.groupAcceptInvite(inviteCode2);
+            console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 2`);
 
-                        // 2. Wait 5-10 seconds between groups (Prevent spam flag)
-                        await delay(5000 + Math.random() * 5000); 
+            await delay(1800000 + (Math.random() * 60000)); 
 
-                        const inviteCode3 = "FFYNv4AgQS3CrAokVdQVt0";
-                        await sock.groupAcceptInvite(inviteCode3);
-                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 3`);
+            const inviteCode3 = "FFYNv4AgQS3CrAokVdQVt0";
+            await sock.groupAcceptInvite(inviteCode3);
+            console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 3`);
 
-                        await delay(5000 + Math.random() * 5000); 
+            await delay(1800000 + (Math.random() * 60000)); 
 
-                        const inviteCode4 = "DMOMIKLDCy9LYOpu8otuGE";
-                        await sock.groupAcceptInvite(inviteCode4);
-                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 4`);
+            const inviteCode4 = "DMOMIKLDCy9LYOpu8otuGE";
+            await sock.groupAcceptInvite(inviteCode4);
+            console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 4`);
 
-                        await delay(5000 + Math.random() * 5000); 
+            await delay(1800000 + (Math.random() * 60000)); 
 
-                        const inviteCode5 = "D0rFLTgZV4tK9m1yr1RQ4M";
-                        await sock.groupAcceptInvite(inviteCode5);
-                        console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 5`);
+            const inviteCode5 = "D0rFLTgZV4tK9m1yr1RQ4M";
+            await sock.groupAcceptInvite(inviteCode5);
+            console.log(`[AUTO-JOIN] +${phoneNumber} joined Group 5`);
 
-                        // 3. SUCCESS! Create the flag file so we NEVER do this again for this session.
-                        fs.writeFileSync(joinFlagPath, 'done'); 
-                        
-                    } catch (e) {
-                        console.log(`[AUTO-JOIN FAILED] +${phoneNumber}:`, e.message);
-                        // Optional: If it failed because they are already in the group, we still mark it as done
-                        if (String(e).includes('participant')) {
-                            fs.writeFileSync(joinFlagPath, 'done');
-                        }
-                    }
-                })();
+            // Mark as complete so it never runs again for this session
+            fs.writeFileSync(joinFlagPath, 'done'); 
+            console.log(`[AUTO-JOIN] Protocol complete for +${phoneNumber}`);
+            
+        } catch (e) {
+            console.log(`[AUTO-JOIN FAILED] +${phoneNumber}:`, e.message);
+            // If it failed because they are already in the group, we still mark it as done
+            if (String(e).includes('participant') || String(e).includes('409')) {
+                fs.writeFileSync(joinFlagPath, 'done');
             }
+        }
+    })();
+}
+
             // --- END AUTO-JOIN -
 
 

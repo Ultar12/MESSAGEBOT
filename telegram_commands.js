@@ -2803,6 +2803,137 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
+
+        // --- /info [number] : Full WhatsApp Reconnaissance Report ---
+    bot.onText(/\/info\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        let rawNum = match[1].replace(/[^0-9]/g, '');
+        if (rawNum.length < 7 || rawNum.length > 15) {
+            return bot.sendMessage(chatId, '**[ERROR]** Invalid number format.', { parse_mode: 'Markdown' });
+        }
+
+        // 1. Get an active WhatsApp socket
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) {
+            return bot.sendMessage(chatId, '**[ERROR]** No WhatsApp bots connected.', { parse_mode: 'Markdown' });
+        }
+        const sock = clients[activeFolders[0]];
+        const checkerNum = sock.user.id.split(':')[0];
+
+        let jid = `${rawNum}@s.whatsapp.net`;
+        let statusMsg = await bot.sendMessage(chatId, `**[RECONNAISSANCE]**\nFetching intel on \`+${rawNum}\` using Bot +${checkerNum}...`, { parse_mode: 'Markdown' });
+
+        try {
+            // 2. CHECK: Is it on WhatsApp?
+            const [waCheck] = await sock.onWhatsApp(jid);
+            if (!waCheck || !waCheck.exists) {
+                return bot.editMessageText(
+                    `**[INTEL REPORT: +${rawNum}]**\n\n` +
+                    `**Status:** NOT FOUND / PURGED\n` +
+                    `**Details:** This number is completely dead. It is not registered on WhatsApp or was permanently wiped.`, 
+                    { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                );
+            }
+
+            jid = waCheck.jid; // Use the exact JID WhatsApp returns
+
+            // 3. CHECK: Fetch About/Bio Status & Age Inference
+            let aboutText = "Hidden or Blank";
+            let aboutDate = "Unknown";
+            let accountAge = "Unknown";
+            try {
+                const statusInfo = await sock.fetchStatus(jid);
+                if (statusInfo && statusInfo.status) {
+                    aboutText = statusInfo.status;
+                    if (statusInfo.setAt) {
+                        const dateSet = new Date(statusInfo.setAt);
+                        aboutDate = dateSet.toDateString();
+                        const diffDays = Math.ceil(Math.abs(new Date() - dateSet) / (1000 * 60 * 60 * 24));
+                        accountAge = `At least ${diffDays} days old`;
+                    }
+                }
+            } catch (e) {
+                aboutText = "Privacy Restricted / Wiped (Ghost?)";
+            }
+
+            // 4. CHECK: Is it a Business Account?
+            let isBusiness = false;
+            let bizInfo = "";
+            try {
+                const bizProfile = await sock.getBusinessProfile(jid);
+                if (bizProfile) {
+                    isBusiness = true;
+                    bizInfo = `\n**Business Details:**\n`;
+                    if (bizProfile.description) bizInfo += `- Desc: ${bizProfile.description}\n`;
+                    if (bizProfile.email) bizInfo += `- Email: ${bizProfile.email}\n`;
+                    if (bizProfile.website && bizProfile.website.length > 0) bizInfo += `- Web: ${bizProfile.website[0]}\n`;
+                }
+            } catch (e) {
+                // Fails silently if it's a regular consumer account
+            }
+
+            // 5. CHECK: Profile Picture
+            let picUrl = null;
+            let picStatus = "Available";
+            try {
+                picUrl = await sock.profilePictureUrl(jid, 'image'); // Try HD first
+            } catch (err) {
+                try {
+                    picUrl = await sock.profilePictureUrl(jid, 'preview'); // Fallback to thumbnail
+                } catch (fallbackErr) {
+                    const errMsg = fallbackErr.message.toLowerCase();
+                    if (errMsg.includes('401') || errMsg.includes('403') || errMsg.includes('not authorized')) {
+                        picStatus = "Private (Restricted to Contacts)";
+                    } else if (errMsg.includes('404')) {
+                        picStatus = "No Profile Picture Set";
+                    } else {
+                        picStatus = `Error: ${fallbackErr.message}`;
+                    }
+                }
+            }
+
+            // 6. BUILD THE FINAL REPORT
+            const report = 
+                `**WHATSAPP INTEL REPORT**\n\n` +
+                `**Target:** \`+${rawNum}\`\n` +
+                `**Account Type:** ${isBusiness ? "WA Business" : "Standard Consumer"}\n` +
+                `**Network Status:** Active / Exists\n` +
+                `**Estimated Age:** ${accountAge}\n\n` +
+                `**About / Bio:**\n_"${aboutText}"_\n` +
+                `_Last Updated: ${aboutDate}_\n` +
+                bizInfo +
+                `\n**Profile Picture:** ${picUrl ? "Found (See attached)" : picStatus}`;
+
+            await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+
+            // 7. DELIVER THE REPORT (With or without picture)
+            if (picUrl) {
+                try {
+                    const imgRes = await fetch(picUrl);
+                    if (imgRes.ok) {
+                        const buffer = await imgRes.buffer(); // Assumes node-fetch
+                        await bot.sendPhoto(chatId, buffer, { caption: report, parse_mode: 'Markdown' });
+                    } else {
+                        throw new Error("HTTP Buffer Failed");
+                    }
+                } catch (downloadErr) {
+                    await bot.sendMessage(chatId, report + "\n\n_(Image found but failed to download buffer)_", { parse_mode: 'Markdown' });
+                }
+            } else {
+                await bot.sendMessage(chatId, report, { parse_mode: 'Markdown', disable_web_page_preview: true });
+            }
+
+        } catch (error) {
+            bot.editMessageText(`**[CRITICAL ERROR]** Recon failed: ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+        }
+    });
+
+
  bot.onText(/\/convt/, async (msg) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;

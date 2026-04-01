@@ -778,21 +778,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             console.error("❌ [TG SEND ERROR]:", err.message);
                         }
 
-                        // WhatsApp Send
-                        const sock = getDedicatedSender(activeClients); 
-                        if (sock) {
-                            try {
-                                const formattedWa = design.replace('CODE_FIX', `*${code}*`);
-                                const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
-                                try {
-                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                                } catch (e) {
-                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                                }
-                            } catch (fatalErr) { updateOtpSender(null, true); }
-                        }
+            
                     }
                 }
             }

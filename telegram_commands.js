@@ -638,12 +638,10 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                         let countryCode = "Unknown";
                         // 🚨 EMOJI EXTRACTOR: Look for 📞 and ☎️
-                        const unifiedMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|📞|☎️|📱|#[a-zA-Z]{2})\]?[^\d+X]*([+\dX][^\s┨\n]*)/i);
-
-if (unifiedMatch && unifiedMatch[1]) {
-    maskedNumber = unifiedMatch[1].trim();
-} else {
-
+                        const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*(?:#|OTHER|WP|WA|WB|WS|FB|📞|☎️))/i);
+                        if (countryMatch) {
+                            countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
+                        } else {
                             const fallbackCountry = combinedText.match(/(?:^|\n)[^\w\n]*([a-zA-Z]{2})\s*-/);
                             if (fallbackCountry) countryCode = fallbackCountry[1].toUpperCase();
                         }
@@ -658,11 +656,12 @@ if (unifiedMatch && unifiedMatch[1]) {
 
                         let maskedNumber = "Unknown";
                         
-                        const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER|📞|☎️)\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
+                        const unifiedMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|📞|☎️|📱|#[a-zA-Z]{2})\]?[^\d+X]*([+\dX][^\s┨\n]*)/i);
 
-                        if (unifiedMatch && unifiedMatch[1]) {
-                            maskedNumber = unifiedMatch[1];
-                        } else {
+if (unifiedMatch && unifiedMatch[1]) {
+    maskedNumber = unifiedMatch[1].trim();
+} else {
+
                             const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.a-zA-Z]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
                             if (fallbackMatch) maskedNumber = fallbackMatch[0];
                         }

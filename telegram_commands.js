@@ -656,7 +656,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
 
                         let maskedNumber = "Unknown";
                         
-                        const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER|📞|☎️)\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
+                        const unifiedMatch = combinedText.match(/(?:(?:WP|WA|WB|WS|FB|OTHER|📞|☎️|#[a-zA-Z]{2})\]?)\s*(?:-\s*)?([^\s┨\n]+)/i);
 
                         if (unifiedMatch && unifiedMatch[1]) {
                             maskedNumber = unifiedMatch[1];

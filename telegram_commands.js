@@ -640,9 +640,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         // 🚨 EMOJI EXTRACTOR: Look for 📞 and ☎️
                         const unifiedMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|📞|☎️|📱|#[a-zA-Z]{2})\]?[^\d+X]*([+\dX][^\s┨\n]*)/i);
 
-                        if (unifiedMatch && unifiedMatch[1]) {
-                         maskedNumber = unifiedMatch[1].trim();
-                        } else {
+if (unifiedMatch && unifiedMatch[1]) {
+    maskedNumber = unifiedMatch[1].trim();
+} else {
 
                             const fallbackCountry = combinedText.match(/(?:^|\n)[^\w\n]*([a-zA-Z]{2})\s*-/);
                             if (fallbackCountry) countryCode = fallbackCountry[1].toUpperCase();

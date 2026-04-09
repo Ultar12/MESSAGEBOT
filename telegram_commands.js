@@ -569,13 +569,20 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     const combinedText = textToSearch + "\n" + replyText;
                     let code = null;
 
-                    // Button checker
+                                        // Button checker
                     const checkButtons = (rows) => {
                         for (const row of rows) {
                             const btnArray = row.buttons || row; 
                             for (const btn of btnArray) {
                                 const btnText = btn.text || "";
-                                const btnCodeMatch = btnText.match(/(\d{3})[-\s]?(\d{3})/);
+                                
+                                // Grab the hidden payload (handles GramJS copyText and callback data)
+                                const hiddenPayload = btn.copyText || btn.copy_text || (btn.data ? btn.data.toString() : "") || "";
+                                
+                                // Scan both the visible text AND the hidden payload together
+                                const textToScan = btnText + " " + hiddenPayload;
+                                
+                                const btnCodeMatch = textToScan.match(/(\d{3})[-\s]?(\d{3})/);
                                 if (btnCodeMatch) {
                                     return btnCodeMatch[1] + btnCodeMatch[2];
                                 }
@@ -583,6 +590,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         }
                         return null;
                     };
+
 
                     if (latestMsg.buttons && latestMsg.buttons.length > 0) {
                         code = checkButtons(latestMsg.buttons);

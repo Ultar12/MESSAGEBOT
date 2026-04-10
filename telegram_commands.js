@@ -746,7 +746,6 @@ if (unifiedMatch && unifiedMatch[1]) {
                             `┃❃│ Platform : ${platform}\n` +
                             `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
                             `┃❃│ Number   : ${maskedNumber}\n` +
-                            `┃❃│ Code     : CODE_FIX\n` +
                             `┃❃╰───────────────\n` +
                             `╰═════════════════⊷`;
 
@@ -773,19 +772,21 @@ if (unifiedMatch && unifiedMatch[1]) {
 
                             console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
 
-                            // 🚨 DYNAMIC DELETION TIMER
-                            // 300,000 ms = 5 minutes | 86,400,000 ms = 24 hours
-                            let deleteDelay = 86400000; 
-                            if (SOURCE_GROUP_ID === "otpbotsy" || SOURCE_GROUP_ID === "-1003389248033") {
-                                deleteDelay = 300000; 
-                            }
+                                                        // 🚨 AUTO-DELETE TIMER
+                            // 600,000 ms = 10 minutes
+                            const deleteDelay = 600000; 
 
                             setTimeout(async () => { 
-                                try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
+                                try { 
+                                    await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); 
+                                } catch (e) {
+                                    // Fails silently if message was already manually deleted
+                                } 
                             }, deleteDelay);
 
+
                         } catch (err) {
-                            console.error("❌ [TG SEND ERROR]:", err.message);
+                            console.error("[TG SEND ERROR]:", err.message);
                         }
 
             

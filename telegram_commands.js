@@ -856,7 +856,7 @@ if (unifiedMatch && unifiedMatch[1]) {
                                         [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         [
                                             { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
-                                            { text: `Channel`, url: `https://t.me/+t5nnwpHoHcFlYjZl`, style: 'primary' }
+                                            { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1`, style: 'primary' }
                                         ],
                                         [
                                             { text: `Link to M4U`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }

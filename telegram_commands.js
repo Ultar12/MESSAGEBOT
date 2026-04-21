@@ -350,7 +350,6 @@ export function setupDailyChannelScanner(userBot, senderBot) {
 
     // Your exact group, channel, and link
     const ULTAR_OTP_GROUP_ID = "-1003645249777"; 
-    const TARGET_CHANNEL_ID = "-1003818157335";  
     const TARGET_CHANNEL_LINK = "https://t.me/+t5nnwpHoHcFlYjZl";
 
     const SUBADMIN_IDS = (process.env.SUBADMIN_IDS || '').split(',').map(id => id.trim());
@@ -492,6 +491,102 @@ export async function initUserBot(activeClients) {
         console.error("[USERBOT INIT FAIL]", e.message);
     }
 }
+
+
+
+// Variable to store numbers received between cycles
+let receivedNumbersBuffer = new Set();
+const SOURCE_BOT_USERNAME = "@UltMessagingbot"; // <--- CHANGE THIS
+const TARGET_CHANNEL_ID = "-1003844497723";
+
+// 1. Listener to catch numbers as they arrive
+userBot.addEventHandler(async (event) => {
+    const message = event.message;
+    const sender = await message.getSender();
+    
+    if (sender && sender.username === SOURCE_BOT_USERNAME) {
+        const text = message.message;
+        const found = text.match(/\d{10,15}/g);
+        if (found) {
+            found.forEach(n => receivedNumbersBuffer.add(n));
+        }
+    }
+});
+
+// 2. The 30-minute Async Processing Function
+setInterval(async () => {
+    if (receivedNumbersBuffer.size === 0) return;
+
+    try {
+        const rawList = Array.from(receivedNumbersBuffer);
+        receivedNumbersBuffer.clear(); // Clear buffer for next 30 mins
+
+        // Filter against Database
+        const allDbDocs = await getAllNumbers();
+        const dbSet = new Set(allDbDocs.map(doc => doc.toString().replace(/\D/g, '')));
+        
+        let toProcess = [];
+        for (let num of rawList) {
+            const res = normalizeWithCountry(num);
+            if (res && res.num) {
+                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                // Only keep if NOT in database
+                if (!dbSet.has(fullPhone)) {
+                    toProcess.push(res.num); // Store without country code
+                }
+            }
+        }
+
+        if (toProcess.length === 0) return;
+
+        // Fetch latest file from channel
+        const channelMsgs = await userBot.getMessages(TARGET_CHANNEL_ID, { limit: 1 });
+        const lastMsg = channelMsgs[0];
+        if (!lastMsg || !lastMsg.media) return;
+
+        const buffer = await userBot.downloadMedia(lastMsg.media);
+        let fileContent = buffer.toString('utf-8');
+        
+        // Split file into sections: Main Body and Recently Used
+        let [mainBody, recentlyUsed] = fileContent.split("Recently used numbers");
+        
+        // Extract all existing numbers from main body
+        let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+        // Filter out the numbers we just processed
+        let remainingNumbers = lines.filter(line => !toProcess.includes(line) && !line.match(/^\d+$/));
+
+        // Re-number the main body (5 per batch)
+        let updatedContent = "";
+        let batchIdx = 1;
+        for (let i = 0; i < remainingNumbers.length; i++) {
+            if (i % 5 === 0) {
+                updatedContent += `    ${batchIdx}    \n`;
+                batchIdx++;
+            }
+            updatedContent += remainingNumbers[i] + "\n";
+            if ((i + 1) % 5 === 0) updatedContent += "\n";
+        }
+
+        // Reconstruct "Recently used numbers" section
+        updatedContent += "\nRecently used numbers\n";
+        if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
+        updatedContent += toProcess.join('\n') + "\n";
+
+        // Upload the new file and delete the old one to keep channel clean
+        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "numbers.txt";
+        await userBot.sendFile(TARGET_CHANNEL_ID, {
+            file: Buffer.from(updatedContent),
+            attributes: [{ fileName: fileName }],
+            caption: "File updated."
+        });
+        
+        await userBot.deleteMessages(TARGET_CHANNEL_ID, [lastMsg.id], { revoke: true });
+
+    } catch (err) {
+        console.error("Error in 30-min update cycle:", err);
+    }
+}, 30 * 60 * 1000); // 30 minutes in milliseconds
+
 
 
 
@@ -761,10 +856,10 @@ if (unifiedMatch && unifiedMatch[1]) {
                                         [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
                                         [
                                             { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
-                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
+                                            { text: `Channel`, url: `https://t.me/+t5nnwpHoHcFlYjZl`, style: 'primary' }
                                         ],
                                         [
-                                            { text: `💰Rent WhatsApp💰`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
+                                            { text: `Link to M4U`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
                                         ]
                                     ] 
                                 }
@@ -1780,20 +1875,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     });
 
 
-        // --- /login : Primary Device (Mobile API) Login ---
-    bot.onText(/\/login/, (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
-
-        userState[chatId] = 'WAITING_MOBILE_NUMBER';
-        bot.sendMessage(chatId, 
-            `**MOBILE API LOGIN**\n\n` +
-            `This will log the bot in as a **Primary Device** (like a real phone).\n\n` +
-            `Enter the phone number with country code (e.g., 2348123456789):`, 
-            { parse_mode: 'Markdown' }
-        );
-    });
 
     
     // --- /st [r | nr] : Extract Registered or Not Registered numbers from Bio Checker files (TXT & XLSX) ---
@@ -3760,7 +3841,7 @@ const getCountryPrefix = (text) => {
         const countryName = match[1] ? match[1].trim() : "Unknown Region";
         
         // --- CONFIGURATION ---
-        const targetChannelId = "-1003844497723"; // Your hardcoded Channel ID
+        const targetChannelId = "-1003818157335"; // Your hardcoded Channel ID
         const otpGroupLink = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Replace with your Tap-to-Join link
         const waGroupId = process.env.WA_TARGET_GROUP || "1234567890-123456@g.us"; // WhatsApp Group JID
 

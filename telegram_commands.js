@@ -3504,7 +3504,7 @@ const getCountryPrefix = (text) => {
         if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
         
         const countLimit = parseInt(match[1]);
-        const targetBot = "virtualotpsbot";
+        const targetBot = "h2iotp2bot";
 
         // 1. Ensure we have an active WA bot to verify the numbers
         const activeFolders = Object.keys(clients).filter(f => clients[f]);

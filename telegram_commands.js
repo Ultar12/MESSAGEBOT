@@ -350,8 +350,8 @@ export function setupDailyChannelScanner(userBot, senderBot) {
 
     // Your exact group, channel, and link
     const ULTAR_OTP_GROUP_ID = "-1003645249777"; 
-    const TARGET_CHANNEL_ID = "-1003844497723";  
-    const TARGET_CHANNEL_LINK = "https://t.me/+iEEWbmC6Pdw0MDI1";
+    const TARGET_CHANNEL_ID = "-1003818157335";  
+    const TARGET_CHANNEL_LINK = "https://t.me/+t5nnwpHoHcFlYjZl";
 
     const SUBADMIN_IDS = (process.env.SUBADMIN_IDS || '').split(',').map(id => id.trim());
     const ADMIN_ID = process.env.ADMIN_ID;

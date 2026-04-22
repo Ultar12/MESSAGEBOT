@@ -8113,10 +8113,6 @@ const cleanNumbers = matches.map(n => {
 }
 
 
-    // NOTE: Returning a dummy function as the real notification logic is now centralized in index.js
-    return { notifyDisconnection: () => {} };
-}
-
 // ==========================================
 // 🚀 API ENDPOINT LOGIC (Triggered by your other service)
 // ==========================================

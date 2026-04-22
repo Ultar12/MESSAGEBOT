@@ -496,7 +496,7 @@ export async function initUserBot(activeClients) {
 
 // Variable to store numbers received between cycles
 let receivedNumbersBuffer = new Set();
-const TARGET_CHANNEL_ID = "-1003844497723";
+const TARGET_CHANNEL_ID = "-1003818157335";
 
 // 1. Updated Listener: Trigger purely on the header text
 userBot.addEventHandler(async (event) => {

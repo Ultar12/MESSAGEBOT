@@ -502,32 +502,36 @@ let receivedNumbersBuffer = new Set();
 const ALBUM_GROUP_ID = "-1003735392339"; 
 const TARGET_CHANNEL_ID = "-1003818157335";
 
-// 1. STANDARD BOT LISTENER (Listens to the Album Group)
-bot.on('message', async (msg) => {
+// 1. STANDARD BOT LISTENER (Listens to the Album Channel)
+bot.on('channel_post', async (msg) => { // <--- CHANGED to channel_post
     const chatId = msg.chat.id.toString();
 
-    // Only trigger if the message is in the Album Group
+    // Only trigger if the message is in the Album Channel
     if (chatId === ALBUM_GROUP_ID) {
         // Grab text from normal messages OR captions from albums/photos
         const text = msg.text || msg.caption || "";
         
-        const found = text.match(/\d{10,15}/g);
-        
-        if (found) {
-            found.forEach(n => receivedNumbersBuffer.add(n));
-            console.log(`[CLEANER] Cached ${found.length} numbers from Album Group.`);
+        // Ensure it's the actual OTP drop message
+        if (text.includes("[NEW OTP NUMBERS DETECTED]")) {
+            const found = text.match(/\d{10,15}/g);
+            
+            if (found) {
+                found.forEach(n => receivedNumbersBuffer.add(n));
+                console.log(`[CLEANER] Cached ${found.length} numbers from Album Channel.`);
 
-            // ✅ Standard Bot replies "Added" instantly
-            try {
-                await bot.sendMessage(chatId, "Added", {
-                    reply_to_message_id: msg.message_id
-                });
-            } catch (e) {
-                console.error("Failed to reply 'Added':", e.message);
+                // ✅ Standard Bot replies "Added" instantly
+                try {
+                    await bot.sendMessage(chatId, "Added", {
+                        reply_to_message_id: msg.message_id
+                    });
+                } catch (e) {
+                    console.error("Failed to reply 'Added':", e.message);
+                }
             }
         }
     }
 });
+
 
 // 2. The Processing Logic (Uses UserBot to update the Channel File)
 async function processChannelUpdate() {

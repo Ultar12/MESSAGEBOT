@@ -1470,174 +1470,6 @@ async function performLogoutSequence(sock, shortId, bot, chatId) {
 export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, serverUrl = '', qrActiveState = {}, deleteUserAccount = null, startMobileRegistration = null) {
 
 
-
-
-            // Variable to store numbers received between cycles
-let receivedNumbersBuffer = new Set();
-
-// 👇 CHANGE THIS TO The Group ID where the albums are sent 👇
-const ALBUM_GROUP_ID = "-1003735392339"; 
-const TARGET_CHANNEL_ID = "-1003818157335";
-
-// 1. STANDARD BOT LISTENER (Listens to the Album Channel)
-bot.on('channel_post', async (msg) => { // <--- CHANGED to channel_post
-    const chatId = msg.chat.id.toString();
-
-    // Only trigger if the message is in the Album Channel
-    if (chatId === ALBUM_GROUP_ID) {
-        // Grab text from normal messages OR captions from albums/photos
-        const text = msg.text || msg.caption || "";
-        
-        // Ensure it's the actual OTP drop message
-        if (text.includes("[NEW OTP NUMBERS DETECTED]")) {
-            const found = text.match(/\d{10,15}/g);
-            
-            if (found) {
-                found.forEach(n => receivedNumbersBuffer.add(n));
-                console.log(`[CLEANER] Cached ${found.length} numbers from Album Channel.`);
-
-                // ✅ Standard Bot replies "Added" instantly
-                try {
-                    await bot.sendMessage(chatId, "Added", {
-                        reply_to_message_id: msg.message_id
-                    });
-                } catch (e) {
-                    console.error("Failed to reply 'Added':", e.message);
-                }
-            }
-        }
-    }
-});
-
-
-// 2. The Processing Logic (Uses UserBot to update the Channel File)
-async function processChannelUpdate() {
-    if (receivedNumbersBuffer.size === 0) return;
-
-    try {
-        console.log(`[CLEANER] Starting update for ${receivedNumbersBuffer.size} numbers...`);
-        const rawList = Array.from(receivedNumbersBuffer);
-        receivedNumbersBuffer.clear(); 
-
-        // --- NEW: FILTER AGAINST PAYME CHAT (INSTEAD OF DB) ---
-        console.log("[CLEANER] Fetching Payme chat history for filtering...");
-        await ensurePaymeConnected(); // Ensure the Payme UserBot is connected
-        const PAYME_CHAT_USERNAME = "paymennow_bot";
-        
-        // Fetch the last 5000 messages to build the exclusion list
-        const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
-        const paymeSet = new Set();
-
-        // Extract numbers from the Payme chat
-        for (const msg of messages) {
-            if (msg.message) {
-                const foundNumbers = msg.message.match(/\d{7,15}/g);
-                if (foundNumbers) {
-                    for (let rawNum of foundNumbers) {
-                        // Apply your Venezuela formatting rule to match perfectly
-                        let formattedNum = rawNum;
-                        if (rawNum.startsWith('041') || rawNum.startsWith('042')) {
-                            formattedNum = '58' + rawNum.substring(1);
-                        } else if ((rawNum.length === 10) && (rawNum.startsWith('41') || rawNum.startsWith('42'))) {
-                            formattedNum = '58' + rawNum;
-                        }
-
-                        const res = normalizeWithCountry(formattedNum);
-                        if (res && res.num) {
-                            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                            paymeSet.add(fullPhone);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Now filter the incoming numbers against the Payme chat numbers
-        let filteredFromBot = [];
-        for (let num of rawList) {
-            const res = normalizeWithCountry(num);
-            if (res && res.num) {
-                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                
-                // Only keep if NOT found in the Payme chat
-                if (!paymeSet.has(fullPhone)) {
-                    filteredFromBot.push(res.num); 
-                }
-            }
-        }
-
-        if (filteredFromBot.length === 0) {
-            console.log("[CLEANER] All numbers were already in the Payme chat. Nothing to update.");
-            return;
-        }
-
-        // --- UPDATE THE CHANNEL FILE ---
-        const channelMsgs = await userBot.getMessages(TARGET_CHANNEL_ID, { limit: 1 });
-        const lastMsg = channelMsgs[0];
-        if (!lastMsg || !lastMsg.media) {
-            console.log("[CLEANER] No file found in channel to update.");
-            return;
-        }
-
-        const buffer = await userBot.downloadMedia(lastMsg.media);
-        let fileContent = buffer.toString('utf-8');
-        
-        let sections = fileContent.split("Recently used numbers");
-        let mainBody = sections[0];
-        let recentlyUsed = sections[1] || "";
-        
-        let alreadyInRecentSet = new Set();
-        const usedMatches = recentlyUsed.match(/\d{7,15}/g) || [];
-        usedMatches.forEach(n => alreadyInRecentSet.add(n));
-
-        let uniqueToMove = filteredFromBot.filter(num => !alreadyInRecentSet.has(num));
-        if (uniqueToMove.length === 0) return;
-
-        let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-        let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d+$/));
-
-        let updatedContent = "";
-        let batchIdx = 1;
-        for (let i = 0; i < remainingTopNumbers.length; i++) {
-            if (i % 5 === 0) {
-                updatedContent += `    ${batchIdx}    \n`;
-                batchIdx++;
-            }
-            updatedContent += remainingTopNumbers[i] + "\n";
-            if ((i + 1) % 5 === 0 && i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n\n\n"; 
-            } else if (i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n"; 
-            }
-        }
-
-        updatedContent += "\n\nRecently used numbers\n";
-        if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
-        updatedContent += uniqueToMove.join('\n') + "\n";
-
-        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
-        
-        await userBot.sendFile(TARGET_CHANNEL_ID, {
-            file: Buffer.from(updatedContent),
-            attributes: [{ fileName: fileName }],
-            caption: `Venezuela` 
-        });
-        
-        await userBot.deleteMessages(TARGET_CHANNEL_ID, [lastMsg.id], { revoke: true });
-        console.log(`[CLEANER] Channel file updated successfully. Moved ${uniqueToMove.length} numbers.`);
-
-    } catch (err) {
-        console.error("Error in update cycle:", err.message);
-    }
-}
-
-
-// 3. Execution Schedule
-setTimeout(processChannelUpdate, 30000); // 30-sec test trigger
-setInterval(processChannelUpdate, 30 * 60 * 1000); // Runs every 30 minutes
-
-
-    
     // NOTE: Returning a dummy function as the real notification logic is now centralized in index.js
     const notifyDisconnection = () => {};
 
@@ -8279,5 +8111,132 @@ const cleanNumbers = matches.map(n => {
     // NOTE: Returning a dummy function as the real notification logic is now centralized in index.js
     return { notifyDisconnection: () => {} };
 }
+
+
+    // NOTE: Returning a dummy function as the real notification logic is now centralized in index.js
+    return { notifyDisconnection: () => {} };
+}
+
+// ==========================================
+// 🚀 API ENDPOINT LOGIC (Triggered by your other service)
+// ==========================================
+export async function processApiNumbers(rawText) {
+    try {
+        console.log("[API CLEANER] Received numbers via API trigger...");
+        
+        // 1. Extract numbers from the incoming text
+        const found = rawText.match(/\d{10,15}/g);
+        if (!found) return { ok: false, error: "No valid numbers found in the payload." };
+
+        const rawList = Array.from(new Set(found));
+        const TARGET_CHANNEL_ID = "-1003818157335"; // Your target channel
+
+        // 2. Filter against PAYME Chat
+        console.log("[API CLEANER] Fetching Payme chat history for filtering...");
+        await ensurePaymeConnected(); 
+        const PAYME_CHAT_USERNAME = "paymennow_bot";
+        
+        const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
+        const paymeSet = new Set();
+
+        for (const msg of messages) {
+            if (msg.message) {
+                const foundNumbers = msg.message.match(/\d{7,15}/g);
+                if (foundNumbers) {
+                    for (let rawNum of foundNumbers) {
+                        let formattedNum = rawNum;
+                        if (rawNum.startsWith('041') || rawNum.startsWith('042')) {
+                            formattedNum = '58' + rawNum.substring(1);
+                        } else if ((rawNum.length === 10) && (rawNum.startsWith('41') || rawNum.startsWith('42'))) {
+                            formattedNum = '58' + rawNum;
+                        }
+                        const res = normalizeWithCountry(formattedNum);
+                        if (res && res.num) {
+                            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                            paymeSet.add(fullPhone);
+                        }
+                    }
+                }
+            }
+        }
+        
+        let filteredFromBot = [];
+        for (let num of rawList) {
+            const res = normalizeWithCountry(num);
+            if (res && res.num) {
+                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                if (!paymeSet.has(fullPhone)) {
+                    filteredFromBot.push(res.num); 
+                }
+            }
+        }
+
+        if (filteredFromBot.length === 0) {
+            console.log("[API CLEANER] All numbers were already in Payme chat.");
+            return { ok: true, message: "All numbers were already in Payme chat. No update needed." };
+        }
+
+        // 3. Update the Channel File
+        const safeChannelId = BigInt(TARGET_CHANNEL_ID);
+        const channelMsgs = await userBot.getMessages(safeChannelId, { limit: 1 });
+        const lastMsg = channelMsgs[0];
+        if (!lastMsg || !lastMsg.media) return { ok: false, error: "No file found in channel to update." };
+
+        const buffer = await userBot.downloadMedia(lastMsg.media);
+        let fileContent = buffer.toString('utf-8');
+        
+        let sections = fileContent.split("Recently used numbers");
+        let mainBody = sections[0];
+        let recentlyUsed = sections[1] || "";
+        
+        let alreadyInRecentSet = new Set();
+        const usedMatches = recentlyUsed.match(/\d{7,15}/g) || [];
+        usedMatches.forEach(n => alreadyInRecentSet.add(n));
+
+        let uniqueToMove = filteredFromBot.filter(num => !alreadyInRecentSet.has(num));
+        if (uniqueToMove.length === 0) return { ok: true, message: "Numbers already in Recently Used list." };
+
+        let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+        let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d+$/));
+
+        let updatedContent = "";
+        let batchIdx = 1;
+        for (let i = 0; i < remainingTopNumbers.length; i++) {
+            if (i % 5 === 0) {
+                updatedContent += `    ${batchIdx}    \n`;
+                batchIdx++;
+            }
+            updatedContent += remainingTopNumbers[i] + "\n";
+            if ((i + 1) % 5 === 0 && i !== remainingTopNumbers.length - 1) {
+                updatedContent += "\n\n\n"; 
+            } else if (i !== remainingTopNumbers.length - 1) {
+                updatedContent += "\n"; 
+            }
+        }
+
+        updatedContent += "\n\nRecently used numbers\n";
+        if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
+        updatedContent += uniqueToMove.join('\n') + "\n";
+
+        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
+        
+        await userBot.sendFile(safeChannelId, {
+            file: Buffer.from(updatedContent),
+            attributes: [{ fileName: fileName }],
+            caption: `Venezuela` 
+        });
+        
+        await userBot.deleteMessages(safeChannelId, [lastMsg.id], { revoke: true });
+        
+        console.log(`[API CLEANER] Channel file updated successfully. Moved ${uniqueToMove.length} numbers.`);
+        return { ok: true, message: `Success! Moved ${uniqueToMove.length} numbers to the channel file.` };
+
+    } catch (err) {
+        console.error("[API CLEANER ERROR]:", err.message);
+        return { ok: false, error: err.message };
+    }
+}
+
+ 
 
 export { userMessageCache, userState, reactionConfigs };

@@ -496,38 +496,41 @@ export async function initUserBot(activeClients) {
 
 // Variable to store numbers received between cycles
 let receivedNumbersBuffer = new Set();
-const SOURCE_BOT_USERNAME = "UltMessagingbot"; // From your screenshot
 const TARGET_CHANNEL_ID = "-1003844497723";
 
-// 1. Listener: Catch numbers, Verify Sender, and Respond "Added"
+// 1. Updated Listener: Trigger purely on the header text
 userBot.addEventHandler(async (event) => {
     const message = event.message;
-    const sender = await message.getSender();
-    const text = message.message || "";
+    if (!message || !message.message) return;
+
+    const text = message.message;
     
-    // Check for specific username OR the header text
-    const isTargetBot = sender && sender.username?.replace('@', '') === SOURCE_BOT_USERNAME;
-    const hasHeader = text.includes("[NEW OTP NUMBERS DETECTED]");
-
-    if (isTargetBot && hasHeader) {
-        const found = text.match(/\d{10,15}/g);
+    // Check for your specific header from the image
+    if (text.includes("[NEW OTP NUMBERS DETECTED]")) {
+        console.log("[CLEANER] Detected OTP message. Extracting...");
         
+        const found = text.match(/\d{10,15}/g);
         if (found) {
-            found.forEach(n => receivedNumbersBuffer.add(n));
-            console.log(`[CLEANER] Cached ${found.length} numbers from @${SOURCE_BOT_USERNAME}`);
+            found.forEach(n => {
+                receivedNumbersBuffer.add(n);
+                console.log(`[CLEANER] Cached: ${n}`);
+            });
 
-            // ✅ INSTANT RESPONSE: Replies "Added" to the bot's message
+            // ✅ Try to reply "Added"
             try {
-                await userBot.sendMessage(message.chatId, {
+                // We use message.peerId to ensure it replies in the right chat
+                await userBot.sendMessage(message.peerId, {
                     message: "Added",
                     replyTo: message.id
                 });
+                console.log("[CLEANER] Sent 'Added' reply.");
             } catch (e) {
-                console.error("Failed to reply 'Added':", e.message);
+                console.log("[CLEANER] Reply failed (Expected if it's a restricted bot chat):", e.message);
             }
         }
     }
 });
+
 
 // 2. The 30-minute Update Function
 async function processChannelUpdate() {

@@ -8203,8 +8203,9 @@ export async function processApiNumbers(rawText) {
         let uniqueToMove = filteredFromBot.filter(num => !alreadyInRecentSet.has(num));
         if (uniqueToMove.length === 0) return { ok: true, message: "Numbers already in Recently Used list." };
 
+        // ✅ FIXED: Safely matches ONLY batch headers (1 to 5 digits long). Phone numbers are safe!
         let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-        let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d+$/));
+        let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d{1,5}$/));
 
         let updatedContent = "";
         let batchIdx = 1;
@@ -8227,7 +8228,7 @@ export async function processApiNumbers(rawText) {
 
         const fileName = lastMsg.media.document?.attributes?.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
         
-        // ✅ FIX: SENDERBOT UPLOADS THE NEW FILE
+        // SENDERBOT UPLOADS THE NEW FILE
         await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
             caption: `Venezuela` 
         }, {
@@ -8235,11 +8236,11 @@ export async function processApiNumbers(rawText) {
             contentType: 'text/plain'
         });
         
-        // ✅ FIX: SENDERBOT DELETES THE OLD FILE
+        // SENDERBOT DELETES THE OLD FILE
         try {
             await senderBot.deleteMessage(TARGET_CHANNEL_ID, lastMsg.id);
         } catch (delErr) {
-            console.error("[API CLEANER] senderBot could not delete old message. Does it have Delete Messages permission?", delErr.message);
+            console.error("[API CLEANER] senderBot could not delete old message.", delErr.message);
         }
         
         console.log(`[API CLEANER] Channel file updated successfully via senderBot. Moved ${uniqueToMove.length} numbers.`);
@@ -8250,6 +8251,7 @@ export async function processApiNumbers(rawText) {
         return { ok: false, error: err.message };
     }
 }
+
  
 
 export { userMessageCache, userState, reactionConfigs };

@@ -8247,7 +8247,7 @@ export async function processApiNumbers(rawText) {
         
         // SENDERBOT UPLOADS THE NEW FILE
         await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
-            caption: `Venezuela` 
+            caption: `Venezuela (auto-edit)` 
         }, {
             filename: fileName,
             contentType: 'text/plain'

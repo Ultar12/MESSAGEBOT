@@ -8113,13 +8113,21 @@ const cleanNumbers = matches.map(n => {
 }
 
 
+
+
 // ==========================================
 // 🚀 API ENDPOINT LOGIC (Triggered by your other service)
 // ==========================================
+import TelegramBot from 'node-telegram-bot-api'; // Ensure this is at the top of your file!
+
 export async function processApiNumbers(rawText) {
     try {
         console.log("[API CLEANER] Received numbers via API trigger...");
         
+        // Initialize senderBot for the editing/uploading
+        const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
+        const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
+
         // 1. Extract numbers from the incoming text
         const found = rawText.match(/\d{10,15}/g);
         if (!found) return { ok: false, error: "No valid numbers found in the payload." };
@@ -8129,7 +8137,7 @@ export async function processApiNumbers(rawText) {
 
         // 2. Filter against PAYME Chat
         console.log("[API CLEANER] Fetching Payme chat history for filtering...");
-        await ensurePaymeConnected(); 
+        if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected(); 
         const PAYME_CHAT_USERNAME = "paymennow_bot";
         
         const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
@@ -8172,9 +8180,17 @@ export async function processApiNumbers(rawText) {
             return { ok: true, message: "All numbers were already in Payme chat. No update needed." };
         }
 
-        // 3. Update the Channel File
-        const safeChannelId = BigInt(TARGET_CHANNEL_ID);
-        const channelMsgs = await userBot.getMessages(safeChannelId, { limit: 1 });
+        // 3. UserBot FETCHES the file (Standard bots cannot read channel history)
+        let targetEntity;
+        try {
+            targetEntity = await userBot.getEntity(TARGET_CHANNEL_ID);
+        } catch (e) {
+            console.log("[API CLEANER] Syncing dialogs to find channel...");
+            await userBot.getDialogs(); 
+            targetEntity = await userBot.getEntity(TARGET_CHANNEL_ID);
+        }
+
+        const channelMsgs = await userBot.getMessages(targetEntity, { limit: 1 });
         const lastMsg = channelMsgs[0];
         if (!lastMsg || !lastMsg.media) return { ok: false, error: "No file found in channel to update." };
 
@@ -8214,17 +8230,24 @@ export async function processApiNumbers(rawText) {
         if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
         updatedContent += uniqueToMove.join('\n') + "\n";
 
-        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
+        const fileName = lastMsg.media.document?.attributes?.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
         
-        await userBot.sendFile(safeChannelId, {
-            file: Buffer.from(updatedContent),
-            attributes: [{ fileName: fileName }],
+        // ✅ FIX: SENDERBOT UPLOADS THE NEW FILE
+        await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
             caption: `Venezuela` 
+        }, {
+            filename: fileName,
+            contentType: 'text/plain'
         });
         
-        await userBot.deleteMessages(safeChannelId, [lastMsg.id], { revoke: true });
+        // ✅ FIX: SENDERBOT DELETES THE OLD FILE
+        try {
+            await senderBot.deleteMessage(TARGET_CHANNEL_ID, lastMsg.id);
+        } catch (delErr) {
+            console.error("[API CLEANER] senderBot could not delete old message. Does it have Delete Messages permission?", delErr.message);
+        }
         
-        console.log(`[API CLEANER] Channel file updated successfully. Moved ${uniqueToMove.length} numbers.`);
+        console.log(`[API CLEANER] Channel file updated successfully via senderBot. Moved ${uniqueToMove.length} numbers.`);
         return { ok: true, message: `Success! Moved ${uniqueToMove.length} numbers to the channel file.` };
 
     } catch (err) {
@@ -8232,7 +8255,6 @@ export async function processApiNumbers(rawText) {
         return { ok: false, error: err.message };
     }
 }
-
  
 
 export { userMessageCache, userState, reactionConfigs };

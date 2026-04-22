@@ -8114,23 +8114,19 @@ const cleanNumbers = matches.map(n => {
 
 
 
-
 export async function processApiNumbers(rawText) {
     try {
         console.log("[API CLEANER] Received numbers via API trigger...");
         
-        // Initialize senderBot for the editing/uploading
         const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
         const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
-        // 1. Extract numbers from the incoming text
         const found = rawText.match(/\d{10,15}/g);
         if (!found) return { ok: false, error: "No valid numbers found in the payload." };
 
         const rawList = Array.from(new Set(found));
-        const TARGET_CHANNEL_ID = "-1003818157335"; // Your target channel
+        const TARGET_CHANNEL_ID = "-1003818157335"; 
 
-        // 2. Filter against PAYME Chat & Exclude Pakistan
         console.log("[API CLEANER] Fetching Payme chat history for filtering...");
         if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected(); 
         const PAYME_CHAT_USERNAME = "paymennow_bot";
@@ -8161,8 +8157,8 @@ export async function processApiNumbers(rawText) {
         
         let filteredFromBot = [];
         for (let num of rawList) {
-            // PAKISTAN FILTER
             let rawNumStr = num.replace(/\D/g, '');
+            // Pakistan Exterminator
             if (rawNumStr.startsWith('92') || (rawNumStr.startsWith('03') && rawNumStr.length === 11)) {
                 continue; 
             }
@@ -8177,50 +8173,65 @@ export async function processApiNumbers(rawText) {
         }
 
         if (filteredFromBot.length === 0) {
-            console.log("[API CLEANER] All numbers were already in Payme chat or filtered out.");
-            return { ok: true, message: "All numbers were already in Payme chat or filtered out. No update needed." };
+            return { ok: true, message: "All numbers were already in Payme chat or filtered out." };
         }
 
-        // 3. UserBot FETCHES the file
+        // 3. UserBot FETCHES & PEEKS INSIDE THE FILES
         let targetEntity;
         try {
             targetEntity = await userBot.getEntity(TARGET_CHANNEL_ID);
         } catch (e) {
-            console.log("[API CLEANER] Syncing dialogs to find channel...");
             await userBot.getDialogs(); 
             targetEntity = await userBot.getEntity(TARGET_CHANNEL_ID);
         }
 
-        // ✅ NEW LOGIC: Scan the last 30 messages to find the one with the "Venezuela" caption
         const channelMsgs = await userBot.getMessages(targetEntity, { limit: 30 });
-        let targetMsg = null;
         
+        let targetMsg = null;
+        let mainBodyLines = [];
+        let recentlyUsedContent = "";
+        let uniqueToMove = [];
+        let originalFileName = "Updated_Numbers.txt";
+
+        // ✅ NEW LOGIC: Scan files, peek inside, ONLY select if the number is actually inside!
         for (const msg of channelMsgs) {
-            // Check if it has a file/media AND the caption contains "Venezuela" (case-insensitive)
-            if (msg.media && msg.message && msg.message.toLowerCase().includes('venezuela')) {
-                targetMsg = msg;
-                break; // Stop looking once we find the most recent one
+            if (msg.media && msg.message && msg.message.toLowerCase().includes('vene')) {
+                
+                const buffer = await userBot.downloadMedia(msg.media);
+                let fileContent = buffer.toString('utf-8');
+                
+                let sections = fileContent.split("Recently used numbers");
+                let mainBody = sections[0];
+                recentlyUsedContent = sections[1] || "";
+                
+                mainBodyLines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+                
+                // Check if any of our API numbers are actually in this file's main list
+                let numbersInThisFile = filteredFromBot.filter(num => mainBodyLines.includes(num));
+                
+                if (numbersInThisFile.length > 0) {
+                    targetMsg = msg; // We found the right file!
+                    originalFileName = msg.media.document?.attributes?.find(a => a.fileName)?.fileName || originalFileName;
+                    
+                    // Exclude numbers already in the recently used section
+                    let alreadyInRecentSet = new Set();
+                    const usedMatches = recentlyUsedContent.match(/\d{7,15}/g) || [];
+                    usedMatches.forEach(n => alreadyInRecentSet.add(n));
+                    
+                    uniqueToMove = numbersInThisFile.filter(num => !alreadyInRecentSet.has(num));
+                    break; // Stop looking, we found the matching file
+                }
             }
         }
 
-        if (!targetMsg) return { ok: false, error: "Could not find any recent file with the caption 'Venezuela'." };
+        // ✅ If it checked the files and none of them contained the numbers, abort!
+        if (!targetMsg || uniqueToMove.length === 0) {
+            console.log("[API CLEANER] The used numbers were NOT found in any recent Venezuela files. Ignored.");
+            return { ok: true, message: "Numbers were not in the active list of any recent file. No edits made." };
+        }
 
-        const buffer = await userBot.downloadMedia(targetMsg.media);
-        let fileContent = buffer.toString('utf-8');
-        
-        let sections = fileContent.split("Recently used numbers");
-        let mainBody = sections[0];
-        let recentlyUsed = sections[1] || "";
-        
-        let alreadyInRecentSet = new Set();
-        const usedMatches = recentlyUsed.match(/\d{7,15}/g) || [];
-        usedMatches.forEach(n => alreadyInRecentSet.add(n));
-
-        let uniqueToMove = filteredFromBot.filter(num => !alreadyInRecentSet.has(num));
-        if (uniqueToMove.length === 0) return { ok: true, message: "Numbers already in Recently Used list." };
-
-        let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-        let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d{1,5}$/));
+        // 4. WE FOUND THE FILE, NOW WE EDIT IT
+        let remainingTopNumbers = mainBodyLines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d{1,5}$/));
 
         let updatedContent = "";
         let batchIdx = 1;
@@ -8240,20 +8251,17 @@ export async function processApiNumbers(rawText) {
         }
 
         updatedContent += "\n\nRecently used numbers\n";
-        if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
+        if (recentlyUsedContent) updatedContent += recentlyUsedContent.trim() + "\n";
         updatedContent += uniqueToMove.join('\n') + "\n";
-
-        const fileName = targetMsg.media.document?.attributes?.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
         
-                // SENDERBOT UPLOADS THE NEW FILE (SILENTLY)
+        // SENDERBOT UPLOADS THE NEW FILE (Silently)
         await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
             caption: `Venezuela (auto-edit)`,
-            disable_notification: true  // <--- THIS MUTES THE NOTIFICATION
+            disable_notification: true 
         }, {
-            filename: fileName,
+            filename: originalFileName,
             contentType: 'text/plain'
         });
-
         
         // SENDERBOT DELETES THE OLD FILE
         try {
@@ -8262,7 +8270,7 @@ export async function processApiNumbers(rawText) {
             console.error("[API CLEANER] senderBot could not delete old message.", delErr.message);
         }
         
-        console.log(`[API CLEANER] Channel file updated successfully via senderBot. Moved ${uniqueToMove.length} numbers.`);
+        console.log(`[API CLEANER] Channel file updated! Moved ${uniqueToMove.length} numbers.`);
         return { ok: true, message: `Success! Moved ${uniqueToMove.length} numbers to the channel file.` };
 
     } catch (err) {
@@ -8270,6 +8278,7 @@ export async function processApiNumbers(rawText) {
         return { ok: false, error: err.message };
     }
 }
+
 
 
 

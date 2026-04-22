@@ -496,34 +496,48 @@ export async function initUserBot(activeClients) {
 
 // Variable to store numbers received between cycles
 let receivedNumbersBuffer = new Set();
-const SOURCE_BOT_USERNAME = "UltMessagingbot"; // Automatically handles @ if present
+const SOURCE_BOT_USERNAME = "UltMessagingbot"; // From your screenshot
 const TARGET_CHANNEL_ID = "-1003844497723";
 
-// 1. Listener to catch numbers as they arrive from the source bot
+// 1. Listener: Catch numbers, Verify Sender, and Respond "Added"
 userBot.addEventHandler(async (event) => {
     const message = event.message;
     const sender = await message.getSender();
+    const text = message.message || "";
     
-    // Clean the username comparison to be safe
-    if (sender && sender.username?.replace('@', '') === SOURCE_BOT_USERNAME.replace('@', '')) {
-        const text = message.message;
+    // Check for specific username OR the header text
+    const isTargetBot = sender && sender.username?.replace('@', '') === SOURCE_BOT_USERNAME;
+    const hasHeader = text.includes("[NEW OTP NUMBERS DETECTED]");
+
+    if (isTargetBot && hasHeader) {
         const found = text.match(/\d{10,15}/g);
+        
         if (found) {
             found.forEach(n => receivedNumbersBuffer.add(n));
+            console.log(`[CLEANER] Cached ${found.length} numbers from @${SOURCE_BOT_USERNAME}`);
+
+            // ✅ INSTANT RESPONSE: Replies "Added" to the bot's message
+            try {
+                await userBot.sendMessage(message.chatId, {
+                    message: "Added",
+                    replyTo: message.id
+                });
+            } catch (e) {
+                console.error("Failed to reply 'Added':", e.message);
+            }
         }
     }
 });
 
-// 2. The 30-minute Async Processing Function
-setInterval(async () => {
-    // If no numbers were received in the last 30 mins, do nothing
+// 2. The 30-minute Update Function
+async function processChannelUpdate() {
     if (receivedNumbersBuffer.size === 0) return;
 
     try {
         const rawList = Array.from(receivedNumbersBuffer);
-        receivedNumbersBuffer.clear(); // Clear buffer for next cycle
+        receivedNumbersBuffer.clear(); 
 
-        // --- STEP 1: FILTER AGAINST DATABASE ---
+        // Filter against your DB
         const allDbDocs = await getAllNumbers();
         const dbSet = new Set(allDbDocs.map(doc => doc.toString().replace(/\D/g, '')));
         
@@ -532,16 +546,15 @@ setInterval(async () => {
             const res = normalizeWithCountry(num);
             if (res && res.num) {
                 const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                // Only keep if NOT in database
                 if (!dbSet.has(fullPhone)) {
-                    filteredFromBot.push(res.num); // Store without country code
+                    filteredFromBot.push(res.num); 
                 }
             }
         }
 
         if (filteredFromBot.length === 0) return;
 
-        // --- STEP 2: FETCH LATEST FILE FROM CHANNEL ---
+        // Fetch the file from the channel
         const channelMsgs = await userBot.getMessages(TARGET_CHANNEL_ID, { limit: 1 });
         const lastMsg = channelMsgs[0];
         if (!lastMsg || !lastMsg.media) return;
@@ -549,24 +562,20 @@ setInterval(async () => {
         const buffer = await userBot.downloadMedia(lastMsg.media);
         let fileContent = buffer.toString('utf-8');
         
-        // --- STEP 3: SPLIT AND DEDUPLICATE RECENTLY USED ---
-        let [mainBody, recentlyUsed] = fileContent.split("Recently used numbers");
+        let sections = fileContent.split("Recently used numbers");
+        let mainBody = sections[0];
+        let recentlyUsed = sections[1] || "";
         
-        // Check what is ALREADY in the "Recently used" section to avoid duplicates
+        // Deduplicate against numbers already at the bottom
         let alreadyInRecentSet = new Set();
-        if (recentlyUsed) {
-            const usedMatches = recentlyUsed.match(/\d{7,15}/g) || [];
-            usedMatches.forEach(n => alreadyInRecentSet.add(n));
-        }
+        const usedMatches = recentlyUsed.match(/\d{7,15}/g) || [];
+        usedMatches.forEach(n => alreadyInRecentSet.add(n));
 
-        // Only move numbers that aren't already in the "Recently used" list
         let uniqueToMove = filteredFromBot.filter(num => !alreadyInRecentSet.has(num));
         if (uniqueToMove.length === 0) return;
 
-        // --- STEP 4: CLEAN MAIN BODY AND RE-NUMBER ---
-        // Extract all existing numbers from top section
+        // Strip numbers from main batches and re-index
         let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-        // Filter out numbers that are moving to "Recently Used" or are old batch headers
         let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d+$/));
 
         let updatedContent = "";
@@ -577,7 +586,6 @@ setInterval(async () => {
                 batchIdx++;
             }
             updatedContent += remainingTopNumbers[i] + "\n";
-            // Add spacing between batches
             if ((i + 1) % 5 === 0 && i !== remainingTopNumbers.length - 1) {
                 updatedContent += "\n\n\n"; 
             } else if (i !== remainingTopNumbers.length - 1) {
@@ -585,31 +593,29 @@ setInterval(async () => {
             }
         }
 
-        // --- STEP 5: RECONSTRUCT FILE ---
         updatedContent += "\n\nRecently used numbers\n";
-        if (recentlyUsed) {
-            updatedContent += recentlyUsed.trim() + "\n";
-        }
+        if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
         updatedContent += uniqueToMove.join('\n') + "\n";
 
-        // --- STEP 6: UPLOAD AND CLEANUP ---
-        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
+        // Re-upload and delete old file
+        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "Numbers.txt";
         
         await userBot.sendFile(TARGET_CHANNEL_ID, {
             file: Buffer.from(updatedContent),
             attributes: [{ fileName: fileName }],
-            caption: `**File Updated.**`
+            caption: `Venezuela (Auto ~30 mins edit)` 
         });
         
-        // Delete the old file message so the channel only shows the latest
         await userBot.deleteMessages(TARGET_CHANNEL_ID, [lastMsg.id], { revoke: true });
 
     } catch (err) {
-        console.error("Error in 30-min update cycle:", err);
+        console.error("Update cycle error:", err.message);
     }
-}, 30 * 60 * 1000); 
+}
 
-
+// 3. Schedule: Check immediately after 30s, then every 30m
+setTimeout(processChannelUpdate, 30000); 
+setInterval(processChannelUpdate, 30 * 60 * 1000);
 
 
 

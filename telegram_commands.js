@@ -8245,13 +8245,15 @@ export async function processApiNumbers(rawText) {
 
         const fileName = targetMsg.media.document?.attributes?.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
         
-        // SENDERBOT UPLOADS THE NEW FILE
+                // SENDERBOT UPLOADS THE NEW FILE (SILENTLY)
         await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
-            caption: `Venezuela (auto-edit)` 
+            caption: `Venezuela (auto-edit)`,
+            disable_notification: true  // <--- THIS MUTES THE NOTIFICATION
         }, {
             filename: fileName,
             contentType: 'text/plain'
         });
+
         
         // SENDERBOT DELETES THE OLD FILE
         try {

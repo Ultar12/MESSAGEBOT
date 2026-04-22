@@ -8115,11 +8115,6 @@ const cleanNumbers = matches.map(n => {
 
 
 
-// ==========================================
-// 🚀 API ENDPOINT LOGIC (Triggered by your other service)
-// ==========================================
-import TelegramBot from 'node-telegram-bot-api'; // Ensure this is at the top of your file!
-
 export async function processApiNumbers(rawText) {
     try {
         console.log("[API CLEANER] Received numbers via API trigger...");

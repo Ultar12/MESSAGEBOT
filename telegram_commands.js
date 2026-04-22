@@ -494,73 +494,109 @@ export async function initUserBot(activeClients) {
 
 
 
-// Variable to store numbers received between cycles
+
+        // Variable to store numbers received between cycles
 let receivedNumbersBuffer = new Set();
+
+// 👇 CHANGE THIS TO The Group ID where the albums are sent 👇
+const ALBUM_GROUP_ID = "-1003735392339"; 
 const TARGET_CHANNEL_ID = "-1003818157335";
 
-// 1. Updated Listener: Trigger purely on the header text
-userBot.addEventHandler(async (event) => {
-    const message = event.message;
-    if (!message || !message.message) return;
+// 1. STANDARD BOT LISTENER (Listens to the Album Group)
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id.toString();
 
-    const text = message.message;
-    
-    // Check for your specific header from the image
-    if (text.includes("[NEW OTP NUMBERS DETECTED]")) {
-        console.log("[CLEANER] Detected OTP message. Extracting...");
+    // Only trigger if the message is in the Album Group
+    if (chatId === ALBUM_GROUP_ID) {
+        // Grab text from normal messages OR captions from albums/photos
+        const text = msg.text || msg.caption || "";
         
         const found = text.match(/\d{10,15}/g);
+        
         if (found) {
-            found.forEach(n => {
-                receivedNumbersBuffer.add(n);
-                console.log(`[CLEANER] Cached: ${n}`);
-            });
+            found.forEach(n => receivedNumbersBuffer.add(n));
+            console.log(`[CLEANER] Cached ${found.length} numbers from Album Group.`);
 
-            // ✅ Try to reply "Added"
+            // ✅ Standard Bot replies "Added" instantly
             try {
-                // We use message.peerId to ensure it replies in the right chat
-                await userBot.sendMessage(message.peerId, {
-                    message: "Added",
-                    replyTo: message.id
+                await bot.sendMessage(chatId, "Added", {
+                    reply_to_message_id: msg.message_id
                 });
-                console.log("[CLEANER] Sent 'Added' reply.");
             } catch (e) {
-                console.log("[CLEANER] Reply failed (Expected if it's a restricted bot chat):", e.message);
+                console.error("Failed to reply 'Added':", e.message);
             }
         }
     }
 });
 
-
-// 2. The 30-minute Update Function
+// 2. The Processing Logic (Uses UserBot to update the Channel File)
 async function processChannelUpdate() {
     if (receivedNumbersBuffer.size === 0) return;
 
     try {
+        console.log(`[CLEANER] Starting update for ${receivedNumbersBuffer.size} numbers...`);
         const rawList = Array.from(receivedNumbersBuffer);
         receivedNumbersBuffer.clear(); 
 
-        // Filter against your DB
-        const allDbDocs = await getAllNumbers();
-        const dbSet = new Set(allDbDocs.map(doc => doc.toString().replace(/\D/g, '')));
+        // --- NEW: FILTER AGAINST PAYME CHAT (INSTEAD OF DB) ---
+        console.log("[CLEANER] Fetching Payme chat history for filtering...");
+        await ensurePaymeConnected(); // Ensure the Payme UserBot is connected
+        const PAYME_CHAT_USERNAME = "paymennow_bot";
         
+        // Fetch the last 5000 messages to build the exclusion list
+        const messages = await paymeUserBot.getMessages(PAYME_CHAT_USERNAME, { limit: 5000 });
+        const paymeSet = new Set();
+
+        // Extract numbers from the Payme chat
+        for (const msg of messages) {
+            if (msg.message) {
+                const foundNumbers = msg.message.match(/\d{7,15}/g);
+                if (foundNumbers) {
+                    for (let rawNum of foundNumbers) {
+                        // Apply your Venezuela formatting rule to match perfectly
+                        let formattedNum = rawNum;
+                        if (rawNum.startsWith('041') || rawNum.startsWith('042')) {
+                            formattedNum = '58' + rawNum.substring(1);
+                        } else if ((rawNum.length === 10) && (rawNum.startsWith('41') || rawNum.startsWith('42'))) {
+                            formattedNum = '58' + rawNum;
+                        }
+
+                        const res = normalizeWithCountry(formattedNum);
+                        if (res && res.num) {
+                            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                            paymeSet.add(fullPhone);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Now filter the incoming numbers against the Payme chat numbers
         let filteredFromBot = [];
         for (let num of rawList) {
             const res = normalizeWithCountry(num);
             if (res && res.num) {
                 const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                if (!dbSet.has(fullPhone)) {
+                
+                // Only keep if NOT found in the Payme chat
+                if (!paymeSet.has(fullPhone)) {
                     filteredFromBot.push(res.num); 
                 }
             }
         }
 
-        if (filteredFromBot.length === 0) return;
+        if (filteredFromBot.length === 0) {
+            console.log("[CLEANER] All numbers were already in the Payme chat. Nothing to update.");
+            return;
+        }
 
-        // Fetch the file from the channel
+        // --- UPDATE THE CHANNEL FILE ---
         const channelMsgs = await userBot.getMessages(TARGET_CHANNEL_ID, { limit: 1 });
         const lastMsg = channelMsgs[0];
-        if (!lastMsg || !lastMsg.media) return;
+        if (!lastMsg || !lastMsg.media) {
+            console.log("[CLEANER] No file found in channel to update.");
+            return;
+        }
 
         const buffer = await userBot.downloadMedia(lastMsg.media);
         let fileContent = buffer.toString('utf-8');
@@ -569,7 +605,6 @@ async function processChannelUpdate() {
         let mainBody = sections[0];
         let recentlyUsed = sections[1] || "";
         
-        // Deduplicate against numbers already at the bottom
         let alreadyInRecentSet = new Set();
         const usedMatches = recentlyUsed.match(/\d{7,15}/g) || [];
         usedMatches.forEach(n => alreadyInRecentSet.add(n));
@@ -577,7 +612,6 @@ async function processChannelUpdate() {
         let uniqueToMove = filteredFromBot.filter(num => !alreadyInRecentSet.has(num));
         if (uniqueToMove.length === 0) return;
 
-        // Strip numbers from main batches and re-index
         let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
         let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d+$/));
 
@@ -600,25 +634,26 @@ async function processChannelUpdate() {
         if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
         updatedContent += uniqueToMove.join('\n') + "\n";
 
-        // Re-upload and delete old file
-        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "Numbers.txt";
+        const fileName = lastMsg.media.document.attributes.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
         
         await userBot.sendFile(TARGET_CHANNEL_ID, {
             file: Buffer.from(updatedContent),
             attributes: [{ fileName: fileName }],
-            caption: `Venezuela (Auto ~30 mins edit)` 
+            caption: `Venezuela` 
         });
         
         await userBot.deleteMessages(TARGET_CHANNEL_ID, [lastMsg.id], { revoke: true });
+        console.log(`[CLEANER] Channel file updated successfully. Moved ${uniqueToMove.length} numbers.`);
 
     } catch (err) {
-        console.error("Update cycle error:", err.message);
+        console.error("Error in update cycle:", err.message);
     }
 }
 
-// 3. Schedule: Check immediately after 30s, then every 30m
-setTimeout(processChannelUpdate, 30000); 
-setInterval(processChannelUpdate, 30 * 60 * 1000);
+
+// 3. Execution Schedule
+setTimeout(processChannelUpdate, 30000); // 30-sec test trigger
+setInterval(processChannelUpdate, 30 * 60 * 1000); // Runs every 30 minutes
 
 
 

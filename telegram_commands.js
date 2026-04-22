@@ -8130,7 +8130,7 @@ export async function processApiNumbers(rawText) {
         const rawList = Array.from(new Set(found));
         const TARGET_CHANNEL_ID = "-1003818157335"; // Your target channel
 
-        // 2. Filter against PAYME Chat
+        // 2. Filter against PAYME Chat & Exclude Pakistan
         console.log("[API CLEANER] Fetching Payme chat history for filtering...");
         if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected(); 
         const PAYME_CHAT_USERNAME = "paymennow_bot";
@@ -8161,6 +8161,13 @@ export async function processApiNumbers(rawText) {
         
         let filteredFromBot = [];
         for (let num of rawList) {
+            // ✅ PAKISTAN FILTER: Skips numbers starting with 92 or 03 (local Pakistan format)
+            let rawNumStr = num.replace(/\D/g, '');
+            if (rawNumStr.startsWith('92') || (rawNumStr.startsWith('03') && rawNumStr.length === 11)) {
+                console.log(`[API CLEANER] Skipped Pakistan number: ${num}`);
+                continue; 
+            }
+
             const res = normalizeWithCountry(num);
             if (res && res.num) {
                 const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
@@ -8171,11 +8178,11 @@ export async function processApiNumbers(rawText) {
         }
 
         if (filteredFromBot.length === 0) {
-            console.log("[API CLEANER] All numbers were already in Payme chat.");
-            return { ok: true, message: "All numbers were already in Payme chat. No update needed." };
+            console.log("[API CLEANER] All numbers were already in Payme chat or filtered out.");
+            return { ok: true, message: "All numbers were already in Payme chat or filtered out. No update needed." };
         }
 
-        // 3. UserBot FETCHES the file (Standard bots cannot read channel history)
+        // 3. UserBot FETCHES the file
         let targetEntity;
         try {
             targetEntity = await userBot.getEntity(TARGET_CHANNEL_ID);
@@ -8203,7 +8210,6 @@ export async function processApiNumbers(rawText) {
         let uniqueToMove = filteredFromBot.filter(num => !alreadyInRecentSet.has(num));
         if (uniqueToMove.length === 0) return { ok: true, message: "Numbers already in Recently Used list." };
 
-        // ✅ FIXED: Safely matches ONLY batch headers (1 to 5 digits long). Phone numbers are safe!
         let lines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
         let remainingTopNumbers = lines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d{1,5}$/));
 
@@ -8214,11 +8220,14 @@ export async function processApiNumbers(rawText) {
                 updatedContent += `    ${batchIdx}    \n`;
                 batchIdx++;
             }
-            updatedContent += remainingTopNumbers[i] + "\n";
+            
+            // ✅ FORMATTING FIX: Removed the extra \n that was causing blank lines between numbers
+            updatedContent += remainingTopNumbers[i];
+            
             if ((i + 1) % 5 === 0 && i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n\n\n"; 
+                updatedContent += "\n\n\n"; // Big gap between batches
             } else if (i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n"; 
+                updatedContent += "\n"; // Just one line break to the next number
             }
         }
 

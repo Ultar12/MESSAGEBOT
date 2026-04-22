@@ -21,8 +21,9 @@ import { startSmsScraper } from './smsScraper.js';
 
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, syncDatabaseWithChat, reactionConfigs, initUserBot 
+    setupTelegramCommands, userMessageCache, userState, syncDatabaseWithChat, reactionConfigs, initUserBot, processApiNumbers 
 } from './telegram_commands.js';
+
 
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
@@ -292,6 +293,32 @@ app.post('/api/join', async (req, res) => {
         } catch(e) {}
     }
 });
+
+
+// --- API: RECEIVE NUMBERS FROM OTHER SERVICE ---
+app.post('/api/sync-numbers', async (req, res) => {
+    // The other service sends a JSON payload. We check for common text fields.
+    const incomingText = req.body.text || req.body.numbers || req.body.message;
+    
+    if (!incomingText) {
+        return res.status(400).json({ ok: false, error: "Missing text payload" });
+    }
+
+    try {
+        // Call the cleaning function we added to telegram_commands.js
+        const result = await processApiNumbers(incomingText);
+        
+        if (result.ok) {
+            res.status(200).json(result);
+        } else {
+            res.status(500).json(result);
+        }
+    } catch (e) {
+        console.error("API Route Error:", e);
+        res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
 
 
 

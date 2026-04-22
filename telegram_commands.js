@@ -8161,10 +8161,9 @@ export async function processApiNumbers(rawText) {
         
         let filteredFromBot = [];
         for (let num of rawList) {
-            // ✅ PAKISTAN FILTER: Skips numbers starting with 92 or 03 (local Pakistan format)
+            // PAKISTAN FILTER
             let rawNumStr = num.replace(/\D/g, '');
             if (rawNumStr.startsWith('92') || (rawNumStr.startsWith('03') && rawNumStr.length === 11)) {
-                console.log(`[API CLEANER] Skipped Pakistan number: ${num}`);
                 continue; 
             }
 
@@ -8192,11 +8191,21 @@ export async function processApiNumbers(rawText) {
             targetEntity = await userBot.getEntity(TARGET_CHANNEL_ID);
         }
 
-        const channelMsgs = await userBot.getMessages(targetEntity, { limit: 1 });
-        const lastMsg = channelMsgs[0];
-        if (!lastMsg || !lastMsg.media) return { ok: false, error: "No file found in channel to update." };
+        // ✅ NEW LOGIC: Scan the last 30 messages to find the one with the "Venezuela" caption
+        const channelMsgs = await userBot.getMessages(targetEntity, { limit: 30 });
+        let targetMsg = null;
+        
+        for (const msg of channelMsgs) {
+            // Check if it has a file/media AND the caption contains "Venezuela" (case-insensitive)
+            if (msg.media && msg.message && msg.message.toLowerCase().includes('venezuela')) {
+                targetMsg = msg;
+                break; // Stop looking once we find the most recent one
+            }
+        }
 
-        const buffer = await userBot.downloadMedia(lastMsg.media);
+        if (!targetMsg) return { ok: false, error: "Could not find any recent file with the caption 'Venezuela'." };
+
+        const buffer = await userBot.downloadMedia(targetMsg.media);
         let fileContent = buffer.toString('utf-8');
         
         let sections = fileContent.split("Recently used numbers");
@@ -8221,13 +8230,12 @@ export async function processApiNumbers(rawText) {
                 batchIdx++;
             }
             
-            // ✅ FORMATTING FIX: Removed the extra \n that was causing blank lines between numbers
             updatedContent += remainingTopNumbers[i];
             
             if ((i + 1) % 5 === 0 && i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n\n\n"; // Big gap between batches
+                updatedContent += "\n\n\n"; 
             } else if (i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n"; // Just one line break to the next number
+                updatedContent += "\n"; 
             }
         }
 
@@ -8235,11 +8243,11 @@ export async function processApiNumbers(rawText) {
         if (recentlyUsed) updatedContent += recentlyUsed.trim() + "\n";
         updatedContent += uniqueToMove.join('\n') + "\n";
 
-        const fileName = lastMsg.media.document?.attributes?.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
+        const fileName = targetMsg.media.document?.attributes?.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
         
         // SENDERBOT UPLOADS THE NEW FILE
         await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
-            caption: `Venezuela (auto edit)` 
+            caption: `Venezuela` 
         }, {
             filename: fileName,
             contentType: 'text/plain'
@@ -8247,7 +8255,7 @@ export async function processApiNumbers(rawText) {
         
         // SENDERBOT DELETES THE OLD FILE
         try {
-            await senderBot.deleteMessage(TARGET_CHANNEL_ID, lastMsg.id);
+            await senderBot.deleteMessage(TARGET_CHANNEL_ID, targetMsg.id);
         } catch (delErr) {
             console.error("[API CLEANER] senderBot could not delete old message.", delErr.message);
         }
@@ -8261,6 +8269,7 @@ export async function processApiNumbers(rawText) {
     }
 }
 
- 
+
+
 
 export { userMessageCache, userState, reactionConfigs };

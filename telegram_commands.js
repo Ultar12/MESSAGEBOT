@@ -8114,6 +8114,7 @@ const cleanNumbers = matches.map(n => {
 
 
 
+
 export async function processApiNumbers(rawText) {
     try {
         console.log("[API CLEANER] Received numbers via API trigger...");
@@ -8176,7 +8177,7 @@ export async function processApiNumbers(rawText) {
             return { ok: true, message: "All numbers were already in Payme chat or filtered out." };
         }
 
-        // 3. UserBot FETCHES & PEEKS INSIDE THE FILES
+        // 3. UserBot FETCHES & PEEKS INSIDE MULTIPLE FILES
         let targetEntity;
         try {
             targetEntity = await userBot.getEntity(TARGET_CHANNEL_ID);
@@ -8187,14 +8188,15 @@ export async function processApiNumbers(rawText) {
 
         const channelMsgs = await userBot.getMessages(targetEntity, { limit: 30 });
         
-        let targetMsg = null;
-        let mainBodyLines = [];
-        let recentlyUsedContent = "";
-        let uniqueToMove = [];
-        let originalFileName = "Updated_Numbers.txt";
+        // ✅ NEW: The "Checklist" system
+        let numbersLeftToFind = [...filteredFromBot];
+        let totalMoved = 0;
+        let filesEdited = 0;
 
-        // ✅ NEW LOGIC: Scan files, peek inside, ONLY select if the number is actually inside!
         for (const msg of channelMsgs) {
+            // If we crossed off every number from the API, stop scanning older files
+            if (numbersLeftToFind.length === 0) break; 
+
             if (msg.media && msg.message && msg.message.toLowerCase().includes('vene')) {
                 
                 const buffer = await userBot.downloadMedia(msg.media);
@@ -8202,84 +8204,85 @@ export async function processApiNumbers(rawText) {
                 
                 let sections = fileContent.split("Recently used numbers");
                 let mainBody = sections[0];
-                recentlyUsedContent = sections[1] || "";
+                let recentlyUsedContent = sections[1] || "";
                 
-                mainBodyLines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+                let mainBodyLines = mainBody.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
                 
-                // Check if any of our API numbers are actually in this file's main list
-                let numbersInThisFile = filteredFromBot.filter(num => mainBodyLines.includes(num));
+                // Check if any REMAINING numbers on our checklist are in THIS specific file
+                let numbersInThisFile = numbersLeftToFind.filter(num => mainBodyLines.includes(num));
                 
                 if (numbersInThisFile.length > 0) {
-                    targetMsg = msg; // We found the right file!
-                    originalFileName = msg.media.document?.attributes?.find(a => a.fileName)?.fileName || originalFileName;
+                    const originalFileName = msg.media.document?.attributes?.find(a => a.fileName)?.fileName || "Updated_Numbers.txt";
+                    const originalCaption = msg.message; // Uses whatever caption it originally had
                     
-                    // Exclude numbers already in the recently used section
                     let alreadyInRecentSet = new Set();
                     const usedMatches = recentlyUsedContent.match(/\d{7,15}/g) || [];
                     usedMatches.forEach(n => alreadyInRecentSet.add(n));
                     
-                    uniqueToMove = numbersInThisFile.filter(num => !alreadyInRecentSet.has(num));
-                    break; // Stop looking, we found the matching file
+                    let uniqueToMove = numbersInThisFile.filter(num => !alreadyInRecentSet.has(num));
+                    
+                    // 4. WE FOUND SOME! EDIT THIS SPECIFIC FILE
+                    if (uniqueToMove.length > 0) {
+                        let remainingTopNumbers = mainBodyLines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d{1,5}$/));
+
+                        let updatedContent = "";
+                        let batchIdx = 1;
+                        for (let i = 0; i < remainingTopNumbers.length; i++) {
+                            if (i % 5 === 0) {
+                                updatedContent += `    ${batchIdx}    \n`;
+                                batchIdx++;
+                            }
+                            
+                            updatedContent += remainingTopNumbers[i];
+                            
+                            if ((i + 1) % 5 === 0 && i !== remainingTopNumbers.length - 1) {
+                                updatedContent += "\n\n\n"; 
+                            } else if (i !== remainingTopNumbers.length - 1) {
+                                updatedContent += "\n"; 
+                            }
+                        }
+
+                        updatedContent += "\n\nRecently used numbers\n";
+                        if (recentlyUsedContent) updatedContent += recentlyUsedContent.trim() + "\n";
+                        updatedContent += uniqueToMove.join('\n') + "\n";
+                        
+                        // SENDERBOT UPLOADS THE NEW FILE
+                        await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
+                            caption: originalCaption, // Keeps the exact caption!
+                            disable_notification: true 
+                        }, {
+                            filename: originalFileName,
+                            contentType: 'text/plain'
+                        });
+                        
+                        // SENDERBOT DELETES THE OLD FILE
+                        try {
+                            await senderBot.deleteMessage(TARGET_CHANNEL_ID, msg.id);
+                        } catch (delErr) { }
+                        
+                        totalMoved += uniqueToMove.length;
+                        filesEdited++;
+                    }
+                    
+                    // Cross these numbers off the checklist so we don't look for them in older files
+                    numbersLeftToFind = numbersLeftToFind.filter(n => !numbersInThisFile.includes(n));
                 }
             }
         }
 
-        // ✅ If it checked the files and none of them contained the numbers, abort!
-        if (!targetMsg || uniqueToMove.length === 0) {
+        if (filesEdited === 0) {
             console.log("[API CLEANER] The used numbers were NOT found in any recent Venezuela files. Ignored.");
             return { ok: true, message: "Numbers were not in the active list of any recent file. No edits made." };
         }
 
-        // 4. WE FOUND THE FILE, NOW WE EDIT IT
-        let remainingTopNumbers = mainBodyLines.filter(line => !uniqueToMove.includes(line) && !line.match(/^\d{1,5}$/));
-
-        let updatedContent = "";
-        let batchIdx = 1;
-        for (let i = 0; i < remainingTopNumbers.length; i++) {
-            if (i % 5 === 0) {
-                updatedContent += `    ${batchIdx}    \n`;
-                batchIdx++;
-            }
-            
-            updatedContent += remainingTopNumbers[i];
-            
-            if ((i + 1) % 5 === 0 && i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n\n\n"; 
-            } else if (i !== remainingTopNumbers.length - 1) {
-                updatedContent += "\n"; 
-            }
-        }
-
-        updatedContent += "\n\nRecently used numbers\n";
-        if (recentlyUsedContent) updatedContent += recentlyUsedContent.trim() + "\n";
-        updatedContent += uniqueToMove.join('\n') + "\n";
-        
-        // SENDERBOT UPLOADS THE NEW FILE (Silently)
-        await senderBot.sendDocument(TARGET_CHANNEL_ID, Buffer.from(updatedContent), {
-            caption: `Venezuela (auto-edit)`,
-            disable_notification: true 
-        }, {
-            filename: originalFileName,
-            contentType: 'text/plain'
-        });
-        
-        // SENDERBOT DELETES THE OLD FILE
-        try {
-            await senderBot.deleteMessage(TARGET_CHANNEL_ID, targetMsg.id);
-        } catch (delErr) {
-            console.error("[API CLEANER] senderBot could not delete old message.", delErr.message);
-        }
-        
-        console.log(`[API CLEANER] Channel file updated! Moved ${uniqueToMove.length} numbers.`);
-        return { ok: true, message: `Success! Moved ${uniqueToMove.length} numbers to the channel file.` };
+        console.log(`[API CLEANER] Multi-File Update! Moved ${totalMoved} numbers across ${filesEdited} file(s).`);
+        return { ok: true, message: `Success! Moved ${totalMoved} numbers across ${filesEdited} file(s).` };
 
     } catch (err) {
         console.error("[API CLEANER ERROR]:", err.message);
         return { ok: false, error: err.message };
     }
 }
-
-
 
 
 

@@ -1786,123 +1786,115 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     
-    // --- /st [r | nr] : Extract Registered or Not Registered numbers from Bio Checker files (TXT & XLSX) ---
-    bot.onText(/\/st\s+(r|nr)/i, async (msg, match) => {
+    
+       // --- /st : Extract "Recently used numbers" and filter against DB ---
+    bot.onText(/^\/st/i, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
         
         // Authorization check
         const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = SUBADMIN_IDS.includes(userId);
+        const isSubAdmin = (SUBADMIN_IDS || []).includes(userId);
         if (!isUserAdmin && !isSubAdmin) return;
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to the checker file (.txt or .xlsx) with /st r or /st nr.');
+            return bot.sendMessage(chatId, '[ERROR] Please reply to a .txt file with /st');
         }
 
-        const mode = match[1].toLowerCase(); 
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, '[ERROR] I can only extract from .txt files.');
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, '[PROCESSING] Downloading file and checking database...');
 
         try {
-            bot.sendMessage(chatId, `[PROCESSING] Extracting **${mode === 'r' ? 'REGISTERED' : 'NOT REGISTERED'}** numbers...`, { parse_mode: 'Markdown' });
-
             // 1. Download the file
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileLink = await bot.getFileLink(fileId);
+            const fileLink = await bot.getFileLink(doc.file_id);
             const response = await fetch(fileLink);
-            const fileName = msg.reply_to_message.document.file_name || '';
-            
-            let rawText = "";
+            const rawText = await response.text();
 
-            // 2. Handle File Formats (XLSX vs TXT)
-            if (fileName.toLowerCase().endsWith('.xlsx')) {
-                const buffer = await response.buffer();
-                const workbook = XLSX.read(buffer, { type: 'buffer' });
-                const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-                
-                // Convert Excel cells into a single searchable text block
-                data.forEach(row => {
-                    if (Array.isArray(row)) {
-                        row.forEach(cell => { 
-                            if (cell) rawText += cell.toString() + '\n'; 
-                        });
-                    }
-                });
-            } else {
-                // Handle standard .txt or .vcf
-                rawText = await response.text();
+            // 2. Extract ONLY the "Recently used numbers" section
+            // This splits the file into two parts and takes everything after the header
+            const sections = rawText.split(/Recently used numbers/i);
+            if (sections.length < 2) {
+                return bot.editMessageText('[ERROR] Could not find the "Recently used numbers" header in this file.', { chat_id: chatId, message_id: statusMsg.message_id });
             }
 
-            // 3. Split the document at the "Not Registered" header
-            const splitRegex = /\[\s*NOMOR TIDAK TERDAFTAR WHATSAPP.*?\]/i;
-            const splitText = rawText.split(splitRegex);
+            const recentlyUsedText = sections[1];
+            const matches = recentlyUsedText.match(/\d{7,15}/g) || [];
 
-            let targetText = "";
-
-            if (mode === 'r') {
-                targetText = splitText[0] || "";
-            } else if (mode === 'nr') {
-                targetText = splitText[1] || "";
-            }
-
-            if (!targetText.trim()) {
-                return bot.sendMessage(chatId, `[ERROR] Could not find any numbers for that category in this file.`);
-            }
-
-            // 4. Extract all numbers starting with a '+'
-            const matches = targetText.match(/\+\d{10,15}/g) || [];
-            
             if (matches.length === 0) {
-                return bot.sendMessage(chatId, `[DONE] No numbers found in the ${mode.toUpperCase()} section.`);
+                return bot.editMessageText('[DONE] No numbers found under the "Recently used" section.', { chat_id: chatId, message_id: statusMsg.message_id });
             }
 
-            // 5. Clean numbers and strip country code
-            const uniqueCleanedNumbers = new Set();
-            let countryPrefixDetected = "N/A";
+            // 3. Fetch Database Numbers for Filtering
+            const allDbDocs = await getAllNumbers();
+            const dbSet = new Set();
+            allDbDocs.forEach(doc => {
+                const rawStr = String(doc.number || doc).replace(/\D/g, '');
+                const res = normalizeWithCountry(rawStr);
+                if (res && res.num) {
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    dbSet.add(fullPhone);
+                    dbSet.add(res.num); // Add local format too just to be safe
+                } else {
+                    dbSet.add(rawStr);
+                }
+            });
 
-            for (let raw of matches) {
-                let cleanNum = raw.replace('+', ''); 
-                
-                const res = normalizeWithCountry(cleanNum);
-                
-                if (res && res.code && res.code !== 'N/A') {
-                    countryPrefixDetected = res.code;
-                    if (cleanNum.startsWith(res.code)) {
-                        cleanNum = cleanNum.substring(res.code.length);
+            // 4. Filter the recently used numbers against the DB
+            const uniqueToKeep = new Set();
+            let skippedDb = 0;
+
+            for (let num of matches) {
+                const res = normalizeWithCountry(num);
+                if (res && res.num) {
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    
+                    // If it's in the DB, skip it
+                    if (dbSet.has(fullPhone) || dbSet.has(res.num)) {
+                        skippedDb++;
+                    } else {
+                        // Not in DB! Keep it
+                        uniqueToKeep.add(fullPhone);
                     }
                 }
-                
-                uniqueCleanedNumbers.add(cleanNum);
             }
 
-            const finalList = Array.from(uniqueCleanedNumbers);
+            const finalArray = Array.from(uniqueToKeep);
 
-            bot.sendMessage(chatId, 
-                `[REPORT]\n` +
-                `Mode: ${mode === 'r' ? 'Registered ✅' : 'Not Registered ❌'}\n` +
-                `File: ${fileName}\n` +
-                `Country Code Stripped: +${countryPrefixDetected}\n` +
-                `Total Found: ${finalList.length}\n\n` +
-                `Sending batches...`
+            if (finalArray.length === 0) {
+                return bot.editMessageText(`[RESULT] Found ${matches.length} recently used numbers, but ALL of them are already in your database! Nothing new to extract.`, { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            await bot.editMessageText(
+                `[EXTRACTION COMPLETE]\n\n` +
+                `Total Recently Used: ${matches.length}\n` +
+                `Skipped (Already in DB): ${skippedDb}\n` +
+                `**New / Clean:** ${finalArray.length}\n\n` +
+                `Sending in batches of 10...`, 
+                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
             );
 
-            // 6. Send in clickable batches of 6
-            const BATCH_SIZE = 6;
-            for (let i = 0; i < finalList.length; i += BATCH_SIZE) {
-                const chunk = finalList.slice(i, i + BATCH_SIZE);
+            // 5. Send in Batches (Tap-to-copy format)
+            const BATCH_SIZE = 10;
+            for (let i = 0; i < finalArray.length; i += BATCH_SIZE) {
+                const chunk = finalArray.slice(i, i + BATCH_SIZE);
                 const msgText = chunk.map(n => `\`${n}\``).join('\n');
                 
                 await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                await delay(1000); 
+                await delay(800); // Protect against Telegram rate limits
             }
 
-            bot.sendMessage(chatId, `[COMPLETED] All ${mode.toUpperCase()} batches sent.`);
+            bot.sendMessage(chatId, `[SYSTEM] Finished sending all extracted numbers.`);
 
         } catch (e) {
-            bot.sendMessage(chatId, `[ERROR] Processing failed: ${e.message}`);
+            bot.editMessageText(`[ERROR] Processing failed: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
     });
+ 
 
 
         // --- /de command: Germany Number Analyzer and Sorter (High Specificity) ---

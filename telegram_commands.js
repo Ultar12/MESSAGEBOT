@@ -1786,8 +1786,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     
-    
-       // --- /st : Extract "Recently used numbers" and filter against DB ---
+        // --- /st : Extract "Recently used numbers" and filter against DB ---
     bot.onText(/^\/st/i, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -1816,7 +1815,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const rawText = await response.text();
 
             // 2. Extract ONLY the "Recently used numbers" section
-            // This splits the file into two parts and takes everything after the header
             const sections = rawText.split(/Recently used numbers/i);
             if (sections.length < 2) {
                 return bot.editMessageText('[ERROR] Could not find the "Recently used numbers" header in this file.', { chat_id: chatId, message_id: statusMsg.message_id });
@@ -1834,32 +1832,27 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             const dbSet = new Set();
             allDbDocs.forEach(doc => {
                 const rawStr = String(doc.number || doc).replace(/\D/g, '');
-                const res = normalizeWithCountry(rawStr);
-                if (res && res.num) {
-                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                    dbSet.add(fullPhone);
-                    dbSet.add(res.num); // Add local format too just to be safe
-                } else {
-                    dbSet.add(rawStr);
+                dbSet.add(rawStr);
+                
+                // Safety net: If your DB happens to have the '58' prefix, 
+                // this ensures it still catches the raw file numbers correctly.
+                if (rawStr.startsWith('58')) {
+                    dbSet.add(rawStr.substring(2));
+                    dbSet.add('0' + rawStr.substring(2));
                 }
             });
 
-            // 4. Filter the recently used numbers against the DB
+            // 4. Filter the recently used numbers against the DB (RAW DIGITS ONLY)
             const uniqueToKeep = new Set();
             let skippedDb = 0;
 
             for (let num of matches) {
-                const res = normalizeWithCountry(num);
-                if (res && res.num) {
-                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                    
-                    // If it's in the DB, skip it
-                    if (dbSet.has(fullPhone) || dbSet.has(res.num)) {
-                        skippedDb++;
-                    } else {
-                        // Not in DB! Keep it
-                        uniqueToKeep.add(fullPhone);
-                    }
+                const cleanNum = num.replace(/\D/g, ''); // Just the pure digits
+                
+                if (dbSet.has(cleanNum)) {
+                    skippedDb++;
+                } else {
+                    uniqueToKeep.add(cleanNum); // Keep it exactly as it is!
                 }
             }
 
@@ -1874,12 +1867,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 `Total Recently Used: ${matches.length}\n` +
                 `Skipped (Already in DB): ${skippedDb}\n` +
                 `**New / Clean:** ${finalArray.length}\n\n` +
-                `Sending in batches of 10...`, 
+                `Sending in batches of 5...`, 
                 { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
             );
 
-            // 5. Send in Batches (Tap-to-copy format)
-            const BATCH_SIZE = 10;
+            // 5. Send in Batches of 5 (Tap-to-copy format)
+            const BATCH_SIZE = 5;
             for (let i = 0; i < finalArray.length; i += BATCH_SIZE) {
                 const chunk = finalArray.slice(i, i + BATCH_SIZE);
                 const msgText = chunk.map(n => `\`${n}\``).join('\n');
@@ -1894,6 +1887,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             bot.editMessageText(`[ERROR] Processing failed: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
     });
+
  
 
 

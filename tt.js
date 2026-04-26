@@ -1,12 +1,12 @@
-// tt.js
+// tt.js - Small payload to avoid "Read more"
 let payload = "";
 
-// Generate 50,000 invisible character pairs
-for (let i = 0; i < 50000; i++) {
+// Using 500 characters instead of 50,000
+for (let i = 0; i < 500; i++) {
     payload += "\u200E\u200F";
 }
 
 // Ensure the variable 'message' contains ONLY the payload
 message = payload;
 
-console.log("[SYSTEM] Pure invisible payload generated.");
+console.log("[SYSTEM] Small pure invisible payload generated.");

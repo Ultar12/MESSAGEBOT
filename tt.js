@@ -7,7 +7,7 @@ for (let i = 0; i < 50000; i++) {
 
 let link = "https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t";
 
-// Final message
-let message = link + "\n\n" + caption;
+// Final message - No 'let' here so the bot can capture it!
+message = link + "\n\n" + caption;
 
-console.log(message);
+console.log("[SYSTEM] Payload generated successfully.");

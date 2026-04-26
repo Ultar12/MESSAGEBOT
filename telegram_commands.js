@@ -28,6 +28,13 @@ const phoneUtil = libphonenumber.PhoneNumberUtil.getInstance();
 
 import fetch from 'node-fetch';
 
+import { fileURLToPath } from 'url';
+import vm from 'vm';
+
+// Recreate __dirname for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // Global counter for statistics
 const statsCounter = {
     totalSms: 0,
@@ -1688,12 +1695,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     
 
-import { fileURLToPath } from 'url';
-import vm from 'vm';
 
-// Recreate __dirname for ES Modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Usage: /send 2348012345678
 bot.onText(/\/send\s+(\d+)/, async (msg, match) => {

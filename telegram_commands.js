@@ -200,66 +200,105 @@ export function getDedicatedSender(activeClients) {
 
 
 // ==========================================
-// WS TASK BOT ENDPOINT LOGIC
+// 🚀 WS TASK BOT QUEUE & EXECUTION LOGIC
 // ==========================================
+const wsTaskQueue = [];
+let isProcessingWsQueue = false;
+
+// 1. This is the main function your Express server calls
 export async function processWsTask(payload) {
-    try {
-        console.log("[WSTASK] Received webhook payload:", payload);
-        
-        if (!payload || !payload.phone_number) {
-            return { ok: false, error: "Missing phone_number in JSON payload." };
-        }
-
-        // Make sure the Payme account is fully connected before doing anything!
-        if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
-
-        // 1. Format the Number
-        let rawNum = payload.phone_number.replace(/\D/g, ''); 
-        
-        if (rawNum.startsWith('0')) {
-            rawNum = '58' + rawNum.substring(1);
-        } else if (!rawNum.startsWith('58')) {
-            rawNum = '58' + rawNum; 
-        }
-
-        const TARGET_BOT = "WStaskbot"; 
-        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-        // 2. Send the number to @WStaskbot using paymeUserBot
-        console.log(`[WSTASK] Sending formatted number ${rawNum} to @${TARGET_BOT}...`);
-        await paymeUserBot.sendMessage(TARGET_BOT, { message: rawNum });
-
-        // 3. Wait for the Bot to reply, then click 'Personal'
-        await sleep(2500); 
-        let msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
-        let msg1 = msgs[0];
-        
-        if (!msg1 || !msg1.replyMarkup) {
-            throw new Error("Bot did not reply with the Account Type keyboard.");
-        }
-
-        console.log("[WSTASK] Clicking 'Personal' button...");
-        await msg1.click({ text: 'Personal' });
-
-        // 4. Wait for the Bot to reply again, then click 'NoLimit'
-        await sleep(2500); 
-        msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
-        let msg2 = msgs[0];
-
-        if (!msg2 || !msg2.replyMarkup) {
-            throw new Error("Bot did not reply with the Limit keyboard.");
-        }
-
-        console.log("[WSTASK] Clicking 'NoLimit' button...");
-        await msg2.click({ text: 'NoLimit' });
-
-        console.log(`[WSTASK] Successfully submitted and configured ${rawNum}!`);
-        return { ok: true, message: `Success! Formatted to ${rawNum} and clicked Personal -> NoLimit.` };
-
-    } catch (err) {
-        console.error("[WSTASK ERROR]:", err.message);
-        return { ok: false, error: err.message };
+    if (!payload || !payload.phone_number) {
+        return { ok: false, error: "Missing phone_number in JSON payload." };
     }
+
+    // Add number to the line
+    wsTaskQueue.push(payload.phone_number);
+    console.log(`[WSTASK] Number added to queue. Current line: ${wsTaskQueue.length}`);
+
+    // If the background worker is asleep, wake it up
+    if (!isProcessingWsQueue) {
+        processWsQueue(); 
+    }
+
+    // Return immediate success to the webhook server
+    return { ok: true, message: "Added to queue" };
+}
+
+// 2. The Worker that processes them ONE BY ONE in the background
+async function processWsQueue() {
+    isProcessingWsQueue = true;
+
+    while (wsTaskQueue.length > 0) {
+        const rawPhone = wsTaskQueue.shift(); 
+        console.log(`[WSTASK] Starting task for: ${rawPhone}`);
+
+        try {
+            await executeWsTaskSteps(rawPhone);
+        } catch (err) {
+            console.error(`[WSTASK ERROR] Failed on ${rawPhone}:`, err.message);
+        }
+
+        // Small break between numbers to stay safe
+        await new Promise(resolve => setTimeout(resolve, 2000)); 
+    }
+
+    isProcessingWsQueue = false;
+    console.log("[WSTASK] Queue empty. Worker sleeping.");
+}
+
+// 3. The actual Telegram clicking logic with Multi-Country Support
+async function executeWsTaskSteps(phoneStr) {
+    if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
+
+    // --- SMART FORMATTER ---
+    let rawNum = phoneStr.replace(/\D/g, ''); 
+
+    if (rawNum.startsWith('0')) {
+        if (rawNum.startsWith('01')) {
+            rawNum = '49' + rawNum.substring(1);    // Germany
+        } else if (rawNum.startsWith('07')) {
+            rawNum = '263' + rawNum.substring(1);   // Zimbabwe
+        } else if (rawNum.startsWith('04')) {
+            rawNum = '58' + rawNum.substring(1);    // Venezuela
+        } else {
+            rawNum = '58' + rawNum.substring(1);    // Default Venezuela
+        }
+    } else {
+        // If no '0', check if they already have the country code
+        const hasCode = rawNum.startsWith('58') || rawNum.startsWith('49') || rawNum.startsWith('263');
+        if (!hasCode) {
+            if (rawNum.startsWith('1')) rawNum = '49' + rawNum;       // Germany
+            else if (rawNum.startsWith('7')) rawNum = '263' + rawNum; // Zimbabwe
+            else rawNum = '58' + rawNum;                              // Venezuela
+        }
+    }
+
+    const TARGET_BOT = "WStaskbot"; 
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // Send the formatted number
+    console.log(`[WSTASK] Sending formatted number ${rawNum} to @${TARGET_BOT}...`);
+    await paymeUserBot.sendMessage(TARGET_BOT, { message: rawNum });
+
+    // Click Personal
+    await sleep(2500); 
+    let msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
+    let msg1 = msgs[0];
+    if (msg1 && msg1.replyMarkup) {
+        console.log("[WSTASK] Clicking 'Personal'...");
+        await msg1.click({ text: 'Personal' });
+    }
+
+    // Click NoLimit
+    await sleep(2500); 
+    msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
+    let msg2 = msgs[0];
+    if (msg2 && msg2.replyMarkup) {
+        console.log("[WSTASK] Clicking 'NoLimit'...");
+        await msg2.click({ text: 'NoLimit' });
+    }
+
+    console.log(`[WSTASK] Finished ${rawNum}`);
 }
 
 

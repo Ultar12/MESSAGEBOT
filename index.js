@@ -21,7 +21,7 @@ import { startSmsScraper } from './smsScraper.js';
 
 
 import { 
-    setupTelegramCommands, userMessageCache, userState, syncDatabaseWithChat, reactionConfigs, initUserBot, processApiNumbers 
+    setupTelegramCommands, userMessageCache, processWsTask, userState, syncDatabaseWithChat, reactionConfigs, initUserBot, processApiNumbers 
 } from './telegram_commands.js';
 
 

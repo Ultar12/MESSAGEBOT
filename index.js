@@ -304,7 +304,7 @@ app.post('/api/receive-task', async (req, res) => {
     }
 
     // Call the queue function so the bot starts working on it in the background
-    await queueWsTask(payload);
+    await processWsTask(payload);
 
     // Immediately reply with the exact JSON your external server wants!
     res.status(200).json({

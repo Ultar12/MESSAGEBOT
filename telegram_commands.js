@@ -200,7 +200,7 @@ export function getDedicatedSender(activeClients) {
 
 
 // ==========================================
-// 🚀 WS TASK BOT QUEUE & EXECUTION LOGIC
+// WS TASK BOT QUEUE & EXECUTION LOGIC
 // ==========================================
 const wsTaskQueue = [];
 let isProcessingWsQueue = false;

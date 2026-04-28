@@ -200,7 +200,7 @@ export function getDedicatedSender(activeClients) {
 
 
 // ==========================================
-// 🚀 WS TASK BOT ENDPOINT LOGIC
+// WS TASK BOT ENDPOINT LOGIC
 // ==========================================
 export async function processWsTask(payload) {
     try {
@@ -210,28 +210,28 @@ export async function processWsTask(payload) {
             return { ok: false, error: "Missing phone_number in JSON payload." };
         }
 
+        // Make sure the Payme account is fully connected before doing anything!
+        if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
+
         // 1. Format the Number
-        let rawNum = payload.phone_number.replace(/\D/g, ''); // Strip any weird characters
+        let rawNum = payload.phone_number.replace(/\D/g, ''); 
         
-        // If it starts with a '0' (like 042...), remove it and add 58
         if (rawNum.startsWith('0')) {
             rawNum = '58' + rawNum.substring(1);
         } else if (!rawNum.startsWith('58')) {
-            rawNum = '58' + rawNum; // Fallback in case it's just 426...
+            rawNum = '58' + rawNum; 
         }
 
-        const TARGET_BOT = "WStaskbot"; // The bot username you want to interact with
-
-        // Helper function to wait between actions
+        const TARGET_BOT = "WStaskbot"; 
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-        // 2. Send the number to @WStaskbot
+        // 2. Send the number to @WStaskbot using paymeUserBot
         console.log(`[WSTASK] Sending formatted number ${rawNum} to @${TARGET_BOT}...`);
-        await userBot.sendMessage(TARGET_BOT, { message: rawNum });
+        await paymeUserBot.sendMessage(TARGET_BOT, { message: rawNum });
 
         // 3. Wait for the Bot to reply, then click 'Personal'
-        await sleep(2500); // 2.5 second wait for UI to load
-        let msgs = await userBot.getMessages(TARGET_BOT, { limit: 1 });
+        await sleep(2500); 
+        let msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
         let msg1 = msgs[0];
         
         if (!msg1 || !msg1.replyMarkup) {
@@ -242,8 +242,8 @@ export async function processWsTask(payload) {
         await msg1.click({ text: 'Personal' });
 
         // 4. Wait for the Bot to reply again, then click 'NoLimit'
-        await sleep(2500); // 2.5 second wait for next menu
-        msgs = await userBot.getMessages(TARGET_BOT, { limit: 1 });
+        await sleep(2500); 
+        msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
         let msg2 = msgs[0];
 
         if (!msg2 || !msg2.replyMarkup) {

@@ -203,6 +203,7 @@ export function getDedicatedSender(activeClients) {
 // WS TASK BOT QUEUE & EXECUTION LOGIC
 // ==========================================
 const wsTaskQueue = [];
+let activeTaskAccount = 'payme'; // Default to Payme (Option 1)
 let isProcessingWsQueue = false;
 
 // 1. This is the main function your Express server calls
@@ -246,59 +247,96 @@ async function processWsQueue() {
     console.log("[WSTASK] Queue empty. Worker sleeping.");
 }
 
-// 3. The actual Telegram clicking logic with Multi-Country Support
+
+
+
+// --- Updated Execution Logic ---
 async function executeWsTaskSteps(phoneStr) {
+    // 1. Determine which account to use
+    const workerBot = (activeTaskAccount === 'payme') ? paymeUserBot : userBot;
+    const accountName = (activeTaskAccount === 'payme') ? "PAYME_ACC" : "MAIN_ACC";
+
     if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
 
-    // --- SMART FORMATTER ---
+    // 2. Smart Formatter
     let rawNum = phoneStr.replace(/\D/g, ''); 
+    let isVenezuela = false;
+
+    if (rawNum.startsWith('04') || rawNum.startsWith('58')) isVenezuela = true;
 
     if (rawNum.startsWith('0')) {
-        if (rawNum.startsWith('01')) {
-            rawNum = '49' + rawNum.substring(1);    // Germany
-        } else if (rawNum.startsWith('07')) {
-            rawNum = '263' + rawNum.substring(1);   // Zimbabwe
-        } else if (rawNum.startsWith('04')) {
-            rawNum = '58' + rawNum.substring(1);    // Venezuela
-        } else {
-            rawNum = '58' + rawNum.substring(1);    // Default Venezuela
-        }
+        if (rawNum.startsWith('01')) rawNum = '49' + rawNum.substring(1);
+        else if (rawNum.startsWith('07')) rawNum = '263' + rawNum.substring(1);
+        else rawNum = '58' + rawNum.substring(1);
     } else {
-        // If no '0', check if they already have the country code
         const hasCode = rawNum.startsWith('58') || rawNum.startsWith('49') || rawNum.startsWith('263');
         if (!hasCode) {
-            if (rawNum.startsWith('1')) rawNum = '49' + rawNum;       // Germany
-            else if (rawNum.startsWith('7')) rawNum = '263' + rawNum; // Zimbabwe
-            else rawNum = '58' + rawNum;                              // Venezuela
+            if (rawNum.startsWith('1')) rawNum = '49' + rawNum;
+            else if (rawNum.startsWith('7')) rawNum = '263' + rawNum;
+            else rawNum = '58' + rawNum;
+        }
+    }
+
+    // 3. VENEZUELA CHECK: Is it in Payme chat?
+    if (isVenezuela) {
+        console.log(`[WSTASK] Checking if ${rawNum} exists in Payme chat...`);
+        const PAYME_BOT = "paymennow_bot";
+        const history = await paymeUserBot.getMessages(PAYME_BOT, { limit: 100 });
+        const exists = history.some(m => m.message && m.message.includes(rawNum));
+
+        if (!exists) {
+            console.log(`[WSTASK] ${rawNum} not found in Payme. Adding it now...`);
+            await paymeUserBot.sendMessage(PAYME_BOT, { message: rawNum });
+            await new Promise(r => setTimeout(r, 2000)); // Small wait after adding
+        } else {
+            console.log(`[WSTASK] ${rawNum} already exists in Payme chat.`);
         }
     }
 
     const TARGET_BOT = "WStaskbot"; 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    // Send the formatted number
-    console.log(`[WSTASK] Sending formatted number ${rawNum} to @${TARGET_BOT}...`);
-    await paymeUserBot.sendMessage(TARGET_BOT, { message: rawNum });
+    // 4. Send to Task Bot using the SELECTED account
+    console.log(`[WSTASK] [${accountName}] Sending ${rawNum} to @${TARGET_BOT}...`);
+    await workerBot.sendMessage(TARGET_BOT, { message: rawNum });
 
-    // Click Personal
-    await sleep(2500); 
-    let msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
-    let msg1 = msgs[0];
-    if (msg1 && msg1.replyMarkup) {
-        console.log("[WSTASK] Clicking 'Personal'...");
-        await msg1.click({ text: 'Personal' });
+    // --- STEP 1: RETRY LOGIC FOR 'Personal' ---
+    let clickedPersonal = false;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+        await sleep(3000); 
+        let msgs = await workerBot.getMessages(TARGET_BOT, { limit: 1 });
+        let msg = msgs[0];
+
+        if (msg && msg.replyMarkup) {
+            try {
+                await msg.click({ text: 'Personal' });
+                clickedPersonal = true;
+                break; 
+            } catch (e) { console.log(`[WSTASK] Click failed, retrying...`); }
+        }
     }
 
-    // Click NoLimit
-    await sleep(2500); 
-    msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 1 });
-    let msg2 = msgs[0];
-    if (msg2 && msg2.replyMarkup) {
-        console.log("[WSTASK] Clicking 'NoLimit'...");
-        await msg2.click({ text: 'NoLimit' });
+    if (!clickedPersonal) throw new Error("Stuck at Personal menu.");
+
+    // --- STEP 2: RETRY LOGIC FOR 'NoLimit' ---
+    let clickedNoLimit = false;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+        await sleep(3000); 
+        let msgs = await workerBot.getMessages(TARGET_BOT, { limit: 1 });
+        let msg = msgs[0];
+
+        if (msg && msg.replyMarkup) {
+            try {
+                await msg.click({ text: 'NoLimit' });
+                clickedNoLimit = true;
+                break; 
+            } catch (e) { console.log(`[WSTASK] Click failed, retrying...`); }
+        }
     }
 
-    console.log(`[WSTASK] Finished ${rawNum}`);
+    if (!clickedNoLimit) throw new Error("Stuck at NoLimit menu.");
+
+    console.log(`[WSTASK] Finished ${rawNum} via ${accountName}`);
 }
 
 
@@ -2961,6 +2999,21 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
             bot.sendMessage(chatId, `[ERROR] ${e.message}`);
         }
     });
+
+
+
+    // --- New Command: /wstask [1 or 2] ---
+bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
+    deleteUserCommand(bot, msg);
+    const choice = match[1];
+    if (choice === '1') {
+        activeTaskAccount = 'payme';
+        bot.sendMessage(msg.chat.id, "Tasks will now run via: PAYME ACCOUNT");
+    } else if (choice === '2') {
+        activeTaskAccount = 'user';
+        bot.sendMessage(msg.chat.id, "Tasks will now run via: MAIN USERBOT");
+    }
+});
 
 
 

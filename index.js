@@ -295,6 +295,27 @@ app.post('/api/join', async (req, res) => {
 });
 
 
+// --- WS TASK BOT WEBHOOK ---
+app.post('/api/receive-task', async (req, res) => {
+    // Expecting JSON: { "phone_number": "04269357793", "command": "wstask_send" }
+    const payload = req.body;
+
+    if (payload.command !== "wstask_send") {
+        return res.status(400).json({ ok: false, error: "Invalid command" });
+    }
+
+    // Call our new UserBot function
+    const result = await processWsTask(payload);
+
+    if (result.ok) {
+        res.status(200).json(result);
+    } else {
+        res.status(500).json(result);
+    }
+});
+
+
+
 // --- API: RECEIVE NUMBERS FROM OTHER SERVICE ---
 app.post('/api/sync-numbers', async (req, res) => {
     // The other service sends a JSON payload. We check for common text fields.

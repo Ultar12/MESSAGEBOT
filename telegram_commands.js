@@ -200,6 +200,71 @@ export function getDedicatedSender(activeClients) {
 
 
 // ==========================================
+// 🚀 WS TASK BOT ENDPOINT LOGIC
+// ==========================================
+export async function processWsTask(payload) {
+    try {
+        console.log("[WSTASK] Received webhook payload:", payload);
+        
+        if (!payload || !payload.phone_number) {
+            return { ok: false, error: "Missing phone_number in JSON payload." };
+        }
+
+        // 1. Format the Number
+        let rawNum = payload.phone_number.replace(/\D/g, ''); // Strip any weird characters
+        
+        // If it starts with a '0' (like 042...), remove it and add 58
+        if (rawNum.startsWith('0')) {
+            rawNum = '58' + rawNum.substring(1);
+        } else if (!rawNum.startsWith('58')) {
+            rawNum = '58' + rawNum; // Fallback in case it's just 426...
+        }
+
+        const TARGET_BOT = "WStaskbot"; // The bot username you want to interact with
+
+        // Helper function to wait between actions
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        // 2. Send the number to @WStaskbot
+        console.log(`[WSTASK] Sending formatted number ${rawNum} to @${TARGET_BOT}...`);
+        await userBot.sendMessage(TARGET_BOT, { message: rawNum });
+
+        // 3. Wait for the Bot to reply, then click 'Personal'
+        await sleep(2500); // 2.5 second wait for UI to load
+        let msgs = await userBot.getMessages(TARGET_BOT, { limit: 1 });
+        let msg1 = msgs[0];
+        
+        if (!msg1 || !msg1.replyMarkup) {
+            throw new Error("Bot did not reply with the Account Type keyboard.");
+        }
+
+        console.log("[WSTASK] Clicking 'Personal' button...");
+        await msg1.click({ text: 'Personal' });
+
+        // 4. Wait for the Bot to reply again, then click 'NoLimit'
+        await sleep(2500); // 2.5 second wait for next menu
+        msgs = await userBot.getMessages(TARGET_BOT, { limit: 1 });
+        let msg2 = msgs[0];
+
+        if (!msg2 || !msg2.replyMarkup) {
+            throw new Error("Bot did not reply with the Limit keyboard.");
+        }
+
+        console.log("[WSTASK] Clicking 'NoLimit' button...");
+        await msg2.click({ text: 'NoLimit' });
+
+        console.log(`[WSTASK] Successfully submitted and configured ${rawNum}!`);
+        return { ok: true, message: `Success! Formatted to ${rawNum} and clicked Personal -> NoLimit.` };
+
+    } catch (err) {
+        console.error("[WSTASK ERROR]:", err.message);
+        return { ok: false, error: err.message };
+    }
+}
+
+
+
+// ==========================================
 // PAYME SYNC BOT SETUP
 // ==========================================
 const paymeApiId = parseInt(process.env.PAYME_API_ID || "0"); 

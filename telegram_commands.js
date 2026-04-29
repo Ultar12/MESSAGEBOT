@@ -250,55 +250,55 @@ async function processWsQueue() {
 
 
 
-// --- Updated Execution Logic ---
 async function executeWsTaskSteps(phoneStr) {
-    // 1. Determine which account to use
     const workerBot = (activeTaskAccount === 'payme') ? paymeUserBot : userBot;
     const accountName = (activeTaskAccount === 'payme') ? "PAYME_ACC" : "MAIN_ACC";
 
     if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
 
-    // 2. Smart Formatter
-    let rawNum = phoneStr.replace(/\D/g, ''); 
+    // 1. RAW NUMBER (for Payme chat)
+    const rawInput = phoneStr.replace(/\D/g, ''); 
+
+    // 2. FORMATTED NUMBER (for WStaskbot)
+    let formattedNum = rawInput;
     let isVenezuela = false;
+    if (rawInput.startsWith('04') || rawInput.startsWith('58')) isVenezuela = true;
 
-    if (rawNum.startsWith('04') || rawNum.startsWith('58')) isVenezuela = true;
-
-    if (rawNum.startsWith('0')) {
-        if (rawNum.startsWith('01')) rawNum = '49' + rawNum.substring(1);
-        else if (rawNum.startsWith('07')) rawNum = '263' + rawNum.substring(1);
-        else rawNum = '58' + rawNum.substring(1);
+    if (formattedNum.startsWith('0')) {
+        if (formattedNum.startsWith('01')) formattedNum = '49' + formattedNum.substring(1);
+        else if (formattedNum.startsWith('07')) formattedNum = '263' + formattedNum.substring(1);
+        else formattedNum = '58' + formattedNum.substring(1);
     } else {
-        const hasCode = rawNum.startsWith('58') || rawNum.startsWith('49') || rawNum.startsWith('263');
+        const hasCode = formattedNum.startsWith('58') || formattedNum.startsWith('49') || formattedNum.startsWith('263');
         if (!hasCode) {
-            if (rawNum.startsWith('1')) rawNum = '49' + rawNum;
-            else if (rawNum.startsWith('7')) rawNum = '263' + rawNum;
-            else rawNum = '58' + rawNum;
+            if (formattedNum.startsWith('1')) formattedNum = '49' + formattedNum;
+            else if (formattedNum.startsWith('7')) formattedNum = '263' + formattedNum;
+            else formattedNum = '58' + formattedNum;
         }
     }
 
-    // 3. VENEZUELA CHECK: Is it in Payme chat?
+    // 3. VENEZUELA CHECK: Use RAW number for Payme
     if (isVenezuela) {
-        console.log(`[WSTASK] Checking if ${rawNum} exists in Payme chat...`);
+        console.log(`[WSTASK] Checking Payme chat for RAW number: ${rawInput}`);
         const PAYME_BOT = "paymennow_bot";
         const history = await paymeUserBot.getMessages(PAYME_BOT, { limit: 100 });
-        const exists = history.some(m => m.message && m.message.includes(rawNum));
+        
+        // Check if rawInput exists in the history
+        const exists = history.some(m => m.message && m.message.includes(rawInput));
 
         if (!exists) {
-            console.log(`[WSTASK] ${rawNum} not found in Payme. Adding it now...`);
-            await paymeUserBot.sendMessage(PAYME_BOT, { message: rawNum });
-            await new Promise(r => setTimeout(r, 2000)); // Small wait after adding
-        } else {
-            console.log(`[WSTASK] ${rawNum} already exists in Payme chat.`);
+            console.log(`[WSTASK] ${rawInput} not in Payme. Adding RAW...`);
+            await paymeUserBot.sendMessage(PAYME_BOT, { message: rawInput });
+            await new Promise(r => setTimeout(r, 2000));
         }
     }
 
     const TARGET_BOT = "WStaskbot"; 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    // 4. Send to Task Bot using the SELECTED account
-    console.log(`[WSTASK] [${accountName}] Sending ${rawNum} to @${TARGET_BOT}...`);
-    await workerBot.sendMessage(TARGET_BOT, { message: rawNum });
+    // 4. Send FORMATTED number to WStaskbot
+    console.log(`[WSTASK] [${accountName}] Sending ${formattedNum} to @${TARGET_BOT}...`);
+    await workerBot.sendMessage(TARGET_BOT, { message: formattedNum });
 
     // --- STEP 1: RETRY LOGIC FOR 'Personal' ---
     let clickedPersonal = false;
@@ -306,7 +306,6 @@ async function executeWsTaskSteps(phoneStr) {
         await sleep(3000); 
         let msgs = await workerBot.getMessages(TARGET_BOT, { limit: 1 });
         let msg = msgs[0];
-
         if (msg && msg.replyMarkup) {
             try {
                 await msg.click({ text: 'Personal' });
@@ -315,7 +314,6 @@ async function executeWsTaskSteps(phoneStr) {
             } catch (e) { console.log(`[WSTASK] Click failed, retrying...`); }
         }
     }
-
     if (!clickedPersonal) throw new Error("Stuck at Personal menu.");
 
     // --- STEP 2: RETRY LOGIC FOR 'NoLimit' ---
@@ -324,7 +322,6 @@ async function executeWsTaskSteps(phoneStr) {
         await sleep(3000); 
         let msgs = await workerBot.getMessages(TARGET_BOT, { limit: 1 });
         let msg = msgs[0];
-
         if (msg && msg.replyMarkup) {
             try {
                 await msg.click({ text: 'NoLimit' });
@@ -333,10 +330,9 @@ async function executeWsTaskSteps(phoneStr) {
             } catch (e) { console.log(`[WSTASK] Click failed, retrying...`); }
         }
     }
-
     if (!clickedNoLimit) throw new Error("Stuck at NoLimit menu.");
 
-    console.log(`[WSTASK] Finished ${rawNum} via ${accountName}`);
+    console.log(`[WSTASK] ✅ Finished ${formattedNum} via ${accountName}`);
 }
 
 

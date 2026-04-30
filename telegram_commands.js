@@ -3143,15 +3143,17 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
     });
 
 
-    bot.onText(/^\/meta/i, async (msg) => {
+        bot.onText(/^\/meta/i, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
 
-        // 1. Get the connected account (Payme or Main)
-        // Adjust this to match your session key (e.g., 'payme' or userId)
-        const sessionKey = (activeTaskAccount === 'payme') ? 'payme_session' : userId;
-        const activeSock = activeSessions.get(sessionKey);
+        // 1. FIX: Changed 'activeSessions' to 'clients'
+        // Using the logic: if option 1, use payme session, else use the folder ID for the user
+        const sessionKey = (activeTaskAccount === 'payme') ? process.env.PAYME_SESSION_FOLDER : userId; 
+        
+        // If your clients map is indexed by sessionId/folder, find the right one:
+        const activeSock = clients[sessionKey] || Object.values(clients)[0];
 
         if (!activeSock) {
             return bot.sendMessage(chatId, '[ERROR] No connected WhatsApp session found. Please login first.');
@@ -3177,28 +3179,22 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
 
         for (let num of uniqueNumbers) {
             try {
-                // Ensure number is in WhatsApp format
                 let jid = num.replace(/\D/g, '');
                 if (!jid.includes('@s.whatsapp.net')) jid += '@s.whatsapp.net';
 
-                // REAL CHECK: Querying Meta servers via the active socket
+                // REAL CHECK: Querying Meta servers
                 const [result] = await activeSock.onWhatsApp(jid);
                 
                 if (result && result.exists) {
-                    // Check for Business Profile metadata
                     const profile = await activeSock.getBusinessProfile(jid);
-                    
-                    // profile.verifiedName only exists if Meta has verified the account
                     if (profile && profile.verifiedName) {
                         verifiedNumbers.push(num);
                     }
                 }
                 
-                // Small delay to prevent WhatsApp from flagging the account for spamming profile checks
                 await new Promise(r => setTimeout(r, 1000)); 
 
             } catch (e) {
-                console.log(`[META] Skip ${num}: Not a business or check failed.`);
                 continue;
             }
         }
@@ -3220,6 +3216,7 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
             await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
         }
     });
+
 
 
 

@@ -3143,6 +3143,71 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
     });
 
 
+        // --- /meta : Reliable check using Baileys ---
+    bot.onText(/^\/meta/i, async (msg) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt file containing numbers.');
+        }
+
+        const doc = msg.reply_to_message.document;
+        const fileLink = await bot.getFileLink(doc.file_id);
+        const response = await fetch(fileLink);
+        const rawText = await response.text();
+
+        // Extract all numbers from the file first
+        const allNumbers = rawText.match(/\d{7,15}/g) || [];
+        const uniqueNumbers = [...new Set(allNumbers)];
+
+        if (uniqueNumbers.length === 0) {
+            return bot.sendMessage(chatId, '[ERROR] No phone numbers found in file.');
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, `[VERIFYING] Checking ${uniqueNumbers.length} numbers via Baileys...`);
+
+        let verifiedNumbers = [];
+
+        for (let num of uniqueNumbers) {
+            try {
+                // 1. Format for WhatsApp JID
+                const jid = num.includes('@') ? num : `${num}@s.whatsapp.net`;
+
+                // 2. Use Baileys to get Business Profile
+                // This is the source of truth. If it has a verified degree/name, it's Meta Verified.
+                const profile = await sock.getBusinessProfile(jid);
+                
+                if (profile && profile.verifiedName) {
+                    verifiedNumbers.push(num);
+                }
+            } catch (e) {
+                // If it's not a business or doesn't exist, Baileys throws/returns null. Just skip.
+                continue;
+            }
+        }
+
+        if (verifiedNumbers.length === 0) {
+            return bot.editMessageText('[DONE] No Meta Verified (Official Business) accounts found.', {
+                chat_id: chatId,
+                message_id: statusMsg.message_id
+            });
+        }
+
+        // Send results in batches of 5
+        await bot.editMessageText(`[FOUND] ${verifiedNumbers.length} Verified Accounts:`, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id
+        });
+
+        for (let i = 0; i < verifiedNumbers.length; i += 5) {
+            const chunk = verifiedNumbers.slice(i, i + 5);
+            await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+        }
+    });
+
+
+
  bot.onText(/\/convt/, async (msg) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;

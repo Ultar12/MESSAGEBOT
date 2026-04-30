@@ -3143,16 +3143,13 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
     });
 
 
-        bot.onText(/^\/meta/i, async (msg) => {
+    bot.onText(/^\/meta/i, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
 
-        // 1. FIX: Changed 'activeSessions' to 'clients'
-        // Using the logic: if option 1, use payme session, else use the folder ID for the user
-        const sessionKey = (activeTaskAccount === 'payme') ? process.env.PAYME_SESSION_FOLDER : userId; 
-        
-        // If your clients map is indexed by sessionId/folder, find the right one:
+        // 1. Identify which account to use (Payme or Main)
+        const sessionKey = (activeTaskAccount === 'payme') ? process.env.PAYME_SESSION_FOLDER : userId;
         const activeSock = clients[sessionKey] || Object.values(clients)[0];
 
         if (!activeSock) {
@@ -3160,7 +3157,7 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
         }
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt file with /meta');
+            return bot.sendMessage(chatId, '[ERROR] Please reply to a .txt file with /meta');
         }
 
         const doc = msg.reply_to_message.document;
@@ -3173,9 +3170,9 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
 
         if (uniqueNumbers.length === 0) return bot.sendMessage(chatId, '[ERROR] No numbers found in file.');
 
-        let statusMsg = await bot.sendMessage(chatId, `[VERIFYING] Using connected account to check ${uniqueNumbers.length} numbers...`);
+        let statusMsg = await bot.sendMessage(chatId, `[INITIATING] Checking ${uniqueNumbers.length} numbers for Meta Verification...`);
 
-                let verifiedCount = 0;
+        let verifiedCount = 0;
         let processedCount = 0;
 
         for (let num of uniqueNumbers) {
@@ -3184,33 +3181,36 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
                 let jid = num.replace(/\D/g, '');
                 if (!jid.includes('@s.whatsapp.net')) jid += '@s.whatsapp.net';
 
-                // REAL CHECK: Querying Meta servers
+                // 2. REAL METADATA CHECK
                 const [result] = await activeSock.onWhatsApp(jid);
                 
                 if (result && result.exists) {
                     const profile = await activeSock.getBusinessProfile(jid);
                     
+                    // If Meta has officially verified the business name
                     if (profile && profile.verifiedName) {
                         verifiedCount++;
-                        // ✅ SEND IMMEDIATELY: No more waiting for a batch of 5
+                        // ✅ INSTANT DELIVERY: Send the match immediately
                         await bot.sendMessage(chatId, `**VERIFIED MATCH:** \`${num}\`\nName: ${profile.verifiedName}`, { parse_mode: 'Markdown' });
                     }
                 }
                 
-                // 📊 LIVE PROGRESS: Updates every 20 numbers so you see movement
+                // 3. LIVE PROGRESS HEARTBEAT: Updates every 20 numbers
                 if (processedCount % 20 === 0 || processedCount === uniqueNumbers.length) {
-                    await bot.editMessageText(`[SCANNING] ${processedCount} / ${uniqueNumbers.length} checked...\nFound so far: ${verifiedCount}`, {
-                        chat_id: chatId,
-                        message_id: statusMsg.message_id
-                    }).catch(() => {}); // Ignore edit errors if message is same
+                    await bot.editMessageText(
+                        `[SCANNING] Progress: ${processedCount} / ${uniqueNumbers.length}\n` +
+                        `Verified Matches Found: ${verifiedCount}\n\n` +
+                        `Status: Processing 4k list safely...`, 
+                        { chat_id: chatId, message_id: statusMsg.message_id }
+                    ).catch(() => {}); 
                 }
 
-                // Mandatory Anti-Ban Delay
+                // 4. MANDATORY ANTI-BAN DELAY (1.2s per check)
                 await new Promise(r => setTimeout(r, 1200)); 
 
             } catch (e) {
-                console.log(`[META] Error checking ${num}:`, e.message);
-                // If the socket dies mid-way, notify you
+                console.log(`[META ERROR] ${num}:`, e.message);
+                // If connection drops, stop and notify
                 if (e.message.includes('close') || e.message.includes('connection')) {
                     return bot.sendMessage(chatId, `[FATAL] WhatsApp connection lost. Stopped at ${processedCount}.`);
                 }
@@ -3218,8 +3218,8 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
             }
         }
 
-        bot.sendMessage(chatId, `[FINISH] Scan complete. Total Verified found: ${verifiedCount}`);
-
+        bot.sendMessage(chatId, `[FINISH] Scan complete.\nTotal Checked: ${uniqueNumbers.length}\nTotal Verified Found: ${verifiedCount}`);
+    });
 
 
 

@@ -3143,13 +3143,22 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
     });
 
 
-        // --- /meta : Reliable check using Baileys ---
     bot.onText(/^\/meta/i, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        // 1. Get the connected account (Payme or Main)
+        // Adjust this to match your session key (e.g., 'payme' or userId)
+        const sessionKey = (activeTaskAccount === 'payme') ? 'payme_session' : userId;
+        const activeSock = activeSessions.get(sessionKey);
+
+        if (!activeSock) {
+            return bot.sendMessage(chatId, '[ERROR] No connected WhatsApp session found. Please login first.');
+        }
 
         if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt file containing numbers.');
+            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt file with /meta');
         }
 
         const doc = msg.reply_to_message.document;
@@ -3157,45 +3166,51 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
         const response = await fetch(fileLink);
         const rawText = await response.text();
 
-        // Extract all numbers from the file first
         const allNumbers = rawText.match(/\d{7,15}/g) || [];
         const uniqueNumbers = [...new Set(allNumbers)];
 
-        if (uniqueNumbers.length === 0) {
-            return bot.sendMessage(chatId, '[ERROR] No phone numbers found in file.');
-        }
+        if (uniqueNumbers.length === 0) return bot.sendMessage(chatId, '[ERROR] No numbers found in file.');
 
-        let statusMsg = await bot.sendMessage(chatId, `[VERIFYING] Checking ${uniqueNumbers.length} numbers via Baileys...`);
+        let statusMsg = await bot.sendMessage(chatId, `[VERIFYING] Using connected account to check ${uniqueNumbers.length} numbers...`);
 
         let verifiedNumbers = [];
 
         for (let num of uniqueNumbers) {
             try {
-                // 1. Format for WhatsApp JID
-                const jid = num.includes('@') ? num : `${num}@s.whatsapp.net`;
+                // Ensure number is in WhatsApp format
+                let jid = num.replace(/\D/g, '');
+                if (!jid.includes('@s.whatsapp.net')) jid += '@s.whatsapp.net';
 
-                // 2. Use Baileys to get Business Profile
-                // This is the source of truth. If it has a verified degree/name, it's Meta Verified.
-                const profile = await sock.getBusinessProfile(jid);
+                // REAL CHECK: Querying Meta servers via the active socket
+                const [result] = await activeSock.onWhatsApp(jid);
                 
-                if (profile && profile.verifiedName) {
-                    verifiedNumbers.push(num);
+                if (result && result.exists) {
+                    // Check for Business Profile metadata
+                    const profile = await activeSock.getBusinessProfile(jid);
+                    
+                    // profile.verifiedName only exists if Meta has verified the account
+                    if (profile && profile.verifiedName) {
+                        verifiedNumbers.push(num);
+                    }
                 }
+                
+                // Small delay to prevent WhatsApp from flagging the account for spamming profile checks
+                await new Promise(r => setTimeout(r, 1000)); 
+
             } catch (e) {
-                // If it's not a business or doesn't exist, Baileys throws/returns null. Just skip.
+                console.log(`[META] Skip ${num}: Not a business or check failed.`);
                 continue;
             }
         }
 
         if (verifiedNumbers.length === 0) {
-            return bot.editMessageText('[DONE] No Meta Verified (Official Business) accounts found.', {
+            return bot.editMessageText('[RESULT] Checked all numbers. No Meta Verified accounts found.', {
                 chat_id: chatId,
                 message_id: statusMsg.message_id
             });
         }
 
-        // Send results in batches of 5
-        await bot.editMessageText(`[FOUND] ${verifiedNumbers.length} Verified Accounts:`, {
+        await bot.editMessageText(`[FOUND] ${verifiedNumbers.length} Meta Verified Accounts:`, {
             chat_id: chatId,
             message_id: statusMsg.message_id
         });

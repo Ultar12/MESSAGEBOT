@@ -3175,10 +3175,12 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
 
         let statusMsg = await bot.sendMessage(chatId, `[VERIFYING] Using connected account to check ${uniqueNumbers.length} numbers...`);
 
-        let verifiedNumbers = [];
+                let verifiedCount = 0;
+        let processedCount = 0;
 
         for (let num of uniqueNumbers) {
             try {
+                processedCount++;
                 let jid = num.replace(/\D/g, '');
                 if (!jid.includes('@s.whatsapp.net')) jid += '@s.whatsapp.net';
 
@@ -3187,35 +3189,36 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
                 
                 if (result && result.exists) {
                     const profile = await activeSock.getBusinessProfile(jid);
+                    
                     if (profile && profile.verifiedName) {
-                        verifiedNumbers.push(num);
+                        verifiedCount++;
+                        // ✅ SEND IMMEDIATELY: No more waiting for a batch of 5
+                        await bot.sendMessage(chatId, `**VERIFIED MATCH:** \`${num}\`\nName: ${profile.verifiedName}`, { parse_mode: 'Markdown' });
                     }
                 }
                 
-                await new Promise(r => setTimeout(r, 1000)); 
+                // 📊 LIVE PROGRESS: Updates every 20 numbers so you see movement
+                if (processedCount % 20 === 0 || processedCount === uniqueNumbers.length) {
+                    await bot.editMessageText(`[SCANNING] ${processedCount} / ${uniqueNumbers.length} checked...\nFound so far: ${verifiedCount}`, {
+                        chat_id: chatId,
+                        message_id: statusMsg.message_id
+                    }).catch(() => {}); // Ignore edit errors if message is same
+                }
+
+                // Mandatory Anti-Ban Delay
+                await new Promise(r => setTimeout(r, 1200)); 
 
             } catch (e) {
+                console.log(`[META] Error checking ${num}:`, e.message);
+                // If the socket dies mid-way, notify you
+                if (e.message.includes('close') || e.message.includes('connection')) {
+                    return bot.sendMessage(chatId, `[FATAL] WhatsApp connection lost. Stopped at ${processedCount}.`);
+                }
                 continue;
             }
         }
 
-        if (verifiedNumbers.length === 0) {
-            return bot.editMessageText('[RESULT] Checked all numbers. No Meta Verified accounts found.', {
-                chat_id: chatId,
-                message_id: statusMsg.message_id
-            });
-        }
-
-        await bot.editMessageText(`[FOUND] ${verifiedNumbers.length} Meta Verified Accounts:`, {
-            chat_id: chatId,
-            message_id: statusMsg.message_id
-        });
-
-        for (let i = 0; i < verifiedNumbers.length; i += 5) {
-            const chunk = verifiedNumbers.slice(i, i + 5);
-            await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-        }
-    });
+        bot.sendMessage(chatId, `[FINISH] Scan complete. Total Verified found: ${verifiedCount}`);
 
 
 

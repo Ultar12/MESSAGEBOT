@@ -36,6 +36,7 @@ const NOTIFICATION_TOKEN = process.env.NOTIFICATION_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
 const SUBADMIN_IDS = process.env.SUBADMIN_IDS;
 const userAlertCache = {};
+const sessionCallbacks = new Map();
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
 const SESSIONS_DIR = './sessions';
 

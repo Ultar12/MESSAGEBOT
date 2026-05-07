@@ -1830,6 +1830,238 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
 
+
+    // --- /getnu : ROCKETOTP_BOT Extractor ---
+    bot.onText(/\/getnu\s+(\d+)/i, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+        
+        // 1. Authorization
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+        
+        const countLimit = parseInt(match[1]);
+        const targetBot = "ROCKETOTP_BOT";
+
+        // 2. Ensure we have an active WA bot to verify the numbers
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) {
+            return bot.sendMessage(chatId, "❌ [ERROR] No WhatsApp bots connected. I need an active WA connection to verify the numbers.");
+        }
+        const sock = clients[activeFolders[0]];
+
+        try {
+            // 3. Ask user for Output Format using an Inline Keyboard
+            const outputMode = await new Promise((resolve) => {
+                let isResolved = false;
+                const opts = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Send as .txt File", callback_data: "getnu_file" }],
+                            [{ text: "Send in Chat (Batches)", callback_data: "getnu_chat" }]
+                        ]
+                    }
+                };
+                
+                bot.sendMessage(chatId, `[SETUP ROCKET]\nTarget: ${countLimit} numbers.\nHow would you like to receive the output?`, opts).then(promptMsg => {
+                    const listener = (query) => {
+                        if (query.message.message_id === promptMsg.message_id) {
+                            isResolved = true;
+                            bot.removeListener('callback_query', listener);
+                            bot.deleteMessage(chatId, promptMsg.message_id).catch(()=>{});
+                            resolve(query.data === 'getnu_file' ? 'file' : 'chat');
+                        }
+                    };
+                    bot.on('callback_query', listener);
+                    
+                    // Default to chat if no selection is made within 60 seconds
+                    setTimeout(() => {
+                        if (!isResolved) {
+                            bot.removeListener('callback_query', listener);
+                            bot.deleteMessage(chatId, promptMsg.message_id).catch(()=>{});
+                            resolve('chat'); 
+                        }
+                    }, 60000);
+                });
+            });
+
+            // 4. Connect the main Telegram UserBot
+            await ensureConnected(); 
+
+            // 5. Send initialization commands
+            let statusMsg = await bot.sendMessage(chatId, `⏳ Sending commands to @${targetBot}...`, { parse_mode: 'Markdown' });
+
+            await userBot.sendMessage(targetBot, { message: "/start" }); 
+            await delay(2000); // Wait for the bot to reply to /start
+            await userBot.sendMessage(targetBot, { message: "🌐WHATSAPP" });
+
+            await bot.editMessageText(`[WAITING]\nSent \`/start\` and \`🌐WHATSAPP\` to @${targetBot}.\n\n**Please go to @${targetBot} on your main Telegram account now and select your country.**\nI am listening for the numbers to appear...`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+
+            let countrySelected = false;
+            let attempts = 0;
+            let targetMessage = null;
+
+            // 6. Wait for the user to pick a country (Detects when a message with numbers appears)
+            while (!countrySelected && attempts < 60) { 
+                const res = await userBot.getMessages(targetBot, { limit: 1 }); 
+                const currentMsg = res[0];
+                const text = currentMsg?.message || "";
+
+                // If the message contains phone numbers and has buttons, we assume the list has loaded
+                if (/\d{8,15}/.test(text) && currentMsg.replyMarkup) {
+                    countrySelected = true;
+                    targetMessage = currentMsg;
+                    break;
+                }
+
+                if (!countrySelected) {
+                    await delay(2000);
+                    attempts++;
+                }
+            }
+
+            if (!countrySelected) {
+                return bot.editMessageText(`[TIMEOUT] You didn't select a country or no numbers loaded in time. Try /getnu again.`, { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            let totalChecked = 0;
+            let totalVerified = 0;
+            let seenNumbers = [];
+            let currentBatch = [];
+            let allValidNumbers = []; 
+
+            const updateProgress = async () => {
+                const text = `[ROCKET SCRAPING IN PROGRESS]\n\nTarget: ${countLimit}\nExtracted from Bot: ${totalChecked}\nVerified on WhatsApp: ${totalVerified}\n\nRunning anti-ban delay protocols...`;
+                try {
+                    await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+                } catch (e) { /* Ignore identical message edit errors */ }
+            };
+
+            await updateProgress();
+
+            // 7. Extraction and Verification Loop
+            while (totalVerified < countLimit) {
+                const text = targetMessage.message || "";
+                
+                // Flexible regex to catch numbers with or without a plus sign
+                const rawMatches = text.match(/\+?\d{1,4}[\s-]?\d{7,14}/g) || [];
+
+                for (const raw of rawMatches) {
+                    if (totalVerified >= countLimit) break;
+
+                    const cleanNum = raw.replace(/\D/g, ''); 
+                    
+                    if (seenNumbers.includes(cleanNum)) continue; 
+                    
+                    seenNumbers.push(cleanNum); 
+                    totalChecked++;
+
+                    const res = normalizeWithCountry(cleanNum);
+                    if (!res || !res.num) continue;
+                    
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    const jid = `${fullPhone}@s.whatsapp.net`;
+
+                    // --- LIVE WHATSAPP CHECK ---
+                    try {
+                        const [waCheck] = await sock.onWhatsApp(jid);
+                        if (waCheck && waCheck.exists) {
+                            totalVerified++;
+                            
+                            if (outputMode === 'chat') {
+                                currentBatch.push(`\`${res.num}\``);
+                                if (currentBatch.length >= 5) {
+                                    await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                                    currentBatch = [];
+                                }
+                            } else {
+                                allValidNumbers.push(res.num);
+                            }
+                        }
+                    } catch (e) {
+                        console.error("WA Check Error:", e.message);
+                    }
+                    
+                    // Update progress every 2 numbers
+                    if (totalChecked % 2 === 0) await updateProgress();
+
+                    // CRITICAL ANTI-BAN DELAY
+                    await delay(3000); 
+                }
+
+                if (totalVerified >= countLimit) break;
+
+                // 8. Pagination: Click the "Change/Refresh" Button
+                let clicked = false;
+                if (targetMessage.replyMarkup && targetMessage.replyMarkup.rows) {
+                    for (let r = 0; r < targetMessage.replyMarkup.rows.length; r++) {
+                        const row = targetMessage.replyMarkup.rows[r];
+                        for (let c = 0; c < row.buttons.length; c++) {
+                            const btnText = (row.buttons[c].text || "").toLowerCase();
+                            
+                            // ⚠️ Checks for common pagination words. 
+                            if (btnText.includes("change") || btnText.includes("update") || btnText.includes("next") || btnText.includes("refresh")) {
+                                await targetMessage.click(r, c);
+                                clicked = true;
+                                break;
+                            }
+                        }
+                        if (clicked) break;
+                    }
+                }
+
+                if (clicked) {
+                    await delay(4000); // Wait for the target bot to load new numbers
+                    
+                    const res = await userBot.getMessages(targetBot, { limit: 5 });
+                    let foundMenu = false;
+
+                    for (const msg of res) {
+                        // Look for the new message containing numbers
+                        if (msg.replyMarkup && /\d{8,15}/.test(msg.message || "")) {
+                            targetMessage = msg;
+                            foundMenu = true;
+                            break;
+                        }
+                    }
+
+                    if (!foundMenu) {
+                        await bot.sendMessage(chatId, "⚠️ [WARNING] Could not find the refreshed list. @ROCKETOTP_BOT might be out of stock or rate-limiting. Stopping here.", { parse_mode: 'Markdown' });
+                        break;
+                    }
+                    
+                } else {
+                    await bot.sendMessage(chatId, "⚠️ [WARNING] Could not find a button to load more numbers. Stopping here.", { parse_mode: 'Markdown' });
+                    break;
+                }
+            }
+
+            // 9. Final Output Delivery
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
+            
+            if (outputMode === 'chat' && currentBatch.length > 0) {
+                await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            } else if (outputMode === 'file' && allValidNumbers.length > 0) {
+                const fileBuffer = Buffer.from(allValidNumbers.join('\n'));
+                await bot.sendDocument(
+                    chatId, 
+                    fileBuffer, 
+                    { caption: `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers from @ROCKETOTP_BOT.`, parse_mode: 'Markdown' }, 
+                    { filename: `Rocket_WA_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
+                );
+            }
+
+            if (outputMode === 'chat') {
+                bot.sendMessage(chatId, `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers.`, { parse_mode: 'Markdown' });
+            }
+
+        } catch (err) {
+            bot.sendMessage(chatId, "❌ [ERROR] " + err.message);
+        }
+    });
+
+
+
     
 bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     const chatId = msg.chat.id.toString();

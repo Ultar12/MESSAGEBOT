@@ -1831,6 +1831,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
 
+    
+                
     // --- /getnu : ROCKETOTP_BOT Extractor ---
     bot.onText(/\/getnu\s+(\d+)/i, async (msg, match) => {
         deleteUserCommand(bot, msg);
@@ -1846,7 +1848,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
         // 2. Ensure we have an active WA bot to verify the numbers
         const activeFolders = Object.keys(clients).filter(f => clients[f]);
         if (activeFolders.length === 0) {
-            return bot.sendMessage(chatId, "❌ [ERROR] No WhatsApp bots connected. I need an active WA connection to verify the numbers.");
+            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected. I need an active WA connection to verify the numbers.");
         }
         const sock = clients[activeFolders[0]];
 
@@ -1889,25 +1891,24 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             await ensureConnected(); 
 
             // 5. Send initialization commands
-            let statusMsg = await bot.sendMessage(chatId, `⏳ Sending commands to @${targetBot}...`, { parse_mode: 'Markdown' });
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Sending commands to @${targetBot}...`);
 
             await userBot.sendMessage(targetBot, { message: "/start" }); 
-            await delay(2000); // Wait for the bot to reply to /start
+            await delay(2000); 
             await userBot.sendMessage(targetBot, { message: "🌐WHATSAPP" });
 
-            await bot.editMessageText(`[WAITING]\nSent \`/start\` and \`🌐WHATSAPP\` to @${targetBot}.\n\n**Please go to @${targetBot} on your main Telegram account now and select your country.**\nI am listening for the numbers to appear...`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
+            await bot.editMessageText(`[WAITING]\nSent /start and 🌐WHATSAPP to \`@${targetBot}\`.\n\nPlease go to \`@${targetBot}\` on your main Telegram account now and select your country.\nI am listening for the numbers to appear...`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
 
             let countrySelected = false;
             let attempts = 0;
             let targetMessage = null;
 
-            // 6. Wait for the user to pick a country (Detects when a message with numbers appears)
+            // 6. Wait for the user to pick a country
             while (!countrySelected && attempts < 60) { 
                 const res = await userBot.getMessages(targetBot, { limit: 1 }); 
                 const currentMsg = res[0];
                 const text = currentMsg?.message || "";
 
-                // If the message contains phone numbers and has buttons, we assume the list has loaded
                 if (/\d{8,15}/.test(text) && currentMsg.replyMarkup) {
                     countrySelected = true;
                     targetMessage = currentMsg;
@@ -1934,7 +1935,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 const text = `[ROCKET SCRAPING IN PROGRESS]\n\nTarget: ${countLimit}\nExtracted from Bot: ${totalChecked}\nVerified on WhatsApp: ${totalVerified}\n\nRunning anti-ban delay protocols...`;
                 try {
                     await bot.editMessageText(text, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-                } catch (e) { /* Ignore identical message edit errors */ }
+                } catch (e) { }
             };
 
             await updateProgress();
@@ -1943,7 +1944,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             while (totalVerified < countLimit) {
                 const text = targetMessage.message || "";
                 
-                // Flexible regex to catch numbers with or without a plus sign
                 const rawMatches = text.match(/\+?\d{1,4}[\s-]?\d{7,14}/g) || [];
 
                 for (const raw of rawMatches) {
@@ -1982,7 +1982,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                         console.error("WA Check Error:", e.message);
                     }
                     
-                    // Update progress every 2 numbers
                     if (totalChecked % 2 === 0) await updateProgress();
 
                     // CRITICAL ANTI-BAN DELAY
@@ -1999,7 +1998,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                         for (let c = 0; c < row.buttons.length; c++) {
                             const btnText = (row.buttons[c].text || "").toLowerCase();
                             
-                            // ⚠️ Checks for common pagination words. 
                             if (btnText.includes("change") || btnText.includes("update") || btnText.includes("next") || btnText.includes("refresh")) {
                                 await targetMessage.click(r, c);
                                 clicked = true;
@@ -2011,13 +2009,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 }
 
                 if (clicked) {
-                    await delay(4000); // Wait for the target bot to load new numbers
+                    await delay(4000);
                     
                     const res = await userBot.getMessages(targetBot, { limit: 5 });
                     let foundMenu = false;
 
                     for (const msg of res) {
-                        // Look for the new message containing numbers
                         if (msg.replyMarkup && /\d{8,15}/.test(msg.message || "")) {
                             targetMessage = msg;
                             foundMenu = true;
@@ -2026,12 +2023,12 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                     }
 
                     if (!foundMenu) {
-                        await bot.sendMessage(chatId, "⚠️ [WARNING] Could not find the refreshed list. @ROCKETOTP_BOT might be out of stock or rate-limiting. Stopping here.", { parse_mode: 'Markdown' });
+                        await bot.sendMessage(chatId, "[WARNING] Could not find the refreshed list. `@ROCKETOTP_BOT` might be out of stock or rate-limiting. Stopping here.", { parse_mode: 'Markdown' });
                         break;
                     }
                     
                 } else {
-                    await bot.sendMessage(chatId, "⚠️ [WARNING] Could not find a button to load more numbers. Stopping here.", { parse_mode: 'Markdown' });
+                    await bot.sendMessage(chatId, "[WARNING] Could not find a button to load more numbers. Stopping here.", { parse_mode: 'Markdown' });
                     break;
                 }
             }
@@ -2046,7 +2043,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 await bot.sendDocument(
                     chatId, 
                     fileBuffer, 
-                    { caption: `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers from @ROCKETOTP_BOT.`, parse_mode: 'Markdown' }, 
+                    { caption: `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers from \`@${targetBot}\`.`, parse_mode: 'Markdown' }, 
                     { filename: `Rocket_WA_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
                 );
             }
@@ -2056,7 +2053,7 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
             }
 
         } catch (err) {
-            bot.sendMessage(chatId, "❌ [ERROR] " + err.message);
+            bot.sendMessage(chatId, "[ERROR] " + err.message);
         }
     });
 

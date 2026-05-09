@@ -613,7 +613,7 @@ export async function startMobileRegistration(phoneNumber) {
 }
 
 
-async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null) {
+async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null, qrCallback = null) {
     let cachedShortId = await getShortId(folder);
     if (!cachedShortId) {
         cachedShortId = generateShortId();
@@ -896,22 +896,42 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
             // --- 🚀 EXTERNAL SERVER WEBHOOK TRIGGER ---
-            // If this session was initiated via API, notify the external server
+            // If this session was initiated via API, notify the external server using native fetch
             const externalCallback = sessionCallbacks.get(folder); 
             if (externalCallback) {
                 try {
-                    await axios.post(externalCallback, {
-                        success: true,
-                        sessionId: folder,
-                        shortId: cachedShortId,
-                        number: phoneNumber,
-                        session_data: content // Sends the raw JSON creds
+                    await fetch(externalCallback, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            success: true,
+                            sessionId: folder,
+                            shortId: cachedShortId,
+                            number: phoneNumber,
+                            session_data: content // Sends the raw JSON creds back to the URL
+                        })
                     });
                     console.log(`[API] Webhook sent to external server for ${phoneNumber}`);
                     sessionCallbacks.delete(folder); // Clean up memory
                 } catch (err) {
                     console.error(`[API ERROR] Webhook failed:`, err.message);
                 }
+            }
+            // ------------------------------------------
+
+            // --- 📱 SEND SESSION ID TO USER'S OWN WHATSAPP (SELF-CHAT) ---
+            try {
+                const selfMessage = 
+                    `*Bot Connection Successful*\n\n` +
+                    `Your account is now linked securely.\n\n` +
+                    `*Session ID:* \`${folder}\`\n` +
+                    `*Short ID:* \`${cachedShortId}\``;
+                
+                // userJid is the bot's own WhatsApp ID, so this sends a message to "Saved Messages" / Self
+                await sock.sendMessage(userJid, { text: selfMessage });
+                console.log(`[SELF-MESSAGE] Sent session ID to +${phoneNumber}`);
+            } catch (selfErr) {
+                console.error(`[SELF-MESSAGE ERROR] Failed to message self:`, selfErr.message);
             }
             // ------------------------------------------
 
@@ -944,6 +964,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 if (!clients[folder]) { try { await awardHourlyPoints([folder]); } catch (e) {} }
             }, 3600000);
         }
+  
 
 
         if (connection === 'close') {

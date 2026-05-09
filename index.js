@@ -951,10 +951,9 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [
-                            [{ text: "Connect Account" }, { text: "My Account" }],
-                            [{ text: "Dashboard" }, { text: "Referrals" }],
-                            [{ text: "Withdraw" }, { text: "Support" }]
-                        ], 
+        [{ text: "Connect Account" }, { text: "My Numbers" }], // Replaced List All
+        [{ text: "/stats" }, { text: "Balance" }]
+    ],
                         resize_keyboard: true 
                     } 
                 });

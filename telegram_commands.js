@@ -7796,10 +7796,11 @@ const cleanNumbers = matches.map(n => {
                 if (isUserAdmin) {
                     const AvailableFolders = Object.keys(clients).filter(f => 
     clients[f] && 
-    f === currentOtpSenderId && // ONLY use the dedicated account
-    !job.failedFolders.includes(f) && 
-    !f.startsWith('ext_')
+    f !== currentOtpSenderId && // STOPS it from using the Dedicated OTP Bot
+    !f.startsWith('ext_') &&    // STOPS it from using API/External accounts
+    !job.failedFolders.includes(f) // STOPS it from using dead/banned bots
 );
+
 
                 } else {
                     const mySessions = await getAllSessions(userId);

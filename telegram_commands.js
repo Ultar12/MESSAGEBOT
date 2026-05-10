@@ -7755,7 +7755,7 @@ const cleanNumbers = matches.map(n => {
                         const getActiveSocket = async () => {
                 let availableFolders = [];
                 if (isUserAdmin) {
-                    availableFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
+                    const AvailableFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f) && !f.startsWith('ext_'));
                 } else {
                     const mySessions = await getAllSessions(userId);
                     const mySessionIds = mySessions.map(s => s.session_id);

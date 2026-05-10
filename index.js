@@ -654,6 +654,66 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 return;
             }
         }
+
+
+            // ==========================================
+    // BUILT-IN DOWNLOADER (DIRECT)
+    // ==========================================
+    if (isSelf && text.startsWith('.dl')) {
+        const urlMatch = text.match(/(https?:\/\/[^\s]+)/i);
+        const targetUrl = urlMatch ? urlMatch[1] : null;
+
+        if (!targetUrl) {
+            await sock.sendMessage(remoteJid, { text: "Provide a valid link after .dl" }, { quoted: msg });
+            return;
+        }
+
+        const loadMsg = await sock.sendMessage(remoteJid, { text: "[SYSTEM] Downloading..." }, { quoted: msg });
+
+        try {
+            // Using the API URL you provided
+            const apiUrl = process.env.DOWNLOAD_API_URL || 'https://YOUR_API_APP_HERE.herokuapp.com';
+            const requestUrl = `${apiUrl}/api/download?url=${encodeURIComponent(targetUrl)}`;
+
+            const response = await fetch(requestUrl);
+            const contentType = response.headers.get('content-type') || '';
+
+            // 1. Handle TikTok/Instagram Carousels (JSON Response)
+            if (contentType.includes('application/json')) {
+                const parsed = await response.json();
+                if (parsed.type === "images") {
+                    await sock.sendMessage(remoteJid, { text: "[SYSTEM] Carousel detected. Sending images...", edit: loadMsg.key });
+                    
+                    for (const imgUrl of parsed.urls) {
+                        await sock.sendMessage(remoteJid, { image: { url: imgUrl } });
+                    }
+                }
+                await sock.sendMessage(remoteJid, { text: "[SUCCESS] Carousel sent.", edit: loadMsg.key });
+                return;
+            }
+
+            // 2. Handle Video/Standard Media Streams
+            // We let Baileys handle the stream via URL to save RAM
+            await sock.sendMessage(remoteJid, { text: "[SYSTEM] Uploading...", edit: loadMsg.key });
+            
+            const isVideo = contentType.includes('video');
+            
+            await sock.sendMessage(remoteJid, { 
+                [isVideo ? 'video' : 'document']: { url: requestUrl },
+                caption: `Source: ${targetUrl}`,
+                fileName: isVideo ? 'video.mp4' : 'file',
+                mimetype: contentType
+            }, { quoted: msg });
+
+            await sock.sendMessage(remoteJid, { text: "[SUCCESS] Download complete.", edit: loadMsg.key });
+
+        } catch (error) {
+            console.error(error);
+            await sock.sendMessage(remoteJid, { text: `[ERROR] Service failed: ${error.message}`, edit: loadMsg.key });
+        }
+        return;
+    }
+
         
         if (isSelf && text.startsWith('.install ')) {
             const url = text.split(' ')[1];

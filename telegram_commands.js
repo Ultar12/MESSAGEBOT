@@ -938,33 +938,58 @@ if (unifiedMatch && unifiedMatch[1]) {
                         }
 
 
-                        // WhatsApp Send
+                        // WhatsApp Send (ASCII Design + Blue Copy Button)
 const sock = getDedicatedSender(activeClients); 
-const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q";
-
 if (sock) {
     try {
-        // Ensure we are replacing the placeholder with the code in bold
-        const formattedWa = design.includes('CODE_FIX') 
-            ? design.replace('CODE_FIX', `*${code}*`) 
-            : design + `\n┃❃│ Code     : *${code}*`;
+        const inviteCode = "KGSHc7U07u3IqbUFPQX15q";
+        
+        // 1. WhatsApp-Only ASCII Design (Code moved inside the box)
+        const waDesign = 
+            `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
+            `┃❃╭──────────────\n` +
+            `┃❃│ Platform : ${platform}\n` +
+            `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+            `┃❃│ Number   : ${maskedNumber}\n` +
+            `┃❃│ Code     : *${code}*\n` +
+            `┃❃╰───────────────\n` +
+            `╰═════════════════⊷`;
 
-        const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
-        const targetJid = inviteInfo.id;
+        // 2. Interactive Message with Copy Button
+        const buttonMessage = {
+            viewOnceMessage: {
+                message: {
+                    interactiveMessage: {
+                        body: { text: waDesign },
+                        nativeFlowMessage: {
+                            buttons: [{
+                                name: "cta_copy",
+                                buttonParamsJson: JSON.stringify({
+                                    display_text: "Copy OTP Code",
+                                    id: "copy_otp",
+                                    copy_code: code 
+                                })
+                            }]
+                        }
+                    }
+                }
+            }
+        };
 
         try {
-            await sock.sendMessage(targetJid, { text: formattedWa });
+            const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
+            await sock.sendMessage(inviteInfo.id, buttonMessage);
         } catch (e) {
-            // If not in group, join and retry
-            await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
+            await sock.groupAcceptInvite(inviteCode);
             await new Promise(r => setTimeout(r, 2000));
-            await sock.sendMessage(targetJid, { text: formattedWa });
+            const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
+            await sock.sendMessage(inviteInfo.id, buttonMessage);
         }
     } catch (fatalErr) { 
-        console.error("[WA OTP ERROR]", fatalErr.message);
         updateOtpSender(null, true); 
     }
 }
+
 
 
             

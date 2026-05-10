@@ -84,23 +84,24 @@ const failedAccounts = new Set();
 
 /**
  * Updates the current OTP sender and tracks failures.
- * @param {string|null} id - The session ID to lock.
- * @param {boolean} wasError - If true, the account is blacklisted from being picked again.
  */
 export function updateOtpSender(id, wasError = false) {
     if (wasError && currentOtpSenderId) {
         failedAccounts.add(currentOtpSenderId);
-        console.log(`🚫 [BLACKLIST] ${currentOtpSenderId} added to failed list.`);
+        console.log(`[BLACKLIST] ${currentOtpSenderId} added to failed list.`);
+        currentOtpSenderId = null; 
+    } else {
+        currentOtpSenderId = id;
     }
     
-    currentOtpSenderId = id;
-    
-    if (id) {
-        console.log(`🔒 [SYSTEM] ${id} is now the LOCKED OTP Sender.`);
+    if (currentOtpSenderId) {
+        console.log(`[SYSTEM] ${currentOtpSenderId} is now the LOCKED OTP Sender.`);
     } else {
-        console.log(`🔓 [SYSTEM] OTP Sender reset. Searching for new candidate...`);
+        console.log(`[SYSTEM] OTP Sender reset. Searching for new candidate...`);
+        getDedicatedSender(clients);
     }
 }
+
 
 
 // 🚀 --- NEW ROCKET BOT SETUP --- 🚀

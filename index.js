@@ -41,6 +41,27 @@ const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
 const SESSIONS_DIR = './sessions';
 
 
+
+// --- DYNAMIC PLUGIN CACHE ---
+const pluginCache = new Map();
+
+function loadPlugins() {
+    const pluginDir = path.join(process.cwd(), 'plugins');
+    if (!fs.existsSync(pluginDir)) fs.mkdirSync(pluginDir, { recursive: true });
+    
+    const files = fs.readdirSync(pluginDir);
+    for (const file of files) {
+        if (file.endsWith('.js')) {
+            const code = fs.readFileSync(path.join(pluginDir, file), 'utf8');
+            pluginCache.set(file, code);
+        }
+    }
+}
+// Load plugins immediately on boot
+loadPlugins();
+
+
+
 // --- ANTI-DELETE CACHE ---
 const messageCache = new Map();
 const MAX_CACHE_SIZE = 5000; // Stores the last 5000 messages in RAM
@@ -729,6 +750,69 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     
     const myJid = jidNormalizedUser(sock.user.id);
     const isSelf = msg.key.fromMe; // Correctly identifies if message was sent by this linked device
+    
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+
+    // ==========================================
+    // DYNAMIC GIST PLUGIN ENGINE
+    // ==========================================
+    
+    // 1. THE .INSTALL COMMAND (STRICTLY OWNER ONLY)
+    // SECURITY: isSelf ensures no one else can inject malicious code into your server
+    if (isSelf && text.startsWith('.install ')) {
+        const url = text.split(' ')[1];
+        if (!url) {
+            await sock.sendMessage(remoteJid, { text: "[ERROR] Provide a GitHub Gist URL." });
+            return;
+        }
+
+        try {
+            await sock.sendMessage(remoteJid, { text: "[INSTALLING] Downloading code from GitHub..." });
+
+            // Ensure it uses the raw URL format for Gists
+            let rawUrl = url;
+            if (url.includes('gist.github.com') && !url.includes('/raw')) {
+                rawUrl = url + '/raw';
+            }
+
+            const response = await fetch(rawUrl);
+            if (!response.ok) throw new Error(`HTTP ${response.status} - Invalid URL or Private Gist`);
+            
+            const code = await response.text();
+            
+            // Save the file to disk permanently
+            const pluginName = `gist_${Date.now()}.js`;
+            const pluginDir = path.join(process.cwd(), 'plugins');
+            const pluginPath = path.join(pluginDir, pluginName);
+            
+            if (!fs.existsSync(pluginDir)) fs.mkdirSync(pluginDir, { recursive: true });
+            fs.writeFileSync(pluginPath, code);
+            
+            // Load it into live memory so it works instantly without rebooting
+            pluginCache.set(pluginName, code);
+
+            await sock.sendMessage(remoteJid, { text: `[SUCCESS] Installed as ${pluginName}\n\nThe commands in this Gist are now live.` });
+        } catch (e) {
+            await sock.sendMessage(remoteJid, { text: `[ERROR] Failed to install: ${e.message}` });
+        }
+        return; // Stop processing to prevent triggering anything else
+    }
+
+    // 2. RUN ALL ACTIVE PLUGINS
+    // This executes all saved Gists against the current message
+    if (text) {
+        for (const [name, code] of pluginCache.entries()) {
+            try {
+                // eval() runs the Gist code inside this exact scope.
+                // It allows the Gist to use variables like 'text', 'sock', 'remoteJid', and 'isSelf'.
+                eval(code); 
+            } catch (e) {
+                console.error(`[PLUGIN ERROR - ${name}]`, e.message);
+            }
+        }
+    }
+    // ==========================================
+
 
     // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
     if (isGroup && reactionConfigs[remoteJid]) {

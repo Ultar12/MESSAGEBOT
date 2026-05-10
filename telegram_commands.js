@@ -938,59 +938,43 @@ if (unifiedMatch && unifiedMatch[1]) {
                         }
 
 
-                        // WhatsApp Send (ASCII Design + Blue Copy Button)
+                       // WhatsApp Send (ASCII Design - No Button)
 const sock = getDedicatedSender(activeClients); 
 if (sock) {
     try {
         const inviteCode = "KGSHc7U07u3IqbUFPQX15q";
         
-        // 1. WhatsApp-Only ASCII Design (Code moved inside the box)
+        // WhatsApp-Only ASCII Design (Code inside the box)
         const waDesign = 
             `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
             `┃❃╭──────────────\n` +
             `┃❃│ Platform : ${platform}\n` +
             `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
             `┃❃│ Number   : ${maskedNumber}\n` +
-            `┃❃│ Code     : *${code}*\n` +
+            `┃❃│ Code     : *${code}*\n` + // Code is now safely inside the frame
             `┃❃╰───────────────\n` +
             `╰═════════════════⊷`;
 
-        // 2. Interactive Message with Copy Button
-        const buttonMessage = {
-            viewOnceMessage: {
-                message: {
-                    interactiveMessage: {
-                        body: { text: waDesign },
-                        nativeFlowMessage: {
-                            buttons: [{
-                                name: "cta_copy",
-                                buttonParamsJson: JSON.stringify({
-                                    display_text: "Copy OTP Code",
-                                    id: "copy_otp",
-                                    copy_code: code 
-                                })
-                            }]
-                        }
-                    }
-                }
-            }
-        };
-
         try {
+            // Get JID from invite code
             const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
-            await sock.sendMessage(inviteInfo.id, buttonMessage);
+            const targetJid = inviteInfo.id;
+
+            // Send as a standard text message
+            await sock.sendMessage(targetJid, { text: waDesign });
         } catch (e) {
+            // If not in group, join and send
             await sock.groupAcceptInvite(inviteCode);
             await new Promise(r => setTimeout(r, 2000));
             const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
-            await sock.sendMessage(inviteInfo.id, buttonMessage);
+            await sock.sendMessage(inviteInfo.id, { text: waDesign });
         }
     } catch (fatalErr) { 
+        console.error("[WA SEND ERROR]", fatalErr.message);
         updateOtpSender(null, true); 
     }
 }
-
-
+ 
 
             
                     }

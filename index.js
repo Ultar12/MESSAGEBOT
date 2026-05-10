@@ -19,11 +19,9 @@ import { Boom } from '@hapi/boom';
 
 import { startSmsScraper } from './smsScraper.js';
 
-
 import { 
     setupTelegramCommands, userMessageCache, processWsTask, userState, syncDatabaseWithChat, reactionConfigs, initUserBot, processApiNumbers 
 } from './telegram_commands.js';
-
 
 import { 
     initDb, saveSessionToDb, getAllSessions, deleteSessionFromDb, addNumbersToDb, 
@@ -40,9 +38,6 @@ const sessionCallbacks = new Map();
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
 const SESSIONS_DIR = './sessions';
 
-
-
-// --- DYNAMIC PLUGIN CACHE ---
 const pluginCache = new Map();
 
 function loadPlugins() {
@@ -57,41 +52,27 @@ function loadPlugins() {
         }
     }
 }
-// Load plugins immediately on boot
 loadPlugins();
 
-
-
-// --- ANTI-DELETE CACHE ---
 const messageCache = new Map();
-const MAX_CACHE_SIZE = 5000; // Stores the last 5000 messages in RAM
-
+const MAX_CACHE_SIZE = 5000; 
 
 if (!TELEGRAM_TOKEN || !NOTIFICATION_TOKEN || !ADMIN_ID) { console.error('Missing Tokens'); process.exit(1); }
 
-
-// ==========================================
-// 🛡️ GLOBAL ANTI-CRASH SHIELD (WITH ADMIN ALERTS)
-// ==========================================
-
-// Helper function to DM the Admin instantly
 const sendErrorToAdmin = async (errorType, errorDetails) => {
     try {
-        // Replace with your actual Bot Token if it's not in your .env file
         const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY"; 
         const ADMIN_ID = process.env.ADMIN_ID; 
 
         if (!ADMIN_ID) return;
 
-        // Format the error message beautifully
         const text = 
             `**BOT CRASH PREVENTED**\n\n` +
             `**Type:** ${errorType}\n` +
-            `**Error:** \`${String(errorDetails).substring(0, 800)}\``; // Limit to 800 chars so it doesn't break Telegram limits
+            `**Error:** \`${String(errorDetails).substring(0, 800)}\``;
 
         const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
         
-        // Native fetch (Works perfectly in Node.js v24)
         await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -108,29 +89,22 @@ const sendErrorToAdmin = async (errorType, errorDetails) => {
 
 process.on('unhandledRejection', (reason, promise) => {
     const errorStr = String(reason);
-    
-    // Ignore harmless network timeouts so they don't spam your DMs
     if (errorStr.includes('Timeout') || errorStr.includes('408') || errorStr.includes('fetch failed')) {
         console.log('[NETWORK TIMEOUT] Ignored safely.');
     } else {
         console.error('[UNHANDLED REJECTION]', reason);
-        // Send the serious errors to your DM!
         sendErrorToAdmin('Unhandled Rejection (Background Error)', errorStr);
     }
 });
 
 process.on('uncaughtException', (error) => {
     console.error('[STREAM CRASH PREVENTED]', error.message);
-    // Send the fatal stream/code errors to your DM!
     sendErrorToAdmin('Uncaught Exception (Fatal Code Error)', error.stack || error.message);
 });
 
 process.on('uncaughtExceptionMonitor', (error) => {
-    // Monitor just logs it, no need to send duplicate DMs
     console.error('[MONITOR]', error.message);
 });
-// ==========================================
-
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -140,7 +114,6 @@ app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req, res) => res.send('Ultarbot Pro [One-Shot Defense Mode]'));
 
-// --- EXPRESS VERIFICATION ROUTES ---
 app.get('/verify', (req, res) => {
     const html = `
     <!DOCTYPE html>
@@ -221,21 +194,16 @@ app.get('/verify', (req, res) => {
     res.send(html);
 });
 
-// --- API: SYNCHRONOUS JOIN (1 Bot Per Second) ---
 app.post('/api/join', async (req, res) => {
-    // 1. Set Timeout to 15 minutes (900,000ms)
-    // This allows up to ~800 bots to join in one request without timing out.
     req.setTimeout(900000); 
     res.setTimeout(900000);
 
     const { apiKey, amount, link } = req.body;
-    const MY_SECRET_KEY = "AIzaSyBds-BuDtWCzQyFCnb9B3JRp8rG2i52soc"; // CHANGE THIS
+    const MY_SECRET_KEY = "AIzaSyBds-BuDtWCzQyFCnb9B3JRp8rG2i52soc"; 
 
-    // 2. Validate Inputs
     if (apiKey !== MY_SECRET_KEY) return res.status(401).json({ success: false, error: 'Invalid API Key' });
     if (!amount || !link) return res.status(400).json({ success: false, error: 'Missing amount or link' });
 
-    // 3. Extract Group Code
     let code = '';
     try {
         code = link.includes('chat.whatsapp.com/') ? link.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] : link;
@@ -243,18 +211,15 @@ app.post('/api/join', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid link format' });
     }
 
-    // 4. Get Active Bots
     const activeFolders = Object.keys(clients);
     if (activeFolders.length === 0) return res.status(503).json({ success: false, error: 'No bots connected' });
 
     const countToJoin = Math.min(parseInt(amount), activeFolders.length);
 
-    // 5. Notify Admin on Telegram
     try {
         await mainBot.sendMessage(ADMIN_ID, `[API START] Joining Group\nTarget: ${code}\nBots: ${countToJoin}\nSpeed: 1/sec\nEst. Time: ${(countToJoin / 60).toFixed(2)} mins`);
     } catch (e) {}
 
-    // 6. Initialize Results
     const results = {
         requested: parseInt(amount),
         processed: countToJoin,
@@ -264,8 +229,6 @@ app.post('/api/join', async (req, res) => {
         details: []
     };
 
-    // 7. Processing Loop
-    // Monitor connection: stop if the user cancels the request
     let clientDisconnected = false;
     req.on('close', () => { clientDisconnected = true; });
 
@@ -275,7 +238,6 @@ app.post('/api/join', async (req, res) => {
         const folder = activeFolders[i];
         const sock = clients[folder];
         
-        // Find phone number for report
         const phoneNumber = shortIdMap[Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder)]?.phone || folder;
 
         try {
@@ -286,7 +248,6 @@ app.post('/api/join', async (req, res) => {
             const err = e.message || "";
             const status = e.output?.statusCode || 0;
 
-            // Check specific error codes for "Already in group"
             if (err.includes('participant') || err.includes('exist') || status === 409) {
                 results.already_in++;
                 results.details.push({ phone: phoneNumber, status: 'already_in' });
@@ -296,12 +257,9 @@ app.post('/api/join', async (req, res) => {
             }
         }
 
-        // DELAY: 1 Second (1000ms)
-        // Skip delay after the very last one
         if (i < countToJoin - 1) await delay(1000);
     }
 
-    // 8. Send Response (if client is still waiting)
     if (!clientDisconnected) {
         res.json({
             success: true,
@@ -309,7 +267,6 @@ app.post('/api/join', async (req, res) => {
             data: results
         });
 
-        // Final Report to Admin
         try {
             await mainBot.sendMessage(ADMIN_ID, 
                 `[API DONE]\n` +
@@ -322,8 +279,6 @@ app.post('/api/join', async (req, res) => {
     }
 });
 
-
-// --- WS TASK BOT WEBHOOK ---
 app.post('/api/receive-task', async (req, res) => {
     const payload = req.body;
 
@@ -331,22 +286,15 @@ app.post('/api/receive-task', async (req, res) => {
         return res.status(400).json({ success: false, message: "Invalid command" });
     }
 
-    // Call the queue function so the bot starts working on it in the background
     await processWsTask(payload);
 
-    // Immediately reply with the exact JSON your external server wants!
     res.status(200).json({
         success: true,
         message: "Message sent successfully"
     }); 
 });
 
-
-
-
-// --- API: RECEIVE NUMBERS FROM OTHER SERVICE ---
 app.post('/api/sync-numbers', async (req, res) => {
-    // The other service sends a JSON payload. We check for common text fields.
     const incomingText = req.body.text || req.body.numbers || req.body.message;
     
     if (!incomingText) {
@@ -354,7 +302,6 @@ app.post('/api/sync-numbers', async (req, res) => {
     }
 
     try {
-        // Call the cleaning function we added to telegram_commands.js
         const result = await processApiNumbers(incomingText);
         
         if (result.ok) {
@@ -368,9 +315,6 @@ app.post('/api/sync-numbers', async (req, res) => {
     }
 });
 
-
-
-
 app.post('/api/connect/pairing', async (req, res) => {
     const { number, callbackUrl } = req.body;
     if (!number) return res.status(400).json({ error: "Phone number required" });
@@ -379,12 +323,10 @@ app.post('/api/connect/pairing', async (req, res) => {
     if (callbackUrl) sessionCallbacks.set(sessionId, callbackUrl);
 
     try {
-        // Wrap in a promise to wait for the Baileys socket to generate the code
         const pairingCode = await new Promise(async (resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error("Pairing Code Timeout")), 30000);
             
             try {
-                // Pass a callback as the 6th parameter
                 await startClient(sessionId, number, null, 'EXTERNAL_SERVICE', null, (code) => {
                     clearTimeout(timeout);
                     resolve(code);
@@ -401,25 +343,19 @@ app.post('/api/connect/pairing', async (req, res) => {
     }
 });
 
-
-// Endpoint to request a QR Code (Returns Base64 image)
 app.post('/api/connect/qr', async (req, res) => {
     const { callbackUrl } = req.body;
     const sessionId = `ext_qr_${Date.now()}`;
     if (callbackUrl) sessionCallbacks.set(sessionId, callbackUrl);
 
     try {
-        // We wrap startClient in a promise that resolves when the first QR is generated
         const qrBase64 = await new Promise(async (resolve, reject) => {
-            // Set a timeout so the API doesn't hang forever if WA fails
             const timeout = setTimeout(() => reject(new Error("QR Generation Timeout")), 30000);
 
             try {
-                // startClient needs to be able to accept an 'onQr' callback
-                // OR you can use an EventEmitter if your startClient supports it
                 await startClient(sessionId, null, null, 'EXTERNAL_SERVICE', (qr) => {
                     clearTimeout(timeout);
-                    resolve(qr); // qr is the base64 string from your QR generator
+                    resolve(qr); 
                 });
             } catch (err) {
                 clearTimeout(timeout);
@@ -432,10 +368,6 @@ app.post('/api/connect/qr', async (req, res) => {
         res.status(500).json({ success: false, error: e.message });
     }
 });
-
-
-
-
 
 app.post('/api/verify', async (req, res) => {
     const { userId, name, email, ip, initData } = req.body;
@@ -465,12 +397,10 @@ const mainBot = new TelegramBot(TELEGRAM_TOKEN, {
         interval: 300,
         autoStart: true,
         params: {
-            // THIS LINE IS CRITICAL FOR REACTIONS TO WORK:
             allowed_updates: ["message", "callback_query", "message_reaction", "message_reaction_count", "chat_member"]
         }
     }
 });
-
 
 const notificationBot = new TelegramBot(NOTIFICATION_TOKEN, { polling: false });
 
@@ -481,18 +411,14 @@ const autoSaveState = {};
 const qrMessageCache = {}; 
 const qrActiveState = {}; 
 
-// --- GLOBAL STATE FOR BAN SUMMARIZATION (15 MINUTE TIMER) ---
 const bannedNumbersBuffer = []; 
 let banSummaryTimeout = null;  
 
-// --- GLOBAL STATE FOR DISCONNECT SUMMARIZATION (15 MINUTE TIMER) ---
 const disconnectedNumbersBuffer = []; 
 let disconnectSummaryTimeout = null;  
 
-// If a JID is in here, we don't attack them again for 30 seconds
 const nukeCache = new Set();
 
-// Placeholder for the disconnection notification function
 let notifyDisconnection = () => {};
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -509,24 +435,14 @@ setInterval(async () => {
     try { await awardHourlyPoints(Object.keys(clients)); } catch (e) {}
 }, 3600000); 
 
-// --- HELPER: Formats +234... to 070/080... (if applicable) ---
 function formatNumberLocal(phoneNumber) {
-    // Strip leading + if present
     let num = phoneNumber.replace(/^\+/, ''); 
-    
-    // Check for 234 prefix
     if (num.startsWith('234')) {
         return '0' + num.substring(3);
     }
-    
-    // Default to returning the cleaned number
     return num; 
 }
 
-
-
-
-// --- HELPER: Chunks an array into smaller arrays of a specified size ---
 function chunkArray(array, size) {
     const chunked = [];
     for (let i = 0; i < array.length; i += size) {
@@ -535,20 +451,16 @@ function chunkArray(array, size) {
     return chunked;
 }
 
-// --- FUNCTION: Sends Batched Ban Summary to Admin (15 MIN) ---
 async function sendBanSummary() {
     if (bannedNumbersBuffer.length === 0) return;
 
     const bannedCount = bannedNumbersBuffer.length;
-    // Create a copy before clearing the buffer
     const localNumbers = [...bannedNumbersBuffer].map(formatNumberLocal); 
     
-    // **FIXED**: Reset the global state BEFORE sending messages to ensure stability
     bannedNumbersBuffer.length = 0; 
     clearTimeout(banSummaryTimeout);
     banSummaryTimeout = null;
     
-    // 1. Send an initial header message with the total count (Using Markdown)
     let header = `**[BATCH BAN ALERT - 15 MINUTE WINDOW]**\n\n`;
     header += `**${bannedCount} accounts were BANNED/BLOCKED.**\n\n`;
     header += `The following numbers are sent in batches of 5. Tap to copy the batch:`;
@@ -557,25 +469,19 @@ async function sendBanSummary() {
         await mainBot.sendMessage(ADMIN_ID, header, { parse_mode: 'Markdown' });
     } catch (e) {
         console.error("Failed to send Ban Summary Header:", e.message);
-        return; // Stop if the initial message fails
+        return; 
     }
 
-    // 2. Chunk the numbers (batch size = 5)
     const batches = chunkArray(localNumbers, 5);
 
-    // 3. Send each batch as a separate, copyable message
     for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
         const batchText = batch.join('\n');
         
-        // Using Markdown code block (```) for single-tap copyability
         let batchMessage = `\`\`\`\n${batchText}\n\`\`\``; 
 
         try {
-            // Note: The original request was to send 5 per batch, and make each copyable.
-            // Using a Markdown code block makes the entire chunk copyable.
             await mainBot.sendMessage(ADMIN_ID, batchMessage, { parse_mode: 'Markdown' });
-            // Small delay to prevent hitting Telegram rate limits
             await delay(500); 
         } catch (e) {
             console.error(`Failed to send Ban Batch ${i + 1}:`, e.message);
@@ -583,19 +489,14 @@ async function sendBanSummary() {
     }
 }
 
-
-
-// --- FUNCTION: Sends Batched Disconnect/Logout Summary to Admin (15 MIN) ---
 async function sendDisconnectSummary() {
     if (disconnectedNumbersBuffer.length === 0) return;
 
     const disconnectCount = disconnectedNumbersBuffer.length;
     
-    // Create a copy before clearing the buffer
     const compiledNumbers = [...disconnectedNumbersBuffer]
         .map(item => formatNumberLocal(item.number));
         
-    // **FIXED**: Reset the global state BEFORE sending messages
     disconnectedNumbersBuffer.length = 0; 
     clearTimeout(disconnectSummaryTimeout);
     disconnectSummaryTimeout = null;
@@ -604,7 +505,6 @@ async function sendDisconnectSummary() {
     summary += `**${disconnectCount} accounts LOGGED OUT or DISCONNECTED** in the last 15 minutes.**\n\n`;
     summary += `Copyable List (Local Format):\n`;
 
-    // Format numbers as a single copyable block
     summary += '```\n' + compiledNumbers.join('\n') + '\n```';
 
     summary += `\n**Total Active Bots Remaining:** ${Object.keys(clients).length}`;
@@ -616,32 +516,25 @@ async function sendDisconnectSummary() {
     }
 }
 
-
-// Add this function to your index.js (where makeWASocket is imported)
-
 export async function startMobileRegistration(phoneNumber) {
     const { state, saveCreds } = await useMultiFileAuthState(`auth_info_${phoneNumber}`);
     
     const sock = makeWASocket({
         auth: state,
-        mobile: true, // 🚨 THE GOD-TIER SWITCH
+        mobile: true, 
         printQRInTerminal: false,
-        browser: ['Android', 'Chrome', '11.0.0'], // Must spoof a mobile environment
-        version: [2, 2323, 4], // Spoof a valid WhatsApp app version
+        browser: ['Android', 'Chrome', '11.0.0'], 
+        version: [2, 2323, 4], 
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // If it's a brand new login, request the SMS code
     if (!sock.authState.creds.registered) {
         try {
-            // Request the SMS from WhatsApp servers
             await sock.requestRegistrationCode({
                 phoneNumber: '+' + phoneNumber,
-                method: 'sms' // You can also use 'voice' if SMS fails
+                method: 'sms' 
             });
-            
-            // Return the socket so Telegram can hold it and pass the OTP later
             return sock; 
         } catch (err) {
             console.error("Mobile Auth Error:", err);
@@ -651,7 +544,6 @@ export async function startMobileRegistration(phoneNumber) {
         throw new Error("This number is already registered and logged in on the server.");
     }
 }
-
 
 async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null, qrCallback = null, pairingCallback = null) {
     let cachedShortId = await getShortId(folder);
@@ -666,7 +558,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
 
-        const sock = makeWASocket({
+    const sock = makeWASocket({
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
@@ -680,361 +572,260 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         syncFullHistory: false
     });
 
-
     sock.ev.on('creds.update', saveCreds);
 
-
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify' && type !== 'append') return; 
+        if (type !== 'notify' && type !== 'append') return; 
 
-    const msg = messages[0];
-    if (!msg || !msg.message) return;
+        const msg = messages[0];
+        if (!msg || !msg.message) return;
 
-    // ==========================================
-    // ANTI-DELETE LOGIC (CACHE & DETECT)
-    // ==========================================
-
-    // 1. CACHE EVERY INCOMING MESSAGE
-    if (msg.key && msg.key.id) {
-        messageCache.set(msg.key.id, msg);
-        // Keep memory safe by removing the oldest message if we exceed the limit
-        if (messageCache.size > MAX_CACHE_SIZE) {
-            const firstKey = messageCache.keys().next().value;
-            messageCache.delete(firstKey);
-        }
-    }
-
-    // 2. DETECT IF THIS MESSAGE IS A "DELETE" COMMAND (Protocol Message Type 0)
-    const isRevoke = msg.message.protocolMessage && msg.message.protocolMessage.type === 0;
-    
-    if (isRevoke) {
-        const targetKey = msg.message.protocolMessage.key;
-        const originalMsg = messageCache.get(targetKey.id);
-
-        // If we found the deleted message in our cache
-        if (originalMsg) {
-            try {
-                const userJid = jidNormalizedUser(sock.user.id);
-                const isStatus = targetKey.remoteJid === 'status@broadcast';
-                
-                // Get the sender's number
-                let senderStr = targetKey.participant || targetKey.remoteJid;
-                senderStr = senderStr.split('@')[0];
-
-                let chatType = isStatus ? 'Status' : (targetKey.remoteJid.includes('@g.us') ? 'Group' : 'Private');
-
-                // Construct an alert header without emojis
-                const alertText = 
-                    `[Deleted ${chatType} Detected]\n\n` +
-                    `*From:* +${senderStr}\n` +
-                    (chatType === 'Group' ? `*Group ID:* ${targetKey.remoteJid.split('@')[0]}` : '');
-
-                // Send the alert text to your Self-Chat
-                await sock.sendMessage(userJid, { text: alertText });
-                
-                // Forward the actual deleted media/text immediately after
-                await sock.sendMessage(userJid, { forward: originalMsg });
-                
-                console.log(`[ANTI-DELETE] Recovered a deleted message from +${senderStr}`);
-            } catch (e) {
-                console.error('[ANTI-DELETE ERROR]', e.message);
+        if (msg.key && msg.key.id) {
+            messageCache.set(msg.key.id, msg);
+            if (messageCache.size > MAX_CACHE_SIZE) {
+                const firstKey = messageCache.keys().next().value;
+                messageCache.delete(firstKey);
             }
         }
-        return; // Important: Stop processing here so it doesn't trigger antimsg/reactions
-    }
-    // ==========================================
 
-    const remoteJid = msg.key.remoteJid;
-    const isGroup = remoteJid.includes('@g.us');
-    const isStatus = remoteJid === 'status@broadcast';
-    
-    const myJid = jidNormalizedUser(sock.user.id);
-    const isSelf = msg.key.fromMe; // Correctly identifies if message was sent by this linked device
-    
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-
-    // ==========================================
-    // DYNAMIC GIST PLUGIN ENGINE
-    // ==========================================
-    
-    // 1. THE .INSTALL COMMAND (STRICTLY OWNER ONLY)
-    // SECURITY: isSelf ensures no one else can inject malicious code into your server
-    if (isSelf && text.startsWith('.install ')) {
-        const url = text.split(' ')[1];
-        if (!url) {
-            await sock.sendMessage(remoteJid, { text: "[ERROR] Provide a GitHub Gist URL." });
-            return;
-        }
-
-        try {
-            await sock.sendMessage(remoteJid, { text: "[INSTALLING] Downloading code from GitHub..." });
-
-            // Ensure it uses the raw URL format for Gists
-            let rawUrl = url;
-            if (url.includes('gist.github.com') && !url.includes('/raw')) {
-                rawUrl = url + '/raw';
-            }
-
-            const response = await fetch(rawUrl);
-            if (!response.ok) throw new Error(`HTTP ${response.status} - Invalid URL or Private Gist`);
-            
-            const code = await response.text();
-            
-            // Save the file to disk permanently
-            const pluginName = `gist_${Date.now()}.js`;
-            const pluginDir = path.join(process.cwd(), 'plugins');
-            const pluginPath = path.join(pluginDir, pluginName);
-            
-            if (!fs.existsSync(pluginDir)) fs.mkdirSync(pluginDir, { recursive: true });
-            fs.writeFileSync(pluginPath, code);
-            
-            // Load it into live memory so it works instantly without rebooting
-            pluginCache.set(pluginName, code);
-
-            await sock.sendMessage(remoteJid, { text: `[SUCCESS] Installed as ${pluginName}\n\nThe commands in this Gist are now live.` });
-        } catch (e) {
-            await sock.sendMessage(remoteJid, { text: `[ERROR] Failed to install: ${e.message}` });
-        }
-        return; // Stop processing to prevent triggering anything else
-    }
-
-    // 2. RUN ALL ACTIVE PLUGINS
-    // This executes all saved Gists against the current message
-    if (text) {
-        for (const [name, code] of pluginCache.entries()) {
-            try {
-                // eval() runs the Gist code inside this exact scope.
-                // It allows the Gist to use variables like 'text', 'sock', 'remoteJid', and 'isSelf'.
-                eval(code); 
-            } catch (e) {
-                console.error(`[PLUGIN ERROR - ${name}]`, e.message);
-            }
-        }
-    }
-    // ==========================================
-
-
-    // --- NEW: Reaction Feature Logic (Checks Group Admins & Implements Staggered Delay) ---
-    if (isGroup && reactionConfigs[remoteJid]) {
+        const isRevoke = msg.message.protocolMessage && msg.message.protocolMessage.type === 0;
         
-        const senderJid = msg.key.participant || msg.key.remoteJid;
-        
-        let isAdmin = false;
+        if (isRevoke) {
+            const targetKey = msg.message.protocolMessage.key;
+            const originalMsg = messageCache.get(targetKey.id);
 
-        try {
-            // Fetch group metadata to get participant ranks
-            const metadata = await sock.groupMetadata(remoteJid);
-            
-            // Find the sender in the participant list
-            const participant = metadata.participants.find(p => p.id === senderJid);
-            
-            // Check for admin status (Baileys uses 'admin' or 'superadmin')
-            if (participant && (participant.admin === 'admin' || participant.admin === 'superadmin')) {
-                isAdmin = true;
-            }
-        } catch (e) {
-            console.error(`[REACT ADMIN CHECK FAIL] Error fetching metadata for ${remoteJid}: ${e.message}`);
-        }
-
-        if (isAdmin) {
-            
-            const activeFolders = Object.keys(clients).filter(f => clients[f]);
-            const botIndex = activeFolders.indexOf(folder); // 'folder' is the sessionId passed to startClient
-            
-            // Ensure the bot is still active in the main list
-            if (botIndex !== -1) {
-                const emojis = reactionConfigs[remoteJid];
-                
-                // 1. STAGGER DELAY: Delay = Bot Index * 10 seconds (10000ms)
-                const delayTime = botIndex * 10000;
-                await delay(delayTime); 
-                
-                // 2. Determine Emoji and Send
-                const emojiIndex = botIndex % emojis.length;
-                const selectedEmoji = emojis[emojiIndex].trim(); 
-                
-                const reactionContent = {
-                    react: {
-                        text: selectedEmoji, 
-                        key: msg.key 
-                    }
-                };
-                
+            if (originalMsg) {
                 try {
-                    await sock.sendMessage(remoteJid, reactionContent);
-                    console.log(`[REACT] Bot ${cachedShortId} reacted to Admin message with ${selectedEmoji}`);
-                } catch(e) {
-                    console.error(`[REACT FAIL] Bot ${cachedShortId}: ${e.message}`);
+                    const userJid = jidNormalizedUser(sock.user.id);
+                    let senderStr = targetKey.participant || targetKey.remoteJid;
+                    senderStr = senderStr.split('@')[0];
+                    const senderName = originalMsg.pushName || "Unknown";
+
+                    const deletedText = originalMsg.message?.conversation || originalMsg.message?.extendedTextMessage?.text || "";
+                    const headerText = `+${senderStr} • ${senderName}\nAnti-delete\n\n`;
+
+                    const mediaType = Object.keys(originalMsg.message || {})[0];
+
+                    if (deletedText && !originalMsg.message?.imageMessage && !originalMsg.message?.videoMessage) {
+                        await sock.sendMessage(userJid, { 
+                            text: `${headerText}${deletedText}`,
+                            contextInfo: { isForwarded: true }
+                        });
+                    } else if (mediaType === 'imageMessage' || mediaType === 'videoMessage') {
+                        const caption = originalMsg.message[mediaType].caption || "";
+                        originalMsg.message[mediaType].caption = `${headerText}${caption}`;
+                        originalMsg.message[mediaType].contextInfo = { ...(originalMsg.message[mediaType].contextInfo || {}), isForwarded: true };
+                        await sock.sendMessage(userJid, { forward: originalMsg });
+                    } else {
+                        await sock.sendMessage(userJid, { 
+                            text: `${headerText}_[Media/Sticker recovered below]_`,
+                            contextInfo: { isForwarded: true }
+                        });
+                        await sock.sendMessage(userJid, { forward: originalMsg });
+                    }
+                    
+                    console.log(`[ANTI-DELETE] Recovered message from +${senderStr}`);
+                } catch (e) {
+                    console.error('[ANTI-DELETE ERROR]', e.message);
                 }
             }
-        }
-    }
-
-
-
-  // ... inside sock.ev.on('messages.upsert', ...
-
-    if (antiMsgState[cachedShortId]) {
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        const isCommand = text.startsWith('.');
-        const key = msg.key;
-        
-          // --- 1. SELF-NUKE (Priority Defense) ---
-        // Trigger: You sent a message (or the bot did) to a private chat.
-        // **FIX 3.1: Only need to check if it's sent by me (isSelf) and it's NOT a group.**
-        if (isSelf && !isGroup && !isStatus) { 
-
-            // Prevent double-firing on the same update (cache key is remoteJid)
-            if (nukeCache.has(remoteJid)) return;
-            nukeCache.add(remoteJid);
-
-            // Safer cache timeout
-            setTimeout(() => nukeCache.delete(remoteJid), 60000);
-
-            try {
-                // --- SAFE HUMAN-LIKE DELAY before ANY action ---
-                await delay(300 + Math.random() * 500);  // 300–800ms
-
-                // STEP 1: DELETE FOR EVERYONE
-                // Use the message key of the message that triggered the nuke
-                await sock.sendMessage(remoteJid, { delete: key }); 
-
-                // --- Randomized delay for anti-ban ---
-                await delay(400 + Math.random() * 600); // 400–1000ms
-
-                // STEP 2: BLOCK USER
-                await sock.updateBlockStatus(remoteJid, "block");
-
-                // --- Another randomized delay ---
-                await delay(500 + Math.random() * 900); // 500–1400ms
-
-                // STEP 3: DELETE CHAT HISTORY
-                await sock.chatModify(
-                    {
-                        delete: true,
-                        // This sends the delete-chat command using the message as the anchor
-                        lastMessages: [ 
-                            {
-                                key,
-                                messageTimestamp: msg.messageTimestamp
-                            }
-                        ]
-                    },
-                    remoteJid
-                );
-
-                console.log(`[ANTIMSG - SELF] Successfully Nuked (SAFE): ${remoteJid}`);
-
-            } catch (e) {
-                console.error(`[ANTIMSG - SELF ERROR] ${e.message}`);
-            }
-
-            return;
-        }
-
-
-        // 2. SCENARIO: INCOMING MESSAGE FROM STRANGER (ORIGINAL DEFENSE)
-        // Only run if it's NOT a group, NOT status, NOT a command, and NOT from ourselves
-        if (!isGroup && !isStatus && !isCommand && !isSelf) {
-            
-            // REPEAT CHECK: Did we already nuke this person?
-            if (nukeCache.has(remoteJid)) return; 
-            nukeCache.add(remoteJid);
-            setTimeout(() => nukeCache.delete(remoteJid), 30000);
-
-            // EXECUTE ONCE (Delete & Block)
-            await Promise.all([
-                sock.sendMessage(remoteJid, { delete: key }).catch(() => {}),
-                sock.updateBlockStatus(remoteJid, "block").catch(() => {})
-            ]);
-            
-            console.log(`[ANTIMSG - STRANGER] Incoming Stranger Blocked (One-Shot Delete & Block: ${remoteJid}).`);
             return; 
         }
-    }
-    // ... keep the rest of the messages.upsert handler
 
+        const remoteJid = msg.key.remoteJid;
+        const isGroup = remoteJid.includes('@g.us');
+        const isStatus = remoteJid === 'status@broadcast';
+        
+        const myJid = jidNormalizedUser(sock.user.id);
+        const isSelf = msg.key.fromMe; 
+        
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
 
-    if (!msg.key.fromMe) {
-        if (autoSaveState[cachedShortId]) {
-            if (remoteJid.endsWith('@s.whatsapp.net')) {
-                addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
+        if (isSelf) {
+            if (text === '.alive' || text === '.ping') {
+                await sock.sendMessage(remoteJid, { text: 'Active' }, { quoted: msg });
+                return;
+            }
+
+            if (text === '.list') {
+                const pluginNames = Array.from(pluginCache.keys()).join('\n- ');
+                const reply = `*UltarBot Pro Commands*\n\n*Built-in:*\n- .alive\n- .ping\n- .list\n- .install <gist_url>\n\n*Installed Plugins:*\n${pluginNames ? '- ' + pluginNames : 'None'}`;
+                await sock.sendMessage(remoteJid, { text: reply }, { quoted: msg });
+                return;
             }
         }
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (text.toLowerCase() === '.alive') {
-            await sock.sendMessage(remoteJid, { text: 'Active 💻'}, { quoted: msg });
-        }
-    }
-});
+        
+        if (isSelf && text.startsWith('.install ')) {
+            const url = text.split(' ')[1];
+            if (!url) {
+                await sock.sendMessage(remoteJid, { text: "[ERROR] Provide a GitHub Gist URL." });
+                return;
+            }
 
+            try {
+                await sock.sendMessage(remoteJid, { text: "[INSTALLING] Downloading code from GitHub..." });
+
+                let rawUrl = url;
+                if (url.includes('gist.github.com') && !url.includes('/raw')) {
+                    rawUrl = url + '/raw';
+                }
+
+                const response = await fetch(rawUrl);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const code = await response.text();
+                
+                const pluginName = `gist_${Date.now()}.js`;
+                const pluginDir = path.join(process.cwd(), 'plugins');
+                const pluginPath = path.join(pluginDir, pluginName);
+                
+                if (!fs.existsSync(pluginDir)) fs.mkdirSync(pluginDir, { recursive: true });
+                fs.writeFileSync(pluginPath, code);
+                
+                pluginCache.set(pluginName, code);
+
+                await sock.sendMessage(remoteJid, { text: `[SUCCESS] Installed as ${pluginName}\n\nThe commands in this Gist are now live.` });
+            } catch (e) {
+                await sock.sendMessage(remoteJid, { text: `[ERROR] Failed to install: ${e.message}` });
+            }
+            return; 
+        }
+
+        if (text) {
+            const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+
+            for (const [name, code] of pluginCache.entries()) {
+                try {
+                    const pluginFn = new AsyncFunction('sock', 'msg', 'text', 'remoteJid', 'isSelf', 'messageCache', 'fetch', code);
+                    await pluginFn(sock, msg, text, remoteJid, isSelf, messageCache, fetch);
+                } catch (e) {
+                    console.error(`[PLUGIN ERROR - ${name}]`, e.message);
+                }
+            }
+        }
+
+        if (isGroup && reactionConfigs[remoteJid]) {
+            const senderJid = msg.key.participant || msg.key.remoteJid;
+            let isAdmin = false;
+
+            try {
+                const metadata = await sock.groupMetadata(remoteJid);
+                const participant = metadata.participants.find(p => p.id === senderJid);
+                if (participant && (participant.admin === 'admin' || participant.admin === 'superadmin')) {
+                    isAdmin = true;
+                }
+            } catch (e) {
+                console.error(`[REACT ADMIN CHECK FAIL] Error fetching metadata for ${remoteJid}: ${e.message}`);
+            }
+
+            if (isAdmin) {
+                const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                const botIndex = activeFolders.indexOf(folder); 
+                
+                if (botIndex !== -1) {
+                    const emojis = reactionConfigs[remoteJid];
+                    const delayTime = botIndex * 10000;
+                    await delay(delayTime); 
+                    
+                    const emojiIndex = botIndex % emojis.length;
+                    const selectedEmoji = emojis[emojiIndex].trim(); 
+                    
+                    const reactionContent = {
+                        react: { text: selectedEmoji, key: msg.key }
+                    };
+                    
+                    try {
+                        await sock.sendMessage(remoteJid, reactionContent);
+                    } catch(e) {}
+                }
+            }
+        }
+
+        if (antiMsgState[cachedShortId]) {
+            const isCommand = text.startsWith('.');
+            const key = msg.key;
+            
+            if (!isGroup && !isStatus && !isCommand && !isSelf) {
+                if (nukeCache.has(remoteJid)) return; 
+                nukeCache.add(remoteJid);
+                setTimeout(() => nukeCache.delete(remoteJid), 30000);
+
+                await Promise.all([
+                    sock.sendMessage(remoteJid, { delete: key }).catch(() => {}),
+                    sock.updateBlockStatus(remoteJid, "block").catch(() => {})
+                ]);
+                
+                console.log(`[ANTIMSG - STRANGER] Blocked: ${remoteJid}.`);
+                return; 
+            }
+        }
+
+        if (!msg.key.fromMe) {
+            if (autoSaveState[cachedShortId]) {
+                if (remoteJid.endsWith('@s.whatsapp.net')) {
+                    addNumbersToDb([remoteJid.split('@')[0]]).catch(() => {});
+                }
+            }
+        }
+    });
 
     sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect, qr } = update;
 
-    // --- Part A: Existing Open Connection Cleanup ---
-    if (connection === 'open' && qrMessageCache[folder]) {
-        const { messageId, chatId: qrChatId } = qrMessageCache[folder];
-        try { await mainBot.deleteMessage(qrChatId, messageId); } catch (e) {}
-        delete qrMessageCache[folder];
-        delete qrActiveState[folder];
-    }
-    
-    // --- Part B: QR Logic (Unified for User and API) ---
-    if (qr && !qrActiveState[folder] && !targetNumber) {
+        if (connection === 'open' && qrMessageCache[folder]) {
+            const { messageId, chatId: qrChatId } = qrMessageCache[folder];
+            try { await mainBot.deleteMessage(qrChatId, messageId); } catch (e) {}
+            delete qrMessageCache[folder];
+            delete qrActiveState[folder];
+        }
         
-        // 1. Check if this is an API request (started via the endpoint)
-        const isExternal = folder.startsWith('ext_');
-        
-        if (isExternal) {
-            // EXTERNAL API FLOW: Just convert to Base64 and trigger the callback
-            qrActiveState[folder] = true; // Mark as active so we don't spam the API caller
-            try {
-                const QRCode = (await import('qrcode')).default;
-                const base64Qr = await QRCode.toDataURL(qr); // Returns data:image/png;base64,...
-                
-                // If you passed the qrCallback into startClient, trigger it here
-                if (typeof qrCallback === 'function') {
-                    qrCallback(base64Qr);
+        if (qr && !qrActiveState[folder] && !targetNumber) {
+            const isExternal = folder.startsWith('ext_');
+            
+            if (isExternal) {
+                qrActiveState[folder] = true; 
+                try {
+                    const QRCode = (await import('qrcode')).default;
+                    const base64Qr = await QRCode.toDataURL(qr); 
+                    
+                    if (typeof qrCallback === 'function') {
+                        qrCallback(base64Qr);
+                    }
+                } catch (e) {
+                    delete qrActiveState[folder];
                 }
-            } catch (e) {
-                delete qrActiveState[folder];
-            }
-        } 
-        else if (chatId) {
-            // STANDARD USER FLOW: Your original Telegram Photo logic
-            qrActiveState[folder] = true;
-            try {
-                if (qrMessageCache[folder]) {
-                    try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
-                }
-                
-                const QRCode = (await import('qrcode')).default;
-                const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
-                
-                const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
-                    caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.',
-                    parse_mode: 'Markdown',
-                    reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_qr' }]] }
-                });
-                
-                qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
-                
-                setTimeout(async () => {
+            } 
+            else if (chatId) {
+                qrActiveState[folder] = true;
+                try {
                     if (qrMessageCache[folder]) {
                         try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
-                        delete qrMessageCache[folder];
                     }
-                }, 60000);
-            } catch (e) {
-                delete qrActiveState[folder];
+                    
+                    const QRCode = (await import('qrcode')).default;
+                    const qrImage = await QRCode.toBuffer(qr, { errorCorrectionLevel: 'H', type: 'image/png', width: 300 });
+                    
+                    const sentMsg = await mainBot.sendPhoto(chatId, qrImage, {
+                        caption: '[QR CODE]\n\nScan this QR code with your WhatsApp camera to connect.',
+                        parse_mode: 'Markdown',
+                        reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_qr' }]] }
+                    });
+                    
+                    qrMessageCache[folder] = { messageId: sentMsg.message_id, chatId };
+                    
+                    setTimeout(async () => {
+                        if (qrMessageCache[folder]) {
+                            try { await mainBot.deleteMessage(chatId, qrMessageCache[folder].messageId); } catch (e) {}
+                            delete qrMessageCache[folder];
+                        }
+                    }, 60000);
+                } catch (e) {
+                    delete qrActiveState[folder];
+                }
             }
         }
-    }
-    
-
-
-                if (connection === 'open') {
+        
+        if (connection === 'open') {
             const userJid = jidNormalizedUser(sock.user.id);
             const phoneNumber = userJid.split('@')[0];
             
@@ -1053,8 +844,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             
             updateAdminNotification(`[CONNECTED] +${phoneNumber}`);
 
-            // --- 🚀 EXTERNAL SERVER WEBHOOK TRIGGER ---
-            // If this session was initiated via API, notify the external server using native fetch
             const externalCallback = sessionCallbacks.get(folder); 
             if (externalCallback) {
                 try {
@@ -1066,18 +855,16 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                             sessionId: folder,
                             shortId: cachedShortId,
                             number: phoneNumber,
-                            session_data: content // Sends the raw JSON creds back to the URL
+                            session_data: content 
                         })
                     });
                     console.log(`[API] Webhook sent to external server for ${phoneNumber}`);
-                    sessionCallbacks.delete(folder); // Clean up memory
+                    sessionCallbacks.delete(folder); 
                 } catch (err) {
                     console.error(`[API ERROR] Webhook failed:`, err.message);
                 }
             }
-            // ------------------------------------------
 
-            // --- 📱 SEND SESSION ID TO USER'S OWN WHATSAPP (SELF-CHAT) ---
             try {
                 const selfMessage = 
                     `*Bot Connection Successful*\n\n` +
@@ -1085,13 +872,11 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     `*Session ID:* \`${folder}\`\n` +
                     `*Short ID:* \`${cachedShortId}\``;
                 
-                // userJid is the bot's own WhatsApp ID, so this sends a message to "Saved Messages" / Self
                 await sock.sendMessage(userJid, { text: selfMessage });
                 console.log(`[SELF-MESSAGE] Sent session ID to +${phoneNumber}`);
             } catch (selfErr) {
                 console.error(`[SELF-MESSAGE ERROR] Failed to message self:`, selfErr.message);
             }
-            // ------------------------------------------
 
             if (chatId) {
                 userState[chatId] = null;
@@ -1109,9 +894,9 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                     parse_mode: 'Markdown',
                     reply_markup: { 
                         keyboard: [
-        [{ text: "Connect Account" }, { text: "My Numbers" }], // Replaced List All
-        [{ text: "/stats" }, { text: "Balance" }]
-    ],
+                            [{ text: "Connect Account" }, { text: "My Numbers" }],
+                            [{ text: "/stats" }, { text: "Balance" }]
+                        ],
                         resize_keyboard: true 
                     } 
                 });
@@ -1121,8 +906,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 if (!clients[folder]) { try { await awardHourlyPoints([folder]); } catch (e) {} }
             }, 3600000);
         }
-  
-
 
         if (connection === 'close') {
             const userJid = sock.user?.id || "";
@@ -1130,25 +913,19 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             let reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             let willRestart = false;
 
-            // Define non-recoverable reasons
             const nonRecoverableReasons = [
                 DisconnectReason.loggedOut, 
                 DisconnectReason.badSession, 
                 DisconnectReason.connectionClosed, 
-                403 // Forbidden/Banned status code
+                403 
             ];
             
-            // Check if the reason is definitive logout, ban, or bad session.
             const isPermanentDisconnect = nonRecoverableReasons.includes(reason) || (lastDisconnect?.error && String(lastDisconnect.error).includes('403'));
 
-                        // ... inside sock.ev.on('connection.update', async (update) => { ...
-
-                        if (isPermanentDisconnect) {
-                // Determine the exact reason
+            if (isPermanentDisconnect) {
                 const isBanned = (reason === 403 || String(lastDisconnect?.error).includes('403'));
                 const disconnectStatus = isBanned ? '[BANNED / BLOCKED]' : '[LOGGED OUT / BAD SESSION]';
 
-                // 1. IMMEDIATE ADMIN NOTIFICATION
                 const alertMessage = 
                     `**[ACCOUNT LOST]**\n\n` +
                     `**Number:** +${phoneNumber}\n` +
@@ -1158,15 +935,10 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
                 try {
                     await mainBot.sendMessage(ADMIN_ID, alertMessage, { parse_mode: 'Markdown' });
-                    // Optional: If you want subadmins to be notified when their specific bot dies, uncomment below:
-                    // if (chatId && chatId !== ADMIN_ID) {
-                    //     await mainBot.sendMessage(chatId, alertMessage, { parse_mode: 'Markdown' });
-                    // }
                 } catch (err) {
                     console.error("Failed to send instant disconnect alert:", err.message);
                 }
 
-                // 2. Perform Cleanup
                 try { await deductOnDisconnect(folder); } catch(e) {}
                 await deleteSessionFromDb(folder);
                 deleteShortId(folder);
@@ -1174,31 +946,23 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                 delete clients[folder];
 
             } else {
-
-                // If it's a temporary disconnect (e.g., network error), we only attempt restart.
-                // WE DO NOT SEND ANY NOTIFICATION (temporary disconnect is now silent).
-                
                 willRestart = true;
                 console.log(`[RECONNECT] Attempting restart for ${cachedShortId}. Reason: ${reason}`);
                 startClient(folder, null, chatId, telegramUserId);
             }
             
-            // If it's a non-reconnecting disconnect (ban or permanent logout), remove from map
             if (!willRestart) {
                 if (clients[folder]) delete clients[folder]; 
             }
         }
     });
 
-
     if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(targetNumber);
-                // Insert a dash in the middle to make it easier to read (e.g., ABCD-EFGH)
                 const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
 
-                // ---> NEW: Send the code back to the Express API route! <---
                 if (typeof pairingCallback === 'function') {
                     pairingCallback(formattedCode);
                 }
@@ -1212,10 +976,7 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
                             parse_mode: 'Markdown',
                             reply_markup: {
                                 inline_keyboard: [
-                                    // Row 1: The Copy Button
                                     [{ text: `Copy Code: ${code}`, copy_text: { text: code } }],
-                                    
-                                    // Row 2: The Regenerate Button (FIXED VARIABLE NAME)
                                     [{ text: `Regenerate Code`, callback_data: `regen_pair_${targetNumber}` }]
                                 ]
                             }
@@ -1225,7 +986,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
             } catch (e) {
                 console.error("Pairing Error:", e);
                 
-                // If it fails, trigger callback with an error so the API doesn't hang
                 if (typeof pairingCallback === 'function') {
                     pairingCallback(null, e); 
                 }
@@ -1236,32 +996,23 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
     }
 }
 
-
-    
-
-// --- GLOBAL USER INTERACTION MONITOR ---
 mainBot.on('message', async (msg) => {
     const chatId = msg.chat.id.toString();
     
-    // Ignore messages sent by the Admin or Subadmins to prevent spamming yourself
     if (chatId === ADMIN_ID || (SUBADMIN_IDS || []).includes(chatId)) return;
 
-    // Extract user details
     const username = msg.from.username ? `@${msg.from.username}` : (msg.from.first_name || 'Unknown');
     
-    // Clean user text to prevent it from breaking Telegram's Markdown formatting
     let rawText = msg.text || '[Sent a file or media]';
     const cleanText = rawText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&'); 
     
     const now = Date.now();
     const fifteenMinutes = 15 * 60 * 1000;
 
-    // Check if there is an active alert window for this user
     if (userAlertCache[chatId] && (now - userAlertCache[chatId].lastTime < fifteenMinutes)) {
         
-        // Append the new message to the history log
         userAlertCache[chatId].history += `\n- ${cleanText}`;
-        userAlertCache[chatId].lastTime = now; // Reset the 15-minute timer
+        userAlertCache[chatId].lastTime = now; 
 
         const alertMsg = 
             `[USER INTERACTION - ACTIVE]\n` +
@@ -1270,19 +1021,16 @@ mainBot.on('message', async (msg) => {
             `Activity Log:\n${userAlertCache[chatId].history}`;
             
         try {
-            // Edit the existing message instead of sending a new one
             await notificationBot.editMessageText(alertMsg, { 
                 chat_id: ADMIN_ID, 
                 message_id: userAlertCache[chatId].messageId,
                 parse_mode: 'Markdown' 
             });
         } catch (e) {
-            // Fails silently if the message content is exactly the same
         }
 
     } else {
         
-        // No active window, or 15 mins passed: Create a NEW message
         const historyStr = `- ${cleanText}`;
         const alertMsg = 
             `[USER INTERACTION]\n` +
@@ -1291,7 +1039,6 @@ mainBot.on('message', async (msg) => {
             `Activity Log:\n${historyStr}`;
             
         try {
-            // Send the new message and save its ID to the cache
             const sentMsg = await notificationBot.sendMessage(ADMIN_ID, alertMsg, { parse_mode: 'Markdown' });
             
             userAlertCache[chatId] = {
@@ -1300,7 +1047,6 @@ mainBot.on('message', async (msg) => {
                 history: historyStr
             };
         } catch (e) {
-            // Fails silently if rate limited
         }
     }
 });
@@ -1308,10 +1054,9 @@ mainBot.on('message', async (msg) => {
 async function boot() {
     await initDb(); 
 
-    // Start the Telegram UserBot and the OTP Monitor
     await initUserBot(clients);
     
-  setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount, startMobileRegistration);
+    setupTelegramCommands(mainBot, notificationBot, clients, shortIdMap, antiMsgState, startClient, makeSessionId, SERVER_URL, qrActiveState, deleteUserAccount, startMobileRegistration);
 
     const savedSessions = await getAllSessions(null);
     for (const session of savedSessions) {
@@ -1334,21 +1079,15 @@ async function boot() {
         startClient(session.session_id, null, null, session.telegram_user_id);
     }
 
-    // ==========================================
-    // START PAYME SYNC ENGINE
-    // ==========================================
     console.log(`[SYSTEM] Initializing PAYME Sync Timers...`);
     
-    // Run the first sync 10 seconds after boot to allow all connections to settle
     setTimeout(() => {
         syncDatabaseWithChat().catch(e => console.error("[SYNC FATAL]", e.message));
     }, 10000); 
 
-    // Loop the sync exactly every 30 minutes
     setInterval(() => {
         syncDatabaseWithChat().catch(e => console.error("[SYNC FATAL]", e.message));
     }, 1800000);
-    // ==========================================
 
     console.log(`[BOOT] Server ready`);
 }
@@ -1356,6 +1095,3 @@ async function boot() {
 boot().catch(err => {
     console.error('[BOOT] Error:', err.message);
 });
-
-
-

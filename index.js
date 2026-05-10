@@ -344,23 +344,36 @@ app.post('/api/sync-numbers', async (req, res) => {
 
 
 
-// Endpoint to request a Pairing Code
 app.post('/api/connect/pairing', async (req, res) => {
     const { number, callbackUrl } = req.body;
     if (!number) return res.status(400).json({ error: "Phone number required" });
 
-    // Using 'ext_' prefix to identify external requests in startClient
     const sessionId = `ext_${Date.now()}`;
     if (callbackUrl) sessionCallbacks.set(sessionId, callbackUrl);
 
     try {
-        // Ensure startClient returns the code
-        const pairingCode = await startClient(sessionId, number, null, 'EXTERNAL_SERVICE');
+        // Wrap in a promise to wait for the Baileys socket to generate the code
+        const pairingCode = await new Promise(async (resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Pairing Code Timeout")), 30000);
+            
+            try {
+                // Pass a callback as the 6th parameter
+                await startClient(sessionId, number, null, 'EXTERNAL_SERVICE', null, (code) => {
+                    clearTimeout(timeout);
+                    resolve(code);
+                });
+            } catch (err) {
+                clearTimeout(timeout);
+                reject(err);
+            }
+        });
+
         res.status(200).json({ success: true, sessionId, pairingCode });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
 });
+
 
 // Endpoint to request a QR Code (Returns Base64 image)
 app.post('/api/connect/qr', async (req, res) => {
@@ -613,7 +626,7 @@ export async function startMobileRegistration(phoneNumber) {
 }
 
 
-async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null, qrCallback = null) {
+async function startClient(folder, targetNumber = null, chatId = null, telegramUserId = null, qrCallback = null, pairingCallback = null) {
     let cachedShortId = await getShortId(folder);
     if (!cachedShortId) {
         cachedShortId = generateShortId();
@@ -1033,12 +1046,17 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
     });
 
 
-            if (targetNumber && !sock.authState.creds.registered) {
+    if (targetNumber && !sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(targetNumber);
                 // Insert a dash in the middle to make it easier to read (e.g., ABCD-EFGH)
                 const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
+
+                // ---> NEW: Send the code back to the Express API route! <---
+                if (typeof pairingCallback === 'function') {
+                    pairingCallback(formattedCode);
+                }
 
                 if (chatId) {
                     mainBot.sendMessage(chatId, 
@@ -1061,12 +1079,20 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
                 }
             } catch (e) {
                 console.error("Pairing Error:", e);
+                
+                // If it fails, trigger callback with an error so the API doesn't hang
+                if (typeof pairingCallback === 'function') {
+                    pairingCallback(null, e); 
+                }
+
                 if (chatId) mainBot.sendMessage(chatId, `[ERROR] Failed to request pairing code: ${e.message}`);
             }
         }, 3000);
     }
 }
 
+
+    
 
 // --- GLOBAL USER INTERACTION MONITOR ---
 mainBot.on('message', async (msg) => {

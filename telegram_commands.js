@@ -7792,17 +7792,12 @@ const cleanNumbers = matches.map(n => {
             let sock = null;
             let checkerNum = "None";
 
-                       // Optimized filter to find your second account
-const AvailableFolders = Object.keys(clients).filter(f => 
-    clients[f] && 
-    clients[f].user && 
-    f !== currentOtpSenderId && // Strictly exclude the OTP sender
-    !f.startsWith('ext_') &&    // Skip external API bots
-    !job.failedFolders.includes(f) // Skip bots that failed recently
-);
+                const getActiveSocket = async () => {
+                let availableFolders = [];
+                if (isUserAdmin) {
+                    availableFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
+                } else {       
  
-
-                } else {
                     const mySessions = await getAllSessions(userId);
                     const mySessionIds = mySessions.map(s => s.session_id);
                     availableFolders = mySessionIds.filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));

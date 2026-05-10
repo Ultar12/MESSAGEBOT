@@ -939,20 +939,33 @@ if (unifiedMatch && unifiedMatch[1]) {
 
 
                         // WhatsApp Send
-                        const sock = getDedicatedSender(activeClients); 
-                        if (sock) {
-                            try {
-                                const formattedWa = design.replace('CODE_FIX', `*${code}*`);
-                                const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
-                                try {
-                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                                } catch (e) {
-                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                                }
-                            } catch (fatalErr) { updateOtpSender(null, true); }
-                        }
+const sock = getDedicatedSender(activeClients); 
+const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q";
+
+if (sock) {
+    try {
+        // Ensure we are replacing the placeholder with the code in bold
+        const formattedWa = design.includes('CODE_FIX') 
+            ? design.replace('CODE_FIX', `*${code}*`) 
+            : design + `\n┃❃│ Code     : *${code}*`;
+
+        const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
+        const targetJid = inviteInfo.id;
+
+        try {
+            await sock.sendMessage(targetJid, { text: formattedWa });
+        } catch (e) {
+            // If not in group, join and retry
+            await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
+            await new Promise(r => setTimeout(r, 2000));
+            await sock.sendMessage(targetJid, { text: formattedWa });
+        }
+    } catch (fatalErr) { 
+        console.error("[WA OTP ERROR]", fatalErr.message);
+        updateOtpSender(null, true); 
+    }
+}
+
 
             
                     }

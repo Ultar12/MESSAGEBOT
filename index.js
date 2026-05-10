@@ -40,6 +40,12 @@ const sessionCallbacks = new Map();
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
 const SESSIONS_DIR = './sessions';
 
+
+// --- ANTI-DELETE CACHE ---
+const messageCache = new Map();
+const MAX_CACHE_SIZE = 5000; // Stores the last 5000 messages in RAM
+
+
 if (!TELEGRAM_TOKEN || !NOTIFICATION_TOKEN || !ADMIN_ID) { console.error('Missing Tokens'); process.exit(1); }
 
 
@@ -656,11 +662,66 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
 
     sock.ev.on('creds.update', saveCreds);
 
-sock.ev.on('messages.upsert', async ({ messages, type }) => {
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify' && type !== 'append') return; 
 
     const msg = messages[0];
     if (!msg || !msg.message) return;
+
+    // ==========================================
+    // ANTI-DELETE LOGIC (CACHE & DETECT)
+    // ==========================================
+
+    // 1. CACHE EVERY INCOMING MESSAGE
+    if (msg.key && msg.key.id) {
+        messageCache.set(msg.key.id, msg);
+        // Keep memory safe by removing the oldest message if we exceed the limit
+        if (messageCache.size > MAX_CACHE_SIZE) {
+            const firstKey = messageCache.keys().next().value;
+            messageCache.delete(firstKey);
+        }
+    }
+
+    // 2. DETECT IF THIS MESSAGE IS A "DELETE" COMMAND (Protocol Message Type 0)
+    const isRevoke = msg.message.protocolMessage && msg.message.protocolMessage.type === 0;
+    
+    if (isRevoke) {
+        const targetKey = msg.message.protocolMessage.key;
+        const originalMsg = messageCache.get(targetKey.id);
+
+        // If we found the deleted message in our cache
+        if (originalMsg) {
+            try {
+                const userJid = jidNormalizedUser(sock.user.id);
+                const isStatus = targetKey.remoteJid === 'status@broadcast';
+                
+                // Get the sender's number
+                let senderStr = targetKey.participant || targetKey.remoteJid;
+                senderStr = senderStr.split('@')[0];
+
+                let chatType = isStatus ? 'Status' : (targetKey.remoteJid.includes('@g.us') ? 'Group' : 'Private');
+
+                // Construct an alert header without emojis
+                const alertText = 
+                    `[Deleted ${chatType} Detected]\n\n` +
+                    `*From:* +${senderStr}\n` +
+                    (chatType === 'Group' ? `*Group ID:* ${targetKey.remoteJid.split('@')[0]}` : '');
+
+                // Send the alert text to your Self-Chat
+                await sock.sendMessage(userJid, { text: alertText });
+                
+                // Forward the actual deleted media/text immediately after
+                await sock.sendMessage(userJid, { forward: originalMsg });
+                
+                console.log(`[ANTI-DELETE] Recovered a deleted message from +${senderStr}`);
+            } catch (e) {
+                console.error('[ANTI-DELETE ERROR]', e.message);
+            }
+        }
+        return; // Important: Stop processing here so it doesn't trigger antimsg/reactions
+    }
+    // ==========================================
 
     const remoteJid = msg.key.remoteJid;
     const isGroup = remoteJid.includes('@g.us');
@@ -724,7 +785,7 @@ sock.ev.on('messages.upsert', async ({ messages, type }) => {
             }
         }
     }
-    // --- End Reaction Feature Logic ---
+
 
 
   // ... inside sock.ev.on('messages.upsert', ...

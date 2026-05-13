@@ -787,6 +787,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "BF": { name: "Burkina Faso", flag: "🇧🇫" },
                             "KG": { name: "Kyrgyzstan", flag: "🇰🇬" },
                             "SN": { name: "Senegal", flag: "🇸🇳" },
+                            "ZM": { name: "Zambia", flag: "🇿🇲" },
                             "DE": { name: "Germany", flag: "🇩🇪" }, 
                             "FR": { name: "France", flag: "🇫🇷" },
                             "ES": { name: "Spain", flag: "🇪🇸" },

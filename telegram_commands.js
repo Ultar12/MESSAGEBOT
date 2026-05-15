@@ -858,7 +858,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         } 
 
                         const countryMap = {
-                            "VE": { name: "Venezuela", flag: "🇻🇪" },
                             "ZW": { name: "Zimbabwe", flag: "🇿🇼" },
                             "NG": { name: "Nigeria", flag: "🇳🇬" },
                             "GN": { name: "Guinea", flag: "🇬🇳" },
@@ -869,7 +868,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "PK": { name: "Pakistan", flag: "🇵🇰" },
                             "ZA": { name: "South Africa", flag: "🇿🇦" },
                             "PH": { name: "Philippines", flag: "🇵🇭" },
-                            "VN": { name: "Vietnam", flag: "🇻🇳" },
                             "US": { name: "United States", flag: "🇺🇸" },
                             "GB": { name: "United Kingdom", flag: "🇬🇧" },
                             "BF": { name: "Burkina Faso", flag: "🇧🇫" },

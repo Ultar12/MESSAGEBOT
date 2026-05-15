@@ -338,10 +338,10 @@ async function executeWsTaskSteps(phoneStr) {
 
 
 // ==========================================
-// ZAMBIA AUTO-SYNC ENGINE (PAYME BOT - TWO WAY)
+// ZAMBIA TWO-WAY SYNC (HARDENED & DEBUG VERSION)
 // ==========================================
 export async function syncZambiaWithChat() {
-    console.log("[ZAMBIA SYNC] Starting two-way sync for @rekanwspanelbot...");
+    console.log("\n[ZAMBIA SYNC] Step 1: Starting sync for @rekanwspanelbot...");
     
     const TARGET_CHAT = "rekanwspanelbot";
     const ZAMBIA_CODE = "260"; 
@@ -349,14 +349,28 @@ export async function syncZambiaWithChat() {
     try {
         if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
 
-        // 1. Fetch the last 1000 messages using paymeUserBot
-        const messages = await paymeUserBot.getMessages(TARGET_CHAT, { limit: 1000 });
+        // FIX: Must get the Entity first, otherwise Telegram Userbots often return 0 messages
+        let entity;
+        try {
+            entity = await paymeUserBot.getEntity(TARGET_CHAT);
+        } catch (e) {
+            console.error("❌ [ZAMBIA SYNC ERROR] Could not find chat @rekanwspanelbot. Is the bot joined?");
+            return;
+        }
+
+        // Fetch Messages
+        const messages = await paymeUserBot.getMessages(entity, { limit: 1000 });
+        console.log(`[ZAMBIA SYNC] Step 2: Fetched ${messages.length} messages from Telegram.`);
+
         const chatNumbers = new Set();
 
-        // 2. Extract and format numbers from the Chat
+        // Extract numbers safely
         for (const msg of messages) {
-            if (msg.message) {
-                const foundNumbers = msg.message.match(/\d{9,12}/g);
+            // Support both GramJS and standard Telegram objects
+            const textStr = msg.message || msg.text || ""; 
+            
+            if (textStr) {
+                const foundNumbers = textStr.match(/\d{9,12}/g);
                 if (foundNumbers) {
                     for (let rawNum of foundNumbers) {
                         let formattedNum = rawNum;
@@ -376,52 +390,67 @@ export async function syncZambiaWithChat() {
             }
         }
 
-        // 3. Fetch all current numbers from your Database
+        console.log(`[ZAMBIA SYNC] Step 3: Extracted ${chatNumbers.size} valid Zambia numbers from chat.`);
+
+        // Fetch DB
         const allDbDocs = await getAllNumbers(); 
         const dbZambiaNumbers = new Set();
         
         allDbDocs.forEach(doc => {
             const rawStr = String(doc.number || doc).replace(/\D/g, '');
-            // SAFEGUARD: Only grab Zambia numbers from the DB for this comparison
             if (rawStr.length === 12 && rawStr.startsWith(ZAMBIA_CODE)) {
                 dbZambiaNumbers.add(rawStr);
             }
         });
 
-        // 4. Perform Two-Way Sync Arrays
+        console.log(`[ZAMBIA SYNC] Step 4: Found ${dbZambiaNumbers.size} existing Zambia numbers in Database.`);
+
         const numbersToAdd = [];
         const numbersToRemove = [];
 
-        // A. Find missing numbers to ADD to the database
+        // Compare logic
         for (const phone of chatNumbers) {
             if (!dbZambiaNumbers.has(phone)) {
                 numbersToAdd.push(phone);
             }
         }
 
-        // B. Find deleted numbers to REMOVE from the database
-        // (If it is in the DB as a Zambia number, but NO LONGER in the chat)
         for (const phone of dbZambiaNumbers) {
             if (!chatNumbers.has(phone)) {
                 numbersToRemove.push(phone);
             }
         }
 
-        // 5. Execute batch database commands
+        console.log(`[ZAMBIA SYNC] Step 5: Calculation complete. NEW to add: ${numbersToAdd.length} | OLD to remove: ${numbersToRemove.length}`);
+
+        // Execute Database updates with Try/Catch to see if DB is rejecting them
         if (numbersToAdd.length > 0) {
-            await addNumbersToDb(numbersToAdd);
+            try {
+                await addNumbersToDb(numbersToAdd);
+                console.log(`[ZAMBIA SYNC] Successfully ADDED ${numbersToAdd.length} numbers.`);
+            } catch (addErr) {
+                console.error("[ZAMBIA DB ERROR] Failed to save new numbers:", addErr.message);
+            }
         }
         
         if (numbersToRemove.length > 0) {
-            await deleteNumbers(numbersToRemove);
+            try {
+                await deleteNumbers(numbersToRemove);
+                console.log(`[ZAMBIA SYNC] Successfully REMOVED ${numbersToRemove.length} numbers.`);
+            } catch (delErr) {
+                console.error("[ZAMBIA DB ERROR] Failed to delete old numbers:", delErr.message);
+            }
         }
 
-        console.log(`[ZAMBIA SYNC COMPLETE] Added: ${numbersToAdd.length} | Removed: ${numbersToRemove.length} | Total Active in Chat: ${chatNumbers.size}`);
+        if (numbersToAdd.length === 0 && numbersToRemove.length === 0) {
+            console.log("[ZAMBIA SYNC] Database is already perfectly synced with the chat.");
+        }
 
     } catch (error) {
-        console.error("[ZAMBIA SYNC ERROR]", error.message);
+        console.error("[ZAMBIA SYNC FATAL ERROR]", error.message);
     }
 }
+
 
 
 

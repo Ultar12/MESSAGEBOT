@@ -3100,6 +3100,38 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     });
 
 
+    // ==========================================
+// RESTART DYNO COMMAND
+// ==========================================
+bot.onText(/\/re/, async (msg) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+    
+    // Authorization Check
+    const isUserAdmin = (userId === ADMIN_ID);
+    const isSubAdmin = SUBADMIN_IDS && SUBADMIN_IDS.includes(userId);
+    if (!isUserAdmin && !isSubAdmin) return;
+
+    try {
+        await bot.sendMessage(chatId, "[SYSTEM] Restart sequence initiated. The bot is shutting down and will be back online in ~15-30 seconds.");
+        
+        console.log("[SYSTEM] Admin triggered manual restart via /re command.");
+
+        // Wait 2 seconds to ensure the Telegram message sends before killing the process
+        setTimeout(() => {
+            process.exit(1); 
+        }, 2000);
+
+    } catch (error) {
+        console.error("[RESTART ERROR]", error.message);
+        bot.sendMessage(chatId, "[ERROR] Failed to initiate restart: " + error.message);
+    }
+});
+
+
+
         // --- /remgrp [@username] : Force-remove a user from BOTH the Group and Channel ---
     bot.onText(/\/remgrp\s+(.+)/, async (msg, match) => {
         deleteUserCommand(bot, msg);

@@ -3156,7 +3156,8 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     });
 
     
-bot.onText(/\/dbscan/, async (msg) => {
+
+     bot.onText(/\/dbscan/, async (msg) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
     const userId = chatId.toString();
@@ -3166,7 +3167,6 @@ bot.onText(/\/dbscan/, async (msg) => {
     const isSubAdmin = SUBADMIN_IDS && SUBADMIN_IDS.includes(userId);
     if (!isUserAdmin && !isSubAdmin) return;
 
-    // Ensure user replied to a file
     if (!msg.reply_to_message || !msg.reply_to_message.document) {
         return bot.sendMessage(chatId, "[ERROR] You must reply to a .txt or .xlsx file with /dbscan");
     }
@@ -3187,7 +3187,7 @@ bot.onText(/\/dbscan/, async (msg) => {
         
         let fileNumbers = [];
 
-        // 1. Parse the File and Remove Duplicates Instantly
+        // 1. Parse File
         if (fileName.endsWith('.txt')) {
             const rawText = await response.text();
             fileNumbers = [...new Set(rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length >= 8))];
@@ -3201,27 +3201,28 @@ bot.onText(/\/dbscan/, async (msg) => {
             fileNumbers = [...new Set(data.flat().map(String).map(l => l.trim()).filter(l => l.length >= 8))];
         }
 
-        // 2. Load and Normalize Database
+        // 2. Load Database (FIXED: Always add raw string for strict matching)
         const allDbDocs = await getAllNumbers(); 
         const dbSet = new Set();
         
         allDbDocs.forEach(doc => {
             const rawStr = String(doc.number || doc).replace(/\D/g, '');
+            dbSet.add(rawStr); // Crucial for Zambia: Adds exact DB string
+            
             const res = normalizeWithCountry(rawStr);
             if (res && res.num) {
                 const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
                 dbSet.add(fullPhone);
-            } else {
-                dbSet.add(rawStr);
             }
         });
 
-        // 3. Scan File against Database (With Zambia Smart Formatter)
+        // 3. Scan File against Database (FIXED: Raw matching priority)
         const foundNumbers = new Set(); 
         let totalChecked = 0;
 
         for (const line of fileNumbers) {
             let rawLine = line.replace(/\D/g, '');
+            if (!rawLine) continue;
             
             // --- ZAMBIA SMART FORMATTER ---
             if (rawLine.length === 10 && (rawLine.startsWith('09') || rawLine.startsWith('07'))) {
@@ -3230,15 +3231,20 @@ bot.onText(/\/dbscan/, async (msg) => {
                 rawLine = '260' + rawLine;
             }
 
-            const res = normalizeWithCountry(rawLine);
-            if (!res || !res.num) continue; 
-            
             totalChecked++;
-            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
             
-            // Check both strict full phone and the formatted raw line
-            if (dbSet.has(fullPhone) || dbSet.has(rawLine)) {
-                foundNumbers.add(res.num);
+            const res = normalizeWithCountry(rawLine);
+            let fullPhone = null;
+            let displayNum = rawLine; // Default to rawLine if normalizer fails
+            
+            if (res && res.num) {
+                fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                displayNum = res.num; // Use clean local number for output if available
+            }
+            
+            // If the raw formatted string is in the DB, it's an instant match
+            if (dbSet.has(rawLine) || (fullPhone && dbSet.has(fullPhone))) {
+                foundNumbers.add(displayNum);
             }
         }
 
@@ -3250,7 +3256,7 @@ bot.onText(/\/dbscan/, async (msg) => {
 
         await bot.editMessageText(`[SYSTEM] Scan complete. Checked ${totalChecked} unique numbers.\nFound ${foundArray.length} numbers already in the database.\n\nSending in standard batches...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // 4. Output in Batches (with Flood Protection)
+        // 4. Output in Batches
         const BATCH_SIZE = 5;
         for (let i = 0; i < foundArray.length; i += BATCH_SIZE) {
             const chunk = foundArray.slice(i, i + BATCH_SIZE);
@@ -3262,17 +3268,13 @@ bot.onText(/\/dbscan/, async (msg) => {
             try {
                 await bot.sendMessage(chatId, `[BATCH] ${startNum}-${endNum}\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
             } catch (sendErr) {
-                // Catch Telegram Rate Limits and pause automatically
                 if (sendErr.response && sendErr.response.statusCode === 429) {
                     console.log("[RATE LIMIT] Telegram limit hit. Pausing for 5 seconds...");
                     await new Promise(resolve => setTimeout(resolve, 5000));
                     await bot.sendMessage(chatId, `[BATCH] ${startNum}-${endNum}\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
-                } else {
-                    console.error("[BATCH SEND ERROR]", sendErr.message);
                 }
             }
             
-            // Safe 1-second delay to prevent rate limits
             await new Promise(resolve => setTimeout(resolve, 1000)); 
         }
 
@@ -3283,6 +3285,7 @@ bot.onText(/\/dbscan/, async (msg) => {
         bot.sendMessage(chatId, "[ERROR] Failed to process the scan: " + error.message);
     }
 });
+   
 
    
 

@@ -3156,8 +3156,7 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     });
 
     
-
-   bot.onText(/\/dbscan/, async (msg) => {
+bot.onText(/\/dbscan/, async (msg) => {
     deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
     const userId = chatId.toString();
@@ -3188,9 +3187,10 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
         
         let fileNumbers = [];
 
+        // 1. Parse the File and Remove Duplicates Instantly
         if (fileName.endsWith('.txt')) {
             const rawText = await response.text();
-            fileNumbers = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+            fileNumbers = [...new Set(rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length >= 8))];
         } else if (fileName.endsWith('.xlsx')) {
             const arrayBuffer = await response.arrayBuffer();
             const buffer = Buffer.from(arrayBuffer);
@@ -3198,9 +3198,10 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
             const sheetName = workbook.SheetNames[0];
             const sheet = workbook.Sheets[sheetName];
             const data = xlsx.utils.sheet_to_json(sheet, { header: 1 });
-            fileNumbers = data.flat().map(String).map(l => l.trim()).filter(l => l.length > 0);
+            fileNumbers = [...new Set(data.flat().map(String).map(l => l.trim()).filter(l => l.length >= 8))];
         }
 
+        // 2. Load and Normalize Database
         const allDbDocs = await getAllNumbers(); 
         const dbSet = new Set();
         
@@ -3215,17 +3216,28 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
             }
         });
 
+        // 3. Scan File against Database (With Zambia Smart Formatter)
         const foundNumbers = new Set(); 
         let totalChecked = 0;
 
         for (const line of fileNumbers) {
-            const res = normalizeWithCountry(line);
+            let rawLine = line.replace(/\D/g, '');
+            
+            // --- ZAMBIA SMART FORMATTER ---
+            if (rawLine.length === 10 && (rawLine.startsWith('09') || rawLine.startsWith('07'))) {
+                rawLine = '260' + rawLine.substring(1);
+            } else if (rawLine.length === 9 && (rawLine.startsWith('9') || rawLine.startsWith('7'))) {
+                rawLine = '260' + rawLine;
+            }
+
+            const res = normalizeWithCountry(rawLine);
             if (!res || !res.num) continue; 
             
             totalChecked++;
             const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
             
-            if (dbSet.has(fullPhone)) {
+            // Check both strict full phone and the formatted raw line
+            if (dbSet.has(fullPhone) || dbSet.has(rawLine)) {
                 foundNumbers.add(res.num);
             }
         }
@@ -3233,12 +3245,12 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
         const foundArray = Array.from(foundNumbers);
 
         if (foundArray.length === 0) {
-            return bot.editMessageText(`[RESULT] Scan complete. Checked ${totalChecked} numbers. None of them were found in the database.`, { chat_id: chatId, message_id: statusMsg.message_id });
+            return bot.editMessageText(`[RESULT] Scan complete. Checked ${totalChecked} unique numbers. None of them were found in the database.`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
 
-        await bot.editMessageText(`[SYSTEM] Scan complete. Checked ${totalChecked} numbers.\nFound ${foundArray.length} numbers already in the database.\n\nSending in standard batches...`, { chat_id: chatId, message_id: statusMsg.message_id });
+        await bot.editMessageText(`[SYSTEM] Scan complete. Checked ${totalChecked} unique numbers.\nFound ${foundArray.length} numbers already in the database.\n\nSending in standard batches...`, { chat_id: chatId, message_id: statusMsg.message_id });
 
-        // Standard Batch Output (5 items per batch, tap-to-copy)
+        // 4. Output in Batches (with Flood Protection)
         const BATCH_SIZE = 5;
         for (let i = 0; i < foundArray.length; i += BATCH_SIZE) {
             const chunk = foundArray.slice(i, i + BATCH_SIZE);
@@ -3247,9 +3259,21 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
             const startNum = i + 1;
             const endNum = Math.min(i + BATCH_SIZE, foundArray.length);
             
-            await bot.sendMessage(chatId, `[BATCH] ${startNum}-${endNum}\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
+            try {
+                await bot.sendMessage(chatId, `[BATCH] ${startNum}-${endNum}\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
+            } catch (sendErr) {
+                // Catch Telegram Rate Limits and pause automatically
+                if (sendErr.response && sendErr.response.statusCode === 429) {
+                    console.log("[RATE LIMIT] Telegram limit hit. Pausing for 5 seconds...");
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    await bot.sendMessage(chatId, `[BATCH] ${startNum}-${endNum}\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
+                } else {
+                    console.error("[BATCH SEND ERROR]", sendErr.message);
+                }
+            }
             
-            await new Promise(resolve => setTimeout(resolve, 800)); // Standard 800ms delay between batches
+            // Safe 1-second delay to prevent rate limits
+            await new Promise(resolve => setTimeout(resolve, 1000)); 
         }
 
         bot.sendMessage(chatId, "[PROCESS COMPLETE] All matching numbers have been sent.");
@@ -3260,6 +3284,7 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     }
 });
 
+   
 
         // --- /xl [Reply to file] ---
     bot.onText(/\/xl/, async (msg) => {

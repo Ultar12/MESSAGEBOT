@@ -337,6 +337,94 @@ async function executeWsTaskSteps(phoneStr) {
 }
 
 
+// ==========================================
+// ZAMBIA AUTO-SYNC ENGINE (PAYME BOT - TWO WAY)
+// ==========================================
+export async function syncZambiaWithChat() {
+    console.log("[ZAMBIA SYNC] Starting two-way sync for @rekanwspanelbot...");
+    
+    const TARGET_CHAT = "rekanwspanelbot";
+    const ZAMBIA_CODE = "260"; 
+
+    try {
+        if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
+
+        // 1. Fetch the last 1000 messages using paymeUserBot
+        const messages = await paymeUserBot.getMessages(TARGET_CHAT, { limit: 1000 });
+        const chatNumbers = new Set();
+
+        // 2. Extract and format numbers from the Chat
+        for (const msg of messages) {
+            if (msg.message) {
+                const foundNumbers = msg.message.match(/\d{9,12}/g);
+                if (foundNumbers) {
+                    for (let rawNum of foundNumbers) {
+                        let formattedNum = rawNum;
+
+                        if (rawNum.length === 10 && (rawNum.startsWith('09') || rawNum.startsWith('07'))) {
+                            formattedNum = ZAMBIA_CODE + rawNum.substring(1);
+                        } else if (rawNum.length === 12 && rawNum.startsWith(ZAMBIA_CODE)) {
+                            formattedNum = rawNum;
+                        } else if (rawNum.length === 9 && (rawNum.startsWith('9') || rawNum.startsWith('7'))) {
+                            formattedNum = ZAMBIA_CODE + rawNum;
+                        } else {
+                            continue; 
+                        }
+                        chatNumbers.add(formattedNum);
+                    }
+                }
+            }
+        }
+
+        // 3. Fetch all current numbers from your Database
+        const allDbDocs = await getAllNumbers(); 
+        const dbZambiaNumbers = new Set();
+        
+        allDbDocs.forEach(doc => {
+            const rawStr = String(doc.number || doc).replace(/\D/g, '');
+            // SAFEGUARD: Only grab Zambia numbers from the DB for this comparison
+            if (rawStr.length === 12 && rawStr.startsWith(ZAMBIA_CODE)) {
+                dbZambiaNumbers.add(rawStr);
+            }
+        });
+
+        // 4. Perform Two-Way Sync Arrays
+        const numbersToAdd = [];
+        const numbersToRemove = [];
+
+        // A. Find missing numbers to ADD to the database
+        for (const phone of chatNumbers) {
+            if (!dbZambiaNumbers.has(phone)) {
+                numbersToAdd.push(phone);
+            }
+        }
+
+        // B. Find deleted numbers to REMOVE from the database
+        // (If it is in the DB as a Zambia number, but NO LONGER in the chat)
+        for (const phone of dbZambiaNumbers) {
+            if (!chatNumbers.has(phone)) {
+                numbersToRemove.push(phone);
+            }
+        }
+
+        // 5. Execute batch database commands
+        if (numbersToAdd.length > 0) {
+            await addNumbersToDb(numbersToAdd);
+        }
+        
+        if (numbersToRemove.length > 0) {
+            await deleteNumbers(numbersToRemove);
+        }
+
+        console.log(`[ZAMBIA SYNC COMPLETE] Added: ${numbersToAdd.length} | Removed: ${numbersToRemove.length} | Total Active in Chat: ${chatNumbers.size}`);
+
+    } catch (error) {
+        console.error("[ZAMBIA SYNC ERROR]", error.message);
+    }
+}
+
+
+
 
 // ==========================================
 // PAYME SYNC BOT SETUP

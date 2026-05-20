@@ -552,6 +552,12 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         await saveShortId(folder, cachedShortId);
     }
 
+    const sessionDir = path.join(process.cwd(), 'sessions', folderName);
+
+if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir, { recursive: true });
+}
+
     const sessionPath = path.join(SESSIONS_DIR, folder);
     if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
 

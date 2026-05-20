@@ -36,6 +36,7 @@ const SUBADMIN_IDS = process.env.SUBADMIN_IDS;
 const userAlertCache = {};
 const sessionCallbacks = new Map();
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
+const SESSIONS_DIR = path.join(process.cwd(), 'sessions');
 
 const pluginCache = new Map();
 

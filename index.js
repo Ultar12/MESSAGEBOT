@@ -36,7 +36,7 @@ const SUBADMIN_IDS = process.env.SUBADMIN_IDS;
 const userAlertCache = {};
 const sessionCallbacks = new Map();
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
-const SESSIONS_DIR = path.join(process.cwd(), 'sessions');
+const SESSIONS_DIR = './sessions';
 
 const pluginCache = new Map();
 
@@ -520,7 +520,6 @@ export async function startMobileRegistration(phoneNumber) {
     const { state, saveCreds } = await useMultiFileAuthState(`auth_info_${phoneNumber}`);
     
     const sock = makeWASocket({
-        version,
         auth: state,
         mobile: true, 
         printQRInTerminal: false,
@@ -552,7 +551,6 @@ async function startClient(folder, targetNumber = null, chatId = null, telegramU
         cachedShortId = generateShortId();
         await saveShortId(folder, cachedShortId);
     }
-
 
     const sessionPath = path.join(SESSIONS_DIR, folder);
     if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });

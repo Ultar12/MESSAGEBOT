@@ -36,11 +36,7 @@ const SUBADMIN_IDS = process.env.SUBADMIN_IDS;
 const userAlertCache = {};
 const sessionCallbacks = new Map();
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:10000';
-const sessionDir = path.join(process.cwd(), 'sessions', folderName);
 
-if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
-}
 const pluginCache = new Map();
 
 function loadPlugins() {

@@ -520,6 +520,7 @@ export async function startMobileRegistration(phoneNumber) {
     const { state, saveCreds } = await useMultiFileAuthState(`auth_info_${phoneNumber}`);
     
     const sock = makeWASocket({
+        version,
         auth: state,
         mobile: true, 
         printQRInTerminal: false,

@@ -1989,12 +1989,14 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
 
+
+                                        
 // ====================================================
 // UNIFIED GETNU COMMAND & STREAMING ENGINE
 // ====================================================
 
 bot.onText(/\/getnu(?:\s+(\d+))?/, async (msg, match) => {
-    deleteUserCommand(bot, msg);
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
     const amount = parseInt(match[1]) || 50; 
 
@@ -2027,6 +2029,7 @@ bot.on('callback_query', async (query) => {
                 reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_lolzfack_${amount}` }]] }
             });
         }
+        
         await bot.answerCallbackQuery(query.id);
         const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers...`);
 
@@ -2042,16 +2045,17 @@ bot.on('callback_query', async (query) => {
 
             while (verified < amount && attempts < 50) {
                 attempts++;
+                // Fetch the newest messages
                 const msgs = await userBot.getMessages(targetBot, { limit: 3 });
-                let targetMsg = null;
 
+                // 1. EXTRACT NUMBERS FROM THE NEWEST MESSAGE
                 for (const msg of msgs) {
                     if (msg.replyMarkup?.rows) {
-                        targetMsg = msg;
                         for (const row of msg.replyMarkup.rows) {
                             for (const btn of row.buttons) {
                                 const bText = btn.text || "";
-                                if (bText.includes("تغيير") || bText.includes("🔄")) continue;
+                                // Skip action buttons (Change Number, Back, etc.)
+                                if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع")) continue;
 
                                 let raw = bText.replace(/\D/g, '');
                                 if (raw.length < 9) continue;
@@ -2068,7 +2072,8 @@ bot.on('callback_query', async (query) => {
                                     const [check] = await verifySock.onWhatsApp(jid);
                                     if (check?.exists) {
                                         verified++;
-                                        currentBatch.push(`\`${res.num}\``); // NO COUNTRY CODE
+                                        currentBatch.push(`\`${res.num}\``); // ADD WITHOUT COUNTRY CODE
+                                        
                                         if (currentBatch.length === 5) {
                                             await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                                             currentBatch = [];
@@ -2082,28 +2087,52 @@ bot.on('callback_query', async (query) => {
                     }
                 }
 
-                // Bulletproof Pagination Click
-                if (targetMsg) {
-                    let clicked = false;
-                    for (let r = 0; r < targetMsg.replyMarkup.rows.length; r++) {
-                        for (let c = 0; c < targetMsg.replyMarkup.rows[r].buttons.length; c++) {
-                            const bText = targetMsg.replyMarkup.rows[r].buttons[c].text || "";
-                            if (bText.includes("تغيير") || bText.includes("🔄")) {
-                                try { await targetMsg.click(r, c); } catch (e) {
-                                    const { Api } = await import("telegram");
-                                    await userBot.invoke(new Api.messages.GetBotCallbackAnswer({ peer: targetBot, msgId: targetMsg.id, data: targetMsg.replyMarkup.rows[r].buttons[c].data }));
+                if (verified >= amount) break;
+
+                // 2. BULLETPROOF PAGINATION CLICK
+                let clicked = false;
+                
+                for (const msg of msgs) {
+                    if (msg.replyMarkup && msg.replyMarkup.rows) {
+                        for (const row of msg.replyMarkup.rows) {
+                            for (const btn of row.buttons) {
+                                const bText = btn.text || "";
+                                // Look exactly for the refresh button
+                                if (bText.includes("تغيير") || bText.includes("🔄")) {
+                                    try {
+                                        // Direct Telegram API Call (Bypasses GramJS bugs)
+                                        await userBot.invoke(new Api.messages.GetBotCallbackAnswer({
+                                            peer: targetBot,
+                                            msgId: msg.id,
+                                            data: btn.data
+                                        }));
+                                        clicked = true;
+                                    } catch (e) {
+                                        // Extreme fallback
+                                        try { await msg.click({ text: bText }); clicked = true; } catch(err) {}
+                                    }
+                                    break;
                                 }
-                                clicked = true; break;
                             }
+                            if (clicked) break;
                         }
-                        if (clicked) break;
                     }
-                    if (clicked) await delay(3500);
-                    else break;
+                    if (clicked) break; // Stop checking older messages once we click the active button
+                }
+
+                if (clicked) {
+                    await delay(3500); // Wait for bot to load new numbers
+                } else {
+                    // Failsafe so it doesn't get permanently stuck
+                    await bot.sendMessage(chatId, "⚠️ [WARNING] Auto-click failed. Retrying...");
+                    await delay(2000); 
                 }
             }
+
             if (currentBatch.length > 0) await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
             await bot.sendMessage(chatId, "[DONE] Extraction complete.");
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
+
         } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
     }
 
@@ -2113,7 +2142,7 @@ bot.on('callback_query', async (query) => {
         if (action === 'target_rocket') {
             await bot.answerCallbackQuery(query.id);
             await userBot.sendMessage(targetBot, { message: "/start" });
-            return bot.sendMessage(chatId, `[SYSTEM] Trigger sent. Click to start:`, {
+            return bot.sendMessage(chatId, `[SYSTEM] Trigger sent. Navigate to numbers and click:`, {
                 reply_markup: { inline_keyboard: [[{ text: `START LIVE EXTRACTION (${amount})`, callback_data: `start_scrape_rocket_${amount}` }]] }
             });
         }
@@ -2133,12 +2162,18 @@ bot.on('callback_query', async (query) => {
             while (verified < amount && attempts < 50) {
                 attempts++;
                 const msgs = await userBot.getMessages(targetBot, { limit: 5 });
+                
+                // 1. EXTRACT NUMBERS
                 for (const msg of msgs) {
                     const text = msg.message || "";
                     const matches = text.match(/\d{9,15}/g) || [];
                     
                     for (let raw of matches) {
                         if (verified >= amount) break;
+                        
+                        if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
+                        else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
+                        
                         if (seen.has(raw)) continue;
                         seen.add(raw);
 
@@ -2161,15 +2196,51 @@ bot.on('callback_query', async (query) => {
                         await delay(800);
                     }
                 }
-                await delay(3000); // Pagination wait
+
+                if (verified >= amount) break;
+
+                // 2. BULLETPROOF PAGINATION CLICK
+                let clicked = false;
+                for (const msg of msgs) {
+                    if (msg.replyMarkup && msg.replyMarkup.rows) {
+                        for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
+                            for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
+                                const bText = msg.replyMarkup.rows[r].buttons[c].text || "";
+                                if (bText.toLowerCase().includes("change")) {
+                                    try {
+                                        await userBot.invoke(new Api.messages.GetBotCallbackAnswer({
+                                            peer: targetBot,
+                                            msgId: msg.id,
+                                            data: msg.replyMarkup.rows[r].buttons[c].data
+                                        }));
+                                        clicked = true;
+                                    } catch(e) {
+                                        try { await msg.click({ text: bText }); clicked = true; } catch(err){}
+                                    }
+                                    break;
+                                }
+                            }
+                            if (clicked) break;
+                        }
+                    }
+                    if (clicked) break;
+                }
+                
+                if (clicked) await delay(3500); 
+                else {
+                    await bot.sendMessage(chatId, "⚠️ [WARNING] Auto-click failed. Retrying...");
+                    await delay(2000);
+                }
             }
+            
             if (currentBatch.length > 0) await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
             bot.sendMessage(chatId, "[DONE] Extraction complete.");
+            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
+            
         } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
     }
 });
 
- 
     
 
     

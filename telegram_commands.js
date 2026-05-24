@@ -2133,24 +2133,51 @@ bot.on('callback_query', async (query) => {
 
                 if (totalVerified >= amount) break;
 
-                // PAGINATION CLICK
-                if (targetMessage) {
+                /                // PAGINATION CLICK
+                if (targetMessage && targetMessage.replyMarkup && targetMessage.replyMarkup.rows) {
                     let clicked = false;
+                    
                     for (let r = 0; r < targetMessage.replyMarkup.rows.length; r++) {
-                        for (let c = 0; c < targetMessage.replyMarkup.rows[r].buttons.length; c++) {
-                            const bText = targetMessage.replyMarkup.rows[r].buttons[c].text || "";
-                            if (bText.toLowerCase().includes("change") || bText.includes("تغيير")) {
-                                await targetMessage.click(r, c);
+                        const row = targetMessage.replyMarkup.rows[r];
+                        for (let c = 0; c < row.buttons.length; c++) {
+                            const button = row.buttons[c];
+                            const bText = button.text || "";
+                            
+                            // Look for the Arabic word "Change" or the Refresh Emoji
+                            if (bText.includes("تغيير") || bText.includes("🔄")) {
+                                console.log(`[SYSTEM] Clicking pagination button: ${bText}`);
+                                
+                                try {
+                                    // Method 1: Standard GramJS Click
+                                    await targetMessage.click(r, c);
+                                } catch (err) {
+                                    // Method 2: Bulletproof Raw Telegram API Click (Bypasses GramJS click bugs)
+                                    const { Api } = await import("telegram");
+                                    await userBot.invoke(new Api.messages.GetBotCallbackAnswer({
+                                        peer: "LolzFack_bot",
+                                        msgId: targetMessage.id,
+                                        data: button.data
+                                    }));
+                                }
+                                
                                 clicked = true;
                                 break;
                             }
                         }
                         if (clicked) break;
                     }
-                    if (clicked) await new Promise(res => setTimeout(res, 3000)); 
-                    else break;
-                } else break; 
-            }
+                    
+                    if (clicked) {
+                        // Wait 3.5 seconds for the bot to load the new numbers before looping again
+                        await new Promise(res => setTimeout(res, 3500)); 
+                    } else {
+                        await bot.sendMessage(chatId, "⚠️ [WARNING] Could not find the 'تغيير الرقم' button to click. Stopping extraction early.");
+                        break;
+                    }
+                } else {
+                    break; 
+                }
+
 
             // DROP ANY LEFTOVERS
             if (currentBatch.length > 0) {

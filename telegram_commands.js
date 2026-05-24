@@ -1991,6 +1991,8 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     
+
+                                
 // ==========================================
 // UNIFIED GETNU COMMAND & EXTRACTION ENGINE
 // ==========================================
@@ -2035,8 +2037,8 @@ bot.on('callback_query', async (query) => {
         await bot.sendMessage(chatId, `[SYSTEM] Initializing connection to @${LOLZ_USERNAME}...`);
 
         try {
-            if (!userbot.connected) await userbot.connect();
-            await userbot.sendMessage(LOLZ_USERNAME, { message: "Get Number" });
+            if (!userBot.connected) await userBot.connect();
+            await userBot.sendMessage(LOLZ_USERNAME, { message: "Get Number" });
 
             const pauseMsg = 
                 `[AWAITING MANUAL INPUT]\n\n` +
@@ -2058,14 +2060,14 @@ bot.on('callback_query', async (query) => {
         const statusMsg = await bot.sendMessage(chatId, `[SCRAPING] Extracting ${amount} numbers from @${LOLZ_USERNAME}...`);
 
         try {
-            if (!userbot.connected) await userbot.connect();
+            if (!userBot.connected) await userBot.connect();
             const extractedNumbers = new Set();
             let attempts = 0;
-            const maxAttempts = Math.ceil(amount / 4) + 15; // Extra buffer for slow loads
+            const maxAttempts = Math.ceil(amount / 4) + 15; 
 
             while (extractedNumbers.size < amount && attempts < maxAttempts) {
                 attempts++;
-                const messages = await userbot.getMessages(LOLZ_USERNAME, { limit: 3 });
+                const messages = await userBot.getMessages(LOLZ_USERNAME, { limit: 3 });
                 let targetMessage = null;
 
                 for (const msg of messages) {
@@ -2119,14 +2121,14 @@ bot.on('callback_query', async (query) => {
         await bot.sendMessage(chatId, `[SYSTEM] Initializing connection to @${ROCKET_USERNAME}...`);
 
         try {
-            if (!userbot.connected) await userbot.connect();
-            await userbot.sendMessage(ROCKET_USERNAME, { message: "/start" });
+            if (!userBot.connected) await userBot.connect();
+            await userBot.sendMessage(ROCKET_USERNAME, { message: "/start" });
 
             const pauseMsg = 
                 `[AWAITING MANUAL INPUT]\n\n` +
                 `1. Open @${ROCKET_USERNAME} in your Telegram app.\n` +
                 `2. Navigate through the country menus until numbers appear.\n` +
-                `3. Click below to let the userbot auto-scrape ${amount} numbers from the chat text.`;
+                `3. Click below to let the userBot auto-scrape ${amount} numbers from the chat text.`;
 
             await bot.sendMessage(chatId, pauseMsg, {
                 reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_rocket_${amount}` }]] }
@@ -2142,14 +2144,14 @@ bot.on('callback_query', async (query) => {
         const statusMsg = await bot.sendMessage(chatId, `[SCRAPING] Extracting ${amount} numbers from @${ROCKET_USERNAME}...`);
 
         try {
-            if (!userbot.connected) await userbot.connect();
+            if (!userBot.connected) await userBot.connect();
             const extractedNumbers = new Set();
             let attempts = 0;
             const maxAttempts = Math.ceil(amount / 4) + 15; 
 
             while (extractedNumbers.size < amount && attempts < maxAttempts) {
                 attempts++;
-                const messages = await userbot.getMessages(ROCKET_USERNAME, { limit: 5 });
+                const messages = await userBot.getMessages(ROCKET_USERNAME, { limit: 5 });
                 let targetMessage = null;
 
                 for (const msg of messages) {
@@ -2239,7 +2241,7 @@ async function runLiveVerification(bot, chatId, statusMsgId, numList) {
         await new Promise(res => setTimeout(res, 1000)); 
     }
 }
- 
+                        
 
 
     

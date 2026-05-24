@@ -1991,12 +1991,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
     
-    // ==========================================
+// ==========================================
 // UNIFIED GETNU COMMAND & EXTRACTION ENGINE
 // ==========================================
 
 // 1. Capture the amount from the command (e.g., /getnu 100)
 bot.onText(/\/getnu(?:\s+(\d+))?/, async (msg, match) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
     
     // Default to 50 if you just type /getnu without a number
@@ -2017,88 +2018,69 @@ bot.onText(/\/getnu(?:\s+(\d+))?/, async (msg, match) => {
 // 2. Centralized Callback Handler
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
-    const LOLZ_USERNAME = "LolzFack_bot"; 
+    
+    // Safety check: Only process getnu callbacks here
+    if (!query.data.startsWith('target_') && !query.data.startsWith('start_scrape_')) return;
 
-    // Extract the action and amount dynamically from the callback data
     const parts = query.data.split('_');
     const amount = parseInt(parts[parts.length - 1]) || 50;
     const action = query.data.replace(`_${amount}`, ''); 
 
-    // ----------------------------------------------------
-    // STEP 1: INITIALIZE TARGET & WAIT
-    // ----------------------------------------------------
+    // ====================================================
+    // TARGET: LOLZFACK (INLINE BUTTON SCRAPER)
+    // ====================================================
     if (action === 'target_lolzfack') {
+        const LOLZ_USERNAME = "LolzFack_bot";
         await bot.answerCallbackQuery(query.id);
         await bot.sendMessage(chatId, `[SYSTEM] Initializing connection to @${LOLZ_USERNAME}...`);
 
         try {
-            // UserBot Safeguard
-            if (!paymeUserBot.connected) {
-                console.log("[SYSTEM] UserBot disconnected. Reconnecting...");
-                await paymeUserBot.connect();
-            }
-
-            await paymeUserBot.sendMessage(LOLZ_USERNAME, { message: "Get Number" });
+            if (!userbot.connected) await userbot.connect();
+            await userbot.sendMessage(LOLZ_USERNAME, { message: "Get Number" });
 
             const pauseMsg = 
                 `[AWAITING MANUAL INPUT]\n\n` +
                 `1. Open @${LOLZ_USERNAME} in your Telegram app.\n` +
                 `2. Select your country and navigate to the numbers.\n` +
-                `3. Once the first batch of numbers appears, click below to let the UserBot auto-scrape ${amount} numbers.`;
+                `3. Once the first batch appears, click below to auto-scrape ${amount} numbers.`;
 
             await bot.sendMessage(chatId, pauseMsg, {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_lolzfack_${amount}` }]
-                    ]
-                }
+                reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_lolzfack_${amount}` }]] }
             });
-
         } catch (error) {
-            console.error("UserBot Trigger Error:", error);
-            await bot.sendMessage(chatId, `[ERROR] Failed to send trigger to target: ${error.message}`);
+            await bot.sendMessage(chatId, `[ERROR] Failed to send trigger: ${error.message}`);
         }
     }
 
-    // ----------------------------------------------------
-    // STEP 2: USERBOT AUTO-PAGINATION & SCRAPING
-    // ----------------------------------------------------
     if (action === 'start_scrape_lolzfack') {
+        const LOLZ_USERNAME = "LolzFack_bot";
         await bot.answerCallbackQuery(query.id);
-        const statusMsg = await bot.sendMessage(chatId, `[SCRAPING] Initializing UserBot extraction for ${amount} numbers...`);
+        const statusMsg = await bot.sendMessage(chatId, `[SCRAPING] Extracting ${amount} numbers from @${LOLZ_USERNAME}...`);
 
         try {
-            if (!paymeUserBot.connected) {
-                await paymeUserBot.connect();
-            }
-
+            if (!userbot.connected) await userbot.connect();
             const extractedNumbers = new Set();
             let attempts = 0;
-            const maxAttempts = Math.ceil(amount / 4) + 10; // Failsafe to prevent infinite loops
+            const maxAttempts = Math.ceil(amount / 4) + 15; // Extra buffer for slow loads
 
-            // Automated Pagination Loop
             while (extractedNumbers.size < amount && attempts < maxAttempts) {
                 attempts++;
-                
-                const messages = await paymeUserBot.getMessages(LOLZ_USERNAME, { limit: 3 });
+                const messages = await userbot.getMessages(LOLZ_USERNAME, { limit: 3 });
                 let targetMessage = null;
 
                 for (const msg of messages) {
                     if (msg.replyMarkup && msg.replyMarkup.rows) {
                         targetMessage = msg; 
-                        
                         for (const row of msg.replyMarkup.rows) {
                             for (const button of row.buttons) {
                                 const btnText = button.text || "";
-                                
                                 let rawNum = btnText.replace(/\D/g, '');
                                 
                                 if (rawNum.length >= 9 && rawNum.length <= 15) {
-                                    if (rawNum.length === 10 && (rawNum.startsWith('09') || rawNum.startsWith('07'))) {
-                                        rawNum = '260' + rawNum.substring(1);
-                                    } else if (rawNum.length === 9 && (rawNum.startsWith('9') || rawNum.startsWith('7'))) {
-                                        rawNum = '260' + rawNum;
-                                    }
+                                    // Zambia Smart Formatter
+                                    if (rawNum.length === 10 && (rawNum.startsWith('09') || rawNum.startsWith('07'))) rawNum = '260' + rawNum.substring(1);
+                                    else if (rawNum.length === 9 && (rawNum.startsWith('9') || rawNum.startsWith('7'))) rawNum = '260' + rawNum;
+                                    
                                     extractedNumbers.add(rawNum);
                                 }
                             }
@@ -2106,92 +2088,158 @@ bot.on('callback_query', async (query) => {
                     }
                 }
 
-                // UI Update
                 if (attempts % 2 === 0) {
-                    try {
-                        await bot.editMessageText(`[SCRAPING] Collected ${extractedNumbers.size}/${amount}...`, { chat_id: chatId, message_id: statusMsg.message_id });
-                    } catch(e) {} 
+                    bot.editMessageText(`[SCRAPING] Collected ${extractedNumbers.size}/${amount}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                 }
-
+                
                 if (extractedNumbers.size >= amount) break;
 
-                // UserBot automatically clicks the "Change Number" button to load the next page
                 if (targetMessage) {
                     try {
                         await targetMessage.click({ text: "تغيير الرقم" });
-                        await new Promise(resolve => setTimeout(resolve, 2500)); // Wait for target bot to edit the message
-                    } catch (clickErr) {
-                        console.log("[PAGINATION ERROR]", clickErr.message);
-                        break; 
-                    }
-                } else {
-                    break; 
-                }
+                        await new Promise(res => setTimeout(res, 2500)); 
+                    } catch (e) { break; }
+                } else break; 
             }
 
-            // Slice exactly to the requested amount
             const numList = Array.from(extractedNumbers).slice(0, amount);
-
-            if (numList.length === 0) {
-                return bot.editMessageText("[RESULT] No numbers found in the inline buttons.", { chat_id: chatId, message_id: statusMsg.message_id });
-            }
-
-            await bot.editMessageText(`[SCRAPED] Found ${numList.length} unique numbers.\n\n[VERIFYING] Starting WhatsApp Live Check...`, { chat_id: chatId, message_id: statusMsg.message_id });
-
-            // ----------------------------------------------------
-            // STEP 3: LIVE WHATSAPP VERIFICATION
-            // ----------------------------------------------------
-            const activeFolders = Object.keys(clients);
-            if (activeFolders.length === 0) {
-                return bot.sendMessage(chatId, "[ERROR] No active WhatsApp bots connected to perform the verification.");
-            }
-            
-            const verifySock = clients[activeFolders[0]]; 
-            const validNumbers = [];
-            let checkCount = 0;
-
-            for (const num of numList) {
-                checkCount++;
-                try {
-                    const [result] = await verifySock.onWhatsApp(num);
-                    if (result && result.exists) {
-                        validNumbers.push(num);
-                    }
-                } catch (err) {
-                    console.error(`[WA CHECK ERROR] Failed to check ${num}:`, err.message);
-                }
-
-                if (checkCount % 5 === 0) {
-                    try {
-                        await bot.editMessageText(`[VERIFYING] Checking: ${checkCount}/${numList.length}...`, { chat_id: chatId, message_id: statusMsg.message_id });
-                    } catch(e) {} 
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 800)); 
-            }
-
-            if (validNumbers.length === 0) {
-                return bot.sendMessage(chatId, `[VERIFICATION COMPLETE]\n\nChecked ${numList.length} numbers. None were registered on WhatsApp.`);
-            }
-
-            await bot.sendMessage(chatId, `[VERIFICATION COMPLETE]\n\nFound ${validNumbers.length} active WhatsApp numbers.\n\nSending batches...`);
-
-            const BATCH_SIZE = 5;
-            for (let i = 0; i < validNumbers.length; i += BATCH_SIZE) {
-                const chunk = validNumbers.slice(i, i + BATCH_SIZE);
-                const formattedChunk = chunk.map(n => `\`${n}\``).join('\n'); 
-                
-                await bot.sendMessage(chatId, `[ACTIVE WA NUMBERS]\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
-                await new Promise(resolve => setTimeout(resolve, 1000)); 
-            }
+            await runLiveVerification(bot, chatId, statusMsg.message_id, numList);
 
         } catch (error) {
-            console.error("Extraction Error:", error);
+            await bot.editMessageText(`[ERROR] Process failed: ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        }
+    }
+
+    // ====================================================
+    // TARGET: ROCKET OTP (TEXT REGEX SCRAPER)
+    // ====================================================
+    if (action === 'target_rocket') {
+        const ROCKET_USERNAME = "ROCKETOTP_BOT";
+        await bot.answerCallbackQuery(query.id);
+        await bot.sendMessage(chatId, `[SYSTEM] Initializing connection to @${ROCKET_USERNAME}...`);
+
+        try {
+            if (!userbot.connected) await userbot.connect();
+            await userbot.sendMessage(ROCKET_USERNAME, { message: "/start" });
+
+            const pauseMsg = 
+                `[AWAITING MANUAL INPUT]\n\n` +
+                `1. Open @${ROCKET_USERNAME} in your Telegram app.\n` +
+                `2. Navigate through the country menus until numbers appear.\n` +
+                `3. Click below to let the userbot auto-scrape ${amount} numbers from the chat text.`;
+
+            await bot.sendMessage(chatId, pauseMsg, {
+                reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_rocket_${amount}` }]] }
+            });
+        } catch (error) {
+            await bot.sendMessage(chatId, `[ERROR] Failed to send trigger: ${error.message}`);
+        }
+    }
+
+    if (action === 'start_scrape_rocket') {
+        const ROCKET_USERNAME = "ROCKETOTP_BOT";
+        await bot.answerCallbackQuery(query.id);
+        const statusMsg = await bot.sendMessage(chatId, `[SCRAPING] Extracting ${amount} numbers from @${ROCKET_USERNAME}...`);
+
+        try {
+            if (!userbot.connected) await userbot.connect();
+            const extractedNumbers = new Set();
+            let attempts = 0;
+            const maxAttempts = Math.ceil(amount / 4) + 15; 
+
+            while (extractedNumbers.size < amount && attempts < maxAttempts) {
+                attempts++;
+                const messages = await userbot.getMessages(ROCKET_USERNAME, { limit: 5 });
+                let targetMessage = null;
+
+                for (const msg of messages) {
+                    const textStr = msg.message || msg.text || "";
+                    if (textStr) {
+                        const foundNumbers = textStr.match(/\d{9,15}/g);
+                        if (foundNumbers) {
+                            targetMessage = msg;
+                            for (let rawNum of foundNumbers) {
+                                // Zambia Smart Formatter
+                                if (rawNum.length === 10 && (rawNum.startsWith('09') || rawNum.startsWith('07'))) rawNum = '260' + rawNum.substring(1);
+                                else if (rawNum.length === 9 && (rawNum.startsWith('9') || rawNum.startsWith('7'))) rawNum = '260' + rawNum;
+                                
+                                extractedNumbers.add(rawNum);
+                            }
+                        }
+                    }
+                }
+
+                if (attempts % 2 === 0) {
+                    bot.editMessageText(`[SCRAPING] Collected ${extractedNumbers.size}/${amount}...`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                }
+                
+                if (extractedNumbers.size >= amount) break;
+
+                if (targetMessage && targetMessage.replyMarkup) {
+                    try {
+                        await targetMessage.click({ text: "Change Number" }); // Change this exact string if RocketOTP uses a different button
+                        await new Promise(res => setTimeout(res, 2500)); 
+                    } catch (e) { break; }
+                } else break; 
+            }
+
+            const numList = Array.from(extractedNumbers).slice(0, amount);
+            await runLiveVerification(bot, chatId, statusMsg.message_id, numList);
+
+        } catch (error) {
             await bot.editMessageText(`[ERROR] Process failed: ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
         }
     }
 });
 
+// ====================================================
+// SHARED WHATSAPP VERIFICATION LOGIC 
+// ====================================================
+async function runLiveVerification(bot, chatId, statusMsgId, numList) {
+    if (numList.length === 0) {
+        return bot.editMessageText("[RESULT] No numbers found.", { chat_id: chatId, message_id: statusMsgId });
+    }
+
+    await bot.editMessageText(`[SCRAPED] Found ${numList.length} unique numbers.\n\n[VERIFYING] Starting WhatsApp Live Check...`, { chat_id: chatId, message_id: statusMsgId });
+
+    // Ensure we have an active WA connection before proceeding
+    const activeFolders = Object.keys(clients);
+    if (activeFolders.length === 0) {
+        return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected! Admin needs to connect an account first to run the live verification.");
+    }
+    
+    const verifySock = clients[activeFolders[0]]; 
+    const validNumbers = [];
+    let checkCount = 0;
+
+    for (const num of numList) {
+        checkCount++;
+        try {
+            const [result] = await verifySock.onWhatsApp(num);
+            if (result && result.exists) validNumbers.push(num);
+        } catch (err) {}
+
+        if (checkCount % 5 === 0) {
+            bot.editMessageText(`[VERIFYING] Checking: ${checkCount}/${numList.length}...`, { chat_id: chatId, message_id: statusMsgId }).catch(()=>{});
+        }
+        await new Promise(res => setTimeout(res, 800)); 
+    }
+
+    if (validNumbers.length === 0) {
+        return bot.sendMessage(chatId, `[VERIFICATION COMPLETE]\n\nChecked ${numList.length} numbers. None were registered on WhatsApp.`);
+    }
+
+    await bot.sendMessage(chatId, `[VERIFICATION COMPLETE]\n\nFound ${validNumbers.length} active WhatsApp numbers.\n\nSending batches...`);
+
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < validNumbers.length; i += BATCH_SIZE) {
+        const chunk = validNumbers.slice(i, i + BATCH_SIZE);
+        const formattedChunk = chunk.map(n => `\`${n}\``).join('\n'); 
+        await bot.sendMessage(chatId, `[ACTIVE WA NUMBERS]\n\n${formattedChunk}`, { parse_mode: 'Markdown' });
+        await new Promise(res => setTimeout(res, 1000)); 
+    }
+}
+ 
 
 
     

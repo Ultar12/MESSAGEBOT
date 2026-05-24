@@ -1989,16 +1989,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
 
+// ====================================================
+// UNIFIED GETNU COMMAND & STREAMING ENGINE
+// ====================================================
 
- // ==========================================
-// UNIFIED GETNU COMMAND & EXTRACTION ENGINE
-// ==========================================
-
-// 1. Capture the amount from the command (e.g., /getnu 100)
 bot.onText(/\/getnu(?:\s+(\d+))?/, async (msg, match) => {
-    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
-    
     const amount = parseInt(match[1]) || 50; 
 
     const options = {
@@ -2009,327 +2006,171 @@ bot.onText(/\/getnu(?:\s+(\d+))?/, async (msg, match) => {
             ]
         }
     };
-
-    await bot.sendMessage(chatId, `[EXTRACTION ENGINE]\nTarget Amount: ${amount} verified numbers.\n\nSelect the target bot:`, options);
+    await bot.sendMessage(chatId, `[EXTRACTION ENGINE]\nTarget: ${amount} active numbers.\n\nSelect target bot:`, options);
 });
 
-// 2. Centralized Callback Handler
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
-    
     if (!query.data.startsWith('target_') && !query.data.startsWith('start_scrape_')) return;
 
     const parts = query.data.split('_');
     const amount = parseInt(parts[parts.length - 1]) || 50;
     const action = query.data.replace(`_${amount}`, ''); 
 
-    // ====================================================
-    // TARGET: LOLZFACK (INLINE BUTTON SCRAPER)
-    // ====================================================
-    if (action === 'target_lolzfack') {
-        const LOLZ_USERNAME = "LolzFack_bot";
-        await bot.answerCallbackQuery(query.id);
-        await bot.sendMessage(chatId, `[SYSTEM] Initializing connection to @${LOLZ_USERNAME}...`);
-
-        try {
-            if (!userBot.connected) await userBot.connect();
-            await userBot.sendMessage(LOLZ_USERNAME, { message: "Get Number" });
-
-            const pauseMsg = 
-                `[AWAITING MANUAL INPUT]\n\n` +
-                `1. Open @${LOLZ_USERNAME} in your Telegram app.\n` +
-                `2. Select your country and navigate to the numbers.\n` +
-                `3. Click below to start the live scrape & verify loop.`;
-
-            await bot.sendMessage(chatId, pauseMsg, {
-                reply_markup: { inline_keyboard: [[{ text: `START LIVE EXTRACTION (${amount})`, callback_data: `start_scrape_lolzfack_${amount}` }]] }
+    // --- LOLZFACK (INLINE BUTTON SCRAPER) ---
+    if (action === 'target_lolzfack' || action === 'start_scrape_lolzfack') {
+        const targetBot = "LolzFack_bot";
+        if (action === 'target_lolzfack') {
+            await bot.answerCallbackQuery(query.id);
+            await userBot.sendMessage(targetBot, { message: "Get Number" });
+            return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot}. Navigate to numbers and click:`, {
+                reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_lolzfack_${amount}` }]] }
             });
-        } catch (error) {
-            await bot.sendMessage(chatId, `[ERROR] Failed to send trigger: ${error.message}`);
         }
-    }
-
-    if (action === 'start_scrape_lolzfack') {
-        const LOLZ_USERNAME = "LolzFack_bot";
         await bot.answerCallbackQuery(query.id);
-
-        const activeFolders = Object.keys(clients).filter(f => clients[f]);
-        if (activeFolders.length === 0) {
-            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected for live verification.");
-        }
-        const verifySock = clients[activeFolders[0]];
-
-        const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE STARTING]\nTarget: ${amount} numbers...`);
+        const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers...`);
 
         try {
-            if (!userBot.connected) await userBot.connect();
-            
-            const seenNumbers = new Set();
+            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+            if (activeFolders.length === 0) return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected!");
+            const verifySock = clients[activeFolders[0]];
+
+            const seen = new Set();
             let currentBatch = [];
-            let totalChecked = 0;
-            let totalVerified = 0;
+            let verified = 0;
             let attempts = 0;
-            const maxAttempts = Math.ceil(amount / 2) + 20; 
 
-            while (totalVerified < amount && attempts < maxAttempts) {
+            while (verified < amount && attempts < 50) {
                 attempts++;
-                const messages = await userBot.getMessages(LOLZ_USERNAME, { limit: 3 });
-                let targetMessage = null;
+                const msgs = await userBot.getMessages(targetBot, { limit: 3 });
+                let targetMsg = null;
 
-                for (const msg of messages) {
-                    if (msg.replyMarkup && msg.replyMarkup.rows) {
-                        targetMessage = msg; 
+                for (const msg of msgs) {
+                    if (msg.replyMarkup?.rows) {
+                        targetMsg = msg;
                         for (const row of msg.replyMarkup.rows) {
-                            for (const button of row.buttons) {
-                                if (totalVerified >= amount) break;
+                            for (const btn of row.buttons) {
+                                const bText = btn.text || "";
+                                if (bText.includes("تغيير") || bText.includes("🔄")) continue;
 
-                                const btnText = button.text || "";
-                                // Skip action buttons
-                                if (btnText.toLowerCase().includes('change') || btnText.includes('تغيير')) continue;
+                                let raw = bText.replace(/\D/g, '');
+                                if (raw.length < 9) continue;
+                                if (seen.has(raw)) continue;
+                                seen.add(raw);
+
+                                // Normalize for WA Check
+                                const res = normalizeWithCountry(raw);
+                                if (!res) continue;
                                 
-                                let rawNum = btnText.replace(/\D/g, '');
-                                
-                                if (rawNum.length >= 9 && rawNum.length <= 15) {
-                                    if (rawNum.length === 10 && (rawNum.startsWith('09') || rawNum.startsWith('07'))) rawNum = '260' + rawNum.substring(1);
-                                    else if (rawNum.length === 9 && (rawNum.startsWith('9') || rawNum.startsWith('7'))) rawNum = '260' + rawNum;
-                                    
-                                    if (seenNumbers.has(rawNum)) continue;
-                                    seenNumbers.add(rawNum);
-                                    totalChecked++;
-
-                                    const res = normalizeWithCountry(rawNum);
-                                    if (!res || !res.num) continue;
-
-                                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                                    const jid = `${fullPhone}@s.whatsapp.net`;
-
-                                    // LIVE WA VERIFICATION
-                                    try {
-                                        const [waCheck] = await verifySock.onWhatsApp(jid);
-                                        if (waCheck && waCheck.exists) {
-                                            totalVerified++;
-                                            // ADD LOCAL NUMBER ONLY (NO COUNTRY CODE)
-                                            currentBatch.push(`\`${res.num}\``);
-                                            
-                                            // DROP BATCH IMMEDIATELY WHEN IT HITS 5
-                                            if (currentBatch.length >= 5) {
-                                                await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                                                currentBatch = [];
-                                            }
-                                        }
-                                    } catch(e) {}
-
-                                    // LIVE DASHBOARD UPDATE
-                                    if (totalChecked % 2 === 0) {
-                                        bot.editMessageText(`[LIVE SCRAPING]\nTarget: ${amount}\nChecked: ${totalChecked}\nVerified: ${totalVerified}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-                                    }
-                                    
-                                    await new Promise(r => setTimeout(r, 1000)); // Anti-ban delay
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (totalVerified >= amount) break;
-
-                /                // PAGINATION CLICK
-                if (targetMessage && targetMessage.replyMarkup && targetMessage.replyMarkup.rows) {
-                    let clicked = false;
-                    
-                    for (let r = 0; r < targetMessage.replyMarkup.rows.length; r++) {
-                        const row = targetMessage.replyMarkup.rows[r];
-                        for (let c = 0; c < row.buttons.length; c++) {
-                            const button = row.buttons[c];
-                            const bText = button.text || "";
-                            
-                            // Look for the Arabic word "Change" or the Refresh Emoji
-                            if (bText.includes("تغيير") || bText.includes("🔄")) {
-                                console.log(`[SYSTEM] Clicking pagination button: ${bText}`);
+                                const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
                                 
                                 try {
-                                    // Method 1: Standard GramJS Click
-                                    await targetMessage.click(r, c);
-                                } catch (err) {
-                                    // Method 2: Bulletproof Raw Telegram API Click (Bypasses GramJS click bugs)
-                                    const { Api } = await import("telegram");
-                                    await userBot.invoke(new Api.messages.GetBotCallbackAnswer({
-                                        peer: "LolzFack_bot",
-                                        msgId: targetMessage.id,
-                                        data: button.data
-                                    }));
-                                }
-                                
-                                clicked = true;
-                                break;
-                            }
-                        }
-                        if (clicked) break;
-                    }
-                    
-                    if (clicked) {
-                        // Wait 3.5 seconds for the bot to load the new numbers before looping again
-                        await new Promise(res => setTimeout(res, 3500)); 
-                    } else {
-                        await bot.sendMessage(chatId, "⚠️ [WARNING] Could not find the 'تغيير الرقم' button to click. Stopping extraction early.");
-                        break;
-                    }
-                } else {
-                    break; 
-                }
-
-
-            // DROP ANY LEFTOVERS
-            if (currentBatch.length > 0) {
-                await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-            }
-
-            await bot.sendMessage(chatId, `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers.`);
-            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
-
-        } catch (error) {
-            await bot.editMessageText(`[ERROR] Process failed: ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-        }
-    }
-
-    // ====================================================
-    // TARGET: ROCKET OTP (TEXT REGEX SCRAPER)
-    // ====================================================
-    if (action === 'target_rocket') {
-        const ROCKET_USERNAME = "ROCKETOTP_BOT";
-        await bot.answerCallbackQuery(query.id);
-        await bot.sendMessage(chatId, `[SYSTEM] Initializing connection to @${ROCKET_USERNAME}...`);
-
-        try {
-            if (!userBot.connected) await userBot.connect();
-            await userBot.sendMessage(ROCKET_USERNAME, { message: "/start" });
-
-            const pauseMsg = 
-                `[AWAITING MANUAL INPUT]\n\n` +
-                `1. Open @${ROCKET_USERNAME} in your Telegram app.\n` +
-                `2. Navigate through the country menus until numbers appear.\n` +
-                `3. Click below to start the live scrape & verify loop.`;
-
-            await bot.sendMessage(chatId, pauseMsg, {
-                reply_markup: { inline_keyboard: [[{ text: `START LIVE EXTRACTION (${amount})`, callback_data: `start_scrape_rocket_${amount}` }]] }
-            });
-        } catch (error) {
-            await bot.sendMessage(chatId, `[ERROR] Failed to send trigger: ${error.message}`);
-        }
-    }
-
-    if (action === 'start_scrape_rocket') {
-        const ROCKET_USERNAME = "ROCKETOTP_BOT";
-        await bot.answerCallbackQuery(query.id);
-
-        const activeFolders = Object.keys(clients).filter(f => clients[f]);
-        if (activeFolders.length === 0) {
-            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected for live verification.");
-        }
-        const verifySock = clients[activeFolders[0]];
-
-        const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE STARTING]\nTarget: ${amount} numbers...`);
-
-        try {
-            if (!userBot.connected) await userBot.connect();
-            
-            const seenNumbers = new Set();
-            let currentBatch = [];
-            let totalChecked = 0;
-            let totalVerified = 0;
-            let attempts = 0;
-            const maxAttempts = Math.ceil(amount / 2) + 20; 
-
-            while (totalVerified < amount && attempts < maxAttempts) {
-                attempts++;
-                const messages = await userBot.getMessages(ROCKET_USERNAME, { limit: 5 });
-                let targetMessage = null;
-
-                for (const msg of messages) {
-                    const textStr = msg.message || msg.text || "";
-                    if (textStr) {
-                        const foundNumbers = textStr.match(/\d{9,15}/g);
-                        if (foundNumbers) {
-                            targetMessage = msg;
-                            for (let rawNum of foundNumbers) {
-                                if (totalVerified >= amount) break;
-
-                                if (rawNum.length === 10 && (rawNum.startsWith('09') || rawNum.startsWith('07'))) rawNum = '260' + rawNum.substring(1);
-                                else if (rawNum.length === 9 && (rawNum.startsWith('9') || rawNum.startsWith('7'))) rawNum = '260' + rawNum;
-                                
-                                if (seenNumbers.has(rawNum)) continue;
-                                seenNumbers.add(rawNum);
-                                totalChecked++;
-
-                                const res = normalizeWithCountry(rawNum);
-                                if (!res || !res.num) continue;
-
-                                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                                const jid = `${fullPhone}@s.whatsapp.net`;
-
-                                // LIVE WA VERIFICATION
-                                try {
-                                    const [waCheck] = await verifySock.onWhatsApp(jid);
-                                    if (waCheck && waCheck.exists) {
-                                        totalVerified++;
-                                        // ADD LOCAL NUMBER ONLY (NO COUNTRY CODE)
-                                        currentBatch.push(`\`${res.num}\``);
-                                        
-                                        // DROP BATCH IMMEDIATELY WHEN IT HITS 5
-                                        if (currentBatch.length >= 5) {
+                                    const [check] = await verifySock.onWhatsApp(jid);
+                                    if (check?.exists) {
+                                        verified++;
+                                        currentBatch.push(`\`${res.num}\``); // NO COUNTRY CODE
+                                        if (currentBatch.length === 5) {
                                             await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                                             currentBatch = [];
                                         }
+                                        bot.editMessageText(`[LIVE] Verified: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                                     }
                                 } catch(e) {}
-
-                                // LIVE DASHBOARD UPDATE
-                                if (totalChecked % 2 === 0) {
-                                    bot.editMessageText(`[LIVE SCRAPING]\nTarget: ${amount}\nChecked: ${totalChecked}\nVerified: ${totalVerified}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-                                }
-                                
-                                await new Promise(r => setTimeout(r, 1000)); // Anti-ban delay
+                                await delay(800);
                             }
                         }
                     }
                 }
 
-                if (totalVerified >= amount) break;
-
-                // PAGINATION CLICK
-                if (targetMessage && targetMessage.replyMarkup) {
+                // Bulletproof Pagination Click
+                if (targetMsg) {
                     let clicked = false;
-                    for (let r = 0; r < targetMessage.replyMarkup.rows.length; r++) {
-                        for (let c = 0; c < targetMessage.replyMarkup.rows[r].buttons.length; c++) {
-                            const bText = targetMessage.replyMarkup.rows[r].buttons[c].text || "";
-                            if (bText.toLowerCase().includes("change")) {
-                                await targetMessage.click(r, c);
-                                clicked = true;
-                                break;
+                    for (let r = 0; r < targetMsg.replyMarkup.rows.length; r++) {
+                        for (let c = 0; c < targetMsg.replyMarkup.rows[r].buttons.length; c++) {
+                            const bText = targetMsg.replyMarkup.rows[r].buttons[c].text || "";
+                            if (bText.includes("تغيير") || bText.includes("🔄")) {
+                                try { await targetMsg.click(r, c); } catch (e) {
+                                    const { Api } = await import("telegram");
+                                    await userBot.invoke(new Api.messages.GetBotCallbackAnswer({ peer: targetBot, msgId: targetMsg.id, data: targetMsg.replyMarkup.rows[r].buttons[c].data }));
+                                }
+                                clicked = true; break;
                             }
                         }
                         if (clicked) break;
                     }
-                    if (clicked) await new Promise(res => setTimeout(res, 3000)); 
+                    if (clicked) await delay(3500);
                     else break;
-                } else break; 
+                }
             }
+            if (currentBatch.length > 0) await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            await bot.sendMessage(chatId, "[DONE] Extraction complete.");
+        } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
+    }
 
-            // DROP ANY LEFTOVERS
-            if (currentBatch.length > 0) {
-                await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-            }
-
-            await bot.sendMessage(chatId, `[PROCESS COMPLETE]\nSuccessfully extracted and verified ${totalVerified} active WhatsApp numbers.`);
-            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
-
-        } catch (error) {
-            await bot.editMessageText(`[ERROR] Process failed: ${error.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+    // --- ROCKET OTP (TEXT REGEX SCRAPER) ---
+    if (action === 'target_rocket' || action === 'start_scrape_rocket') {
+        const targetBot = "ROCKETOTP_BOT";
+        if (action === 'target_rocket') {
+            await bot.answerCallbackQuery(query.id);
+            await userBot.sendMessage(targetBot, { message: "/start" });
+            return bot.sendMessage(chatId, `[SYSTEM] Trigger sent. Click to start:`, {
+                reply_markup: { inline_keyboard: [[{ text: `START LIVE EXTRACTION (${amount})`, callback_data: `start_scrape_rocket_${amount}` }]] }
+            });
         }
+        await bot.answerCallbackQuery(query.id);
+        const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers...`);
+
+        try {
+            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+            if (activeFolders.length === 0) return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected!");
+            const verifySock = clients[activeFolders[0]];
+
+            const seen = new Set();
+            let currentBatch = [];
+            let verified = 0;
+            let attempts = 0;
+
+            while (verified < amount && attempts < 50) {
+                attempts++;
+                const msgs = await userBot.getMessages(targetBot, { limit: 5 });
+                for (const msg of msgs) {
+                    const text = msg.message || "";
+                    const matches = text.match(/\d{9,15}/g) || [];
+                    
+                    for (let raw of matches) {
+                        if (verified >= amount) break;
+                        if (seen.has(raw)) continue;
+                        seen.add(raw);
+
+                        const res = normalizeWithCountry(raw);
+                        if (!res) continue;
+
+                        const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
+                        try {
+                            const [check] = await verifySock.onWhatsApp(jid);
+                            if (check?.exists) {
+                                verified++;
+                                currentBatch.push(`\`${res.num}\``);
+                                if (currentBatch.length === 5) {
+                                    await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                                    currentBatch = [];
+                                }
+                                bot.editMessageText(`[LIVE] Verified: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                            }
+                        } catch(e) {}
+                        await delay(800);
+                    }
+                }
+                await delay(3000); // Pagination wait
+            }
+            if (currentBatch.length > 0) await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, "[DONE] Extraction complete.");
+        } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
     }
 });
-                       
 
+ 
+    
 
     
 bot.onText(/\/send\s+(\S+)/, async (msg, match) => {

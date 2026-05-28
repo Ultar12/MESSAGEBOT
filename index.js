@@ -1139,6 +1139,12 @@ async function boot() {
         startClient(session.session_id, null, null, session.telegram_user_id);
     }
 
+    console.log(`[SYSTEM] Initializing PAYME Sync Timers...`);
+    
+    setTimeout(() => {
+        syncDatabaseWithChat().catch(e => console.error("[SYNC FATAL]", e.message));
+    }, 10000); 
+
 
     // Run the Zambia Sync every 1 hour
 setInterval(() => {

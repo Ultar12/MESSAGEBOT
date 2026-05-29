@@ -78,6 +78,10 @@ export let currentOtpSenderId = null;
 export let spyMemory = new Set();
 export let spyFound = new Set();
 
+const wsotpQueue = {};
+const wsotpActive = {};
+
+
 
 // Add this at the top of your file with your other variables
 const failedAccounts = new Set();
@@ -2302,6 +2306,109 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
 });
 
 
+
+    // ==========================================
+// WSOTP AUTOMATION ENGINE (PAYME ACCOUNT)
+// ==========================================
+
+bot.onText(/\/wsotp/, async (msg) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+
+    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+    userState[chatId] = 'WSOTP_MODE';
+    wsotpQueue[chatId] = wsotpQueue[chatId] || [];
+
+    bot.sendMessage(chatId, 
+        `**[WSOTP MODE ACTIVE]**\n\n` +
+        `Send your numbers in batches.\n` +
+        `• Poland (9 digits) auto-gets \`+48\`\n` +
+        `• Venezuela (\`04...\`) auto-gets \`+58\`\n\n` +
+        `Type \`STOP\` or \`/done\` to exit.`, 
+        { parse_mode: 'Markdown' }
+    );
+});
+
+// The Background Worker Engine
+async function processWsotpQueue(chatId) {
+    if (wsotpActive[chatId]) return; // Prevent multiple workers running at the same time
+    wsotpActive[chatId] = true;
+
+    const TARGET_BOT = "wsotp200bot";
+
+    try {
+        // Ensure Payme account is connected
+        if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
+        if (!paymeUserBot.connected) await paymeUserBot.connect();
+    } catch (e) {
+        bot.sendMessage(chatId, `[ERROR] Failed to connect Payme UserBot: ${e.message}`);
+        wsotpActive[chatId] = false;
+        return;
+    }
+
+    while (wsotpQueue[chatId].length > 0) {
+        // Break instantly if the user types "STOP"
+        if (userState[chatId] !== 'WSOTP_MODE') break; 
+
+        const currentNum = wsotpQueue[chatId].shift();
+        
+        // --- SMART FORMATTING ---
+        let formattedNum = currentNum.replace(/\D/g, '');
+        
+        if (formattedNum.length === 11 && formattedNum.startsWith('04')) {
+            // Venezuela: 04264548943 -> 584264548943
+            formattedNum = '58' + formattedNum.substring(1); 
+        } else if (formattedNum.length === 9) {
+            // Poland: 459065324 -> 48459065324
+            formattedNum = '48' + formattedNum; 
+        }
+
+        // Send to bot
+        await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
+        
+        // --- LIVE LISTENER LOOP ---
+        let resolved = false;
+        let timeoutAttempts = 0;
+        const POLL_INTERVAL = 3000; // Check every 3 seconds
+        const MAX_WAIT_ATTEMPTS = 60; // Max 3 minutes per number to prevent infinite freezing
+
+        while (!resolved && timeoutAttempts < MAX_WAIT_ATTEMPTS) {
+            await delay(POLL_INTERVAL);
+            timeoutAttempts++;
+
+            if (userState[chatId] !== 'WSOTP_MODE') break;
+
+            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 2 });
+            if (!msgs || msgs.length === 0) continue;
+
+            // Check the newest message from the bot
+            const text = msgs[0].message || "";
+
+            if (text.includes("🔵") || text.toLowerCase().includes("in progress")) {
+                // Do absolutely nothing. Just let the loop run and wait.
+                continue;
+            } else if (text.includes("🟡") || text.toLowerCase().includes("try later")) {
+                // Failed -> Break the loop, grab the next number
+                resolved = true;
+            } else if (text.includes("💰") || text.toLowerCase().includes("new reward")) {
+                // Success -> Break the loop, grab the next number
+                resolved = true;
+            } else if (text.toLowerCase().includes("error") || text.toLowerCase().includes("blocked")) {
+                // Safety catch for standard bot errors
+                resolved = true;
+            }
+        }
+    }
+
+    wsotpActive[chatId] = false;
+    
+    // Notify when the queue goes empty
+    if (userState[chatId] === 'WSOTP_MODE') {
+        bot.sendMessage(chatId, `✅ **[QUEUE EMPTY]**\nFinished processing the current batch. Send more numbers when ready!`, { parse_mode: 'Markdown' });
+    }
+}
 
 
 
@@ -6842,6 +6949,37 @@ const cleanNumbers = matches.map(n => {
 
             return; // Stop processing
         }
+
+
+                // --- 🤖 SMART WSOTP QUEUE (Bulk Forward Support) ---
+        if (userState[chatId] === 'WSOTP_MODE') {
+            
+            // Check for Exit Command
+            if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
+                userState[chatId] = null;
+                const remaining = wsotpQueue[chatId]?.length || 0;
+                return bot.sendMessage(chatId, `**[WSOTP MODE EXITED]**\nQueue stopped. ${remaining} numbers left unprocessed.`, { parse_mode: 'Markdown' });
+            }
+
+            // Extract all raw numbers from your message
+            const matches = text.match(/\d{9,15}/g);
+            if (!matches || matches.length === 0) return; // Ignore chat chatter
+
+            // Ensure the queue array exists
+            if (!wsotpQueue[chatId]) wsotpQueue[chatId] = [];
+            
+            // Add the fresh batch to the queue
+            wsotpQueue[chatId].push(...matches);
+            
+            bot.sendMessage(chatId, `**Added ${matches.length} numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
+
+            // If the worker is asleep, wake it up!
+            if (!wsotpActive[chatId]) {
+                processWsotpQueue(chatId);
+            }
+            return; // Stop other commands from firing
+        }
+
 
 
                 // --- 🇿🇼 SMART ZIMBABWE SAVE (Bulk Forward Support) ---

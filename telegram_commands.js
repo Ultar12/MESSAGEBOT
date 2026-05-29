@@ -2203,11 +2203,8 @@ bot.onText(/\/wsotp/, async (msg) => {
     );
 });
 
-
-
-
-
-        // ==========================================
+    
+   // ==========================================
 // 1. THE BATCH SENDER & WAITER ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2228,12 +2225,21 @@ async function processWsotpQueue(chatId) {
 
     wsotpWarnedNoWa = false; 
 
-    // --- LIVE STATS TRACKER ---
-    let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0 };
-    let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE STATS...]`, { parse_mode: 'Markdown' });
+    // --- LIVE DASHBOARD INITIALIZATION ---
+    let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, logs: [] };
+    let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
+
+    // Function to handle the scrolling activity log without spamming chat
+    const addLog = async (msg) => {
+        stats.logs.unshift(msg);
+        if (stats.logs.length > 6) stats.logs.pop(); // Keep only the 6 most recent events
+        await updateStats();
+    };
 
     const updateStats = async () => {
         const left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+        const logsText = stats.logs.join('\n');
+        
         const txt = 
             `**[WSOTP LIVE DASHBOARD]**\n\n` +
             `Queue Remaining: ${left}\n` +
@@ -2241,10 +2247,11 @@ async function processWsotpQueue(chatId) {
             `In Progress (x2): ${stats.inProgress}\n` +
             `Completed/Paid: ${stats.completed}\n` +
             `Trash (Deleted): ${stats.trash}\n\n` +
+            `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
             `_Auto-deleting junk messages..._`;
         try {
             await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
-        } catch(e) {} // Ignore 'message not modified' errors
+        } catch(e) {} 
     };
 
     while (wsotpQueue[chatId].length > 0) {
@@ -2259,12 +2266,10 @@ async function processWsotpQueue(chatId) {
             const rawNum = wsotpQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             
-            // Smart Prefix Formatting
             if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
             else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
             else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
 
-            // Live WA Check
             let isWaActive = true;
             const activeFolders = Object.keys(clients).filter(f => clients[f]);
             
@@ -2282,46 +2287,42 @@ async function processWsotpQueue(chatId) {
                 }
             }
 
-            if (!isWaActive) continue; // Skip dead numbers
+            if (!isWaActive) continue; 
 
             currentBatchSize++;
             stats.sent++;
 
-            // Human-like typing & sending
             try {
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(1200); 
                 
-                // CAPTURE THE SENT MESSAGE ID SO WE CAN DELETE IT LATER IF IT'S TRASH
                 const sentMsg = await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
                 
-                // Track this number
                 activeBatchTracker[formattedNum] = {
                     count: 0,
                     lastMsgId: null,
                     lastEditDate: null,
-                    sentMsgId: sentMsg.id // Saved for auto-deletion
+                    sentMsgId: sentMsg.id 
                 };
-
             } catch (e) {
                 stats.sent--;
                 currentBatchSize--;
             }
             
             await updateStats();
-            await delay(1000); // Brief delay between sends
+            await delay(1000); 
         }
 
         if (Object.keys(activeBatchTracker).length === 0) continue;
 
         // --- 2. WAIT FOR BATCH TO RESOLVE ---
         let batchStartTime = Date.now();
-        let batchTimeout = 300000; // 5-Minute Max Timeout
+        let batchTimeout = 300000; 
 
         while (Object.keys(activeBatchTracker).length > 0 && (Date.now() - batchStartTime < batchTimeout)) {
             if (userState[chatId] !== currentMode) break;
 
-            await delay(2500); // Check messages every 2.5 seconds
+            await delay(2500); 
 
             const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 30 }); 
             
@@ -2342,8 +2343,7 @@ async function processWsotpQueue(chatId) {
                 const isNewUpdate = (msg.id !== trackData.lastMsgId) || (msg.editDate && msg.editDate !== trackData.lastEditDate);
                 const textLower = text.toLowerCase();
 
-                // CHECK FOR TRASH / REJECTIONS (Cooldowns, Registered, BadNum)
-                // Note: Target bot emojis (🟡, ⚫️) are kept here because they are needed for matching.
+                // 🛑 AUTO-DELETE TRASH REJECTIONS
                 if (textLower.includes("already registered") || 
                     textLower.includes("please submit this number again") ||
                     text.includes("🟡") || text.includes("⚫️") || 
@@ -2352,24 +2352,23 @@ async function processWsotpQueue(chatId) {
                     textLower.includes("error") || 
                     textLower.includes("blocked")) {
                     
-                    // AUTO-DELETE BOT MESSAGE AND YOUR NUMBER
                     try {
                         await paymeUserBot.deleteMessages(TARGET_BOT, [msg.id, trackData.sentMsgId], { revoke: true });
-                    } catch (delErr) { console.error("Failed to delete junk message"); }
+                    } catch (delErr) {}
 
                     stats.trash++;
                     delete activeBatchTracker[botNum];
                     await updateStats();
                 } 
                 
-                // CHECK FOR INSTANT REWARD (Needs 💰 for matching)
-                else if (text.includes("💰") || textLower.includes("new reward")) {
+                // 💰 CHECK FOR INSTANT REWARD (Pre-OTP)
+                else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
                     stats.completed++;
                     delete activeBatchTracker[botNum];
-                    await updateStats();
+                    await addLog(`🎉 \`${botNum}\`: Instant Reward!`);
                 }
 
-                // CHECK FOR DOUBLE "IN PROGRESS" (Leaves messages alone, needs 🔵 for matching)
+                // 🔵 CHECK FOR DOUBLE "IN PROGRESS"
                 else if (text.includes("🔵") || textLower.includes("in progress")) {
                     if (isNewUpdate) {
                         trackData.count++;
@@ -2378,18 +2377,16 @@ async function processWsotpQueue(chatId) {
 
                         if (trackData.count >= 2) {
                             stats.inProgress++;
-                            await updateStats();
-
+                            
                             if (currentMode === 'WSOTP_FILE_MODE') {
-                                // Spawn background hunter for this number
-                                huntOtpAsync(chatId, botNum, msg.id);
+                                // Spawn background hunter, passing stats and addLog function to it!
+                                huntOtpAsync(chatId, botNum, msg.id, stats, addLog);
                             } else {
-                                // Manual Mode Alert
-                                bot.sendMessage(chatId, `\`${botNum}\` is In Progress (x2)! (Manual Mode)`, { parse_mode: 'Markdown' });
+                                await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual)`);
                             }
                             
-                            // Mark as resolved so the batch sender can move on
                             delete activeBatchTracker[botNum];
+                            await updateStats();
                         }
                     }
                 }
@@ -2405,28 +2402,27 @@ async function processWsotpQueue(chatId) {
 }
 
 // ==========================================
-// 2. THE ASYNCHRONOUS OTP HUNTER (3 MINS)
+// 2. THE ASYNCHRONOUS OTP HUNTER
 // ==========================================
-async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply) {
+async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog) {
     const OTP_GROUP = "-1003645249777"; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
     const searchDigits = formattedNum.slice(-4);
     const startTime = Date.now();
-    const MAX_TIME = 180000; // 3 Minutes Exact (180,000ms)
+    const MAX_TIME = 180000; // 3 Minutes Exact
 
-    bot.sendMessage(chatId, `\`${formattedNum}\` is In Progress (x2)!\nStarting 3-min OTP Hunt in background...`, { parse_mode: 'Markdown' });
+    await addLog(`\`${formattedNum}\`: Starting 3-min OTP Hunt...`);
 
+    let foundCode = null;
+    
+    // --- PHASE 1: HUNT FOR THE OTP ---
     while (Date.now() - startTime < MAX_TIME) {
-        
-        // Stop hunting if user forcibly exits WSOTP mode
-        if (userState[chatId] !== 'WSOTP_FILE_MODE') break;
+        if (userState[chatId] !== 'WSOTP_FILE_MODE') return; 
 
-        let foundCode = null;
         try {
             const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
-            
             for (const m of otpMsgs) {
                 if (!m.message || m.date < Math.floor(startTime / 1000)) continue;
                 
@@ -2448,23 +2444,55 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply) {
             }
 
             if (foundCode) {
-                bot.sendMessage(chatId, `OTP found for \`${formattedNum}\`: **${foundCode}**\nReplying to target bot...`, { parse_mode: 'Markdown' });
+                await addLog(`\`${formattedNum}\`: OTP Found (${foundCode}). Replying...`);
                 
-                // Human-like reply sequence
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(1200);
                 await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
-                
-                break; // Kill the hunt loop, it successfully sent it!
+                break; 
             }
         } catch (e) {}
 
-        await delay(3000); // Check OTP group every 3 seconds
+        await delay(3000); 
     }
+
+    if (!foundCode) {
+        await addLog(`❌ \`${formattedNum}\`: OTP Timeout (3 mins).`);
+        return;
+    }
+
+    // --- PHASE 2: WAIT FOR REWARD (Post-OTP) ---
+    const rewardStart = Date.now();
+    const REWARD_TIMEOUT = 90000; // Wait up to 1.5 mins for bot to verify code and pay
+    
+    while (Date.now() - rewardStart < REWARD_TIMEOUT) {
+        try {
+            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 10 });
+            for (const msg of msgs) {
+                const text = msg.message || "";
+                
+                // Only look at messages related to THIS specific number
+                if (text.includes(formattedNum)) {
+                    const textLower = text.toLowerCase();
+                    
+                    if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
+                        stats.completed++;
+                        await addLog(`🎉 \`${formattedNum}\`: Paid/Success!`);
+                        return; // Successfully tracked!
+                    } else if (text.includes("🟡") || textLower.includes("incorrect") || textLower.includes("try later")) {
+                        await addLog(`⚠️ \`${formattedNum}\`: Bot rejected OTP.`);
+                        return; // Failed tracking
+                    }
+                }
+            }
+        } catch (e) {}
+        
+        await delay(2500);
+    }
+    
+    await addLog(`⏳ \`${formattedNum}\`: Reward verification timeout.`);
 }
-                   
-  
-   
+
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

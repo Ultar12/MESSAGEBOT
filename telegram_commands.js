@@ -80,6 +80,8 @@ export let spyFound = new Set();
 
 const wsotpQueue = {};
 const wsotpActive = {};
+let wsotpWarnedNoWa = false; // Prevents spamming the admin if WA bot dies
+
 
 
 
@@ -2341,6 +2343,7 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
 
 
 
+
     // ==========================================
 // WSOTP AUTOMATION ENGINE (PAYME ACCOUNT)
 // ==========================================
@@ -2352,11 +2355,51 @@ bot.onText(/\/wsotp/, async (msg) => {
 
     if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-    userState[chatId] = 'WSOTP_MODE';
     wsotpQueue[chatId] = wsotpQueue[chatId] || [];
 
+    // --- MODE 1: FILE BATCH PROCESSING ---
+    if (msg.reply_to_message && msg.reply_to_message.document) {
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for /wsotp.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, "⏳ Downloading file and loading numbers into memory...");
+        
+        try {
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+
+            const matches = textData.match(/\d{7,15}/g) || [];
+            if (matches.length === 0) return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
+
+            const uniqueNumbers = [...new Set(matches)];
+            wsotpQueue[chatId].push(...uniqueNumbers);
+            
+            userState[chatId] = 'WSOTP_MODE'; // Keep mode active so user can type STOP
+
+            bot.editMessageText(
+                `🤖 **[WSOTP FILE MODE ACTIVE]** 🤖\n\n` +
+                `Loaded ${uniqueNumbers.length} numbers into memory.\n` +
+                `Starting live WA verification and OTP extraction loop...\n\n` +
+                `Type \`STOP\` or \`/done\` to abort.`, 
+                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+            );
+
+            // Wake up worker
+            if (!wsotpActive[chatId]) processWsotpQueue(chatId);
+
+        } catch (err) {
+            bot.editMessageText(`[ERROR] Failed to read file: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        }
+        return;
+    }
+
+    // --- MODE 2: MANUAL BATCH PROCESSING ---
+    userState[chatId] = 'WSOTP_MODE';
     bot.sendMessage(chatId, 
-        `**[WSOTP MODE ACTIVE]**\n\n` +
+        `🤖 **[WSOTP MANUAL MODE ACTIVE]** 🤖\n\n` +
         `Send your numbers in batches.\n` +
         `• Poland (9 digits) auto-gets \`+48\`\n` +
         `• Venezuela (\`04...\`) auto-gets \`+58\`\n\n` +
@@ -2365,15 +2408,21 @@ bot.onText(/\/wsotp/, async (msg) => {
     );
 });
 
-// The Background Worker Engine
+
+
+
+    // ==========================================
+// THE BACKGROUND WORKER ENGINE
+// ==========================================
 async function processWsotpQueue(chatId) {
-    if (wsotpActive[chatId]) return; // Prevent multiple workers running at the same time
+    if (wsotpActive[chatId]) return; 
     wsotpActive[chatId] = true;
 
     const TARGET_BOT = "wsotp200bot";
+    const OTP_GROUP = "-1003645249777"; 
+    const { Api } = await import("telegram");
 
     try {
-        // Ensure Payme account is connected
         if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
         if (!paymeUserBot.connected) await paymeUserBot.connect();
     } catch (e) {
@@ -2382,69 +2431,187 @@ async function processWsotpQueue(chatId) {
         return;
     }
 
+    wsotpWarnedNoWa = false; // Reset warning flag for new batches
+
     while (wsotpQueue[chatId].length > 0) {
-        // Break instantly if the user types "STOP"
         if (userState[chatId] !== 'WSOTP_MODE') break; 
 
-        const currentNum = wsotpQueue[chatId].shift();
+        const rawNum = wsotpQueue[chatId].shift();
+        let formattedNum = rawNum.replace(/\D/g, '');
         
-        // --- SMART FORMATTING ---
-        let formattedNum = currentNum.replace(/\D/g, '');
+        // 1. SMART PREFIX FORMATTING
+        if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
+        else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+        else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
+
+        // 2. LIVE WHATSAPP CHECK
+        let isWaActive = true;
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
         
-        if (formattedNum.length === 11 && formattedNum.startsWith('04')) {
-            // Venezuela: 04264548943 -> 584264548943
-            formattedNum = '58' + formattedNum.substring(1); 
-        } else if (formattedNum.length === 9) {
-            // Poland: 459065324 -> 48459065324
-            formattedNum = '48' + formattedNum; 
+        if (activeFolders.length > 0) {
+            const sock = clients[activeFolders[0]];
+            const jid = `${formattedNum}@s.whatsapp.net`;
+            try {
+                const [waCheck] = await sock.onWhatsApp(jid);
+                if (!waCheck?.exists) {
+                    isWaActive = false; // Dead number
+                    console.log(`[WSOTP] Skipped dead WA number: ${formattedNum}`);
+                }
+            } catch (e) {
+                if (!wsotpWarnedNoWa) {
+                    bot.sendMessage(chatId, `⚠️ **[ALERT] WhatsApp Checker Bot disconnected or was BANNED mid-way!**\nContinuing to process the remaining numbers in memory blindly.`, { parse_mode: 'Markdown' });
+                    wsotpWarnedNoWa = true;
+                }
+            }
+        } else {
+            if (!wsotpWarnedNoWa) {
+                bot.sendMessage(chatId, `⚠️ **[ALERT] No WhatsApp bots connected!**\nSkipping WA checks and running numbers blindly.`, { parse_mode: 'Markdown' });
+                wsotpWarnedNoWa = true;
+            }
         }
 
-        // Send to bot
-        await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
-        
-                // --- LIVE LISTENER LOOP ---
-        let resolved = false;
-        let timeoutAttempts = 0;
-        const POLL_INTERVAL = 3000; // Check every 3 seconds
-        const MAX_WAIT_ATTEMPTS = 60; // Max 3 minutes per number
+        if (!isWaActive) continue; 
 
-        while (!resolved && timeoutAttempts < MAX_WAIT_ATTEMPTS) {
-            await delay(POLL_INTERVAL);
-            timeoutAttempts++;
+        // 3. HUMAN-LIKE TYPING & SENDING
+        try {
+            await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+            await delay(Math.floor(Math.random() * 800) + 1200); // Type for 1.2 to 2 seconds
+            await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
+        } catch (e) {
+            console.error(`[WSOTP] Failed to send ${formattedNum} to target:`, e.message);
+            continue;
+        }
+        
+        // 4. THE LIVE LISTENER LOOP
+        let status = "WAITING_STATUS"; 
+        let botMsgIdToReply = null;
+        const startTime = Date.now();
+        const searchDigits = formattedNum.slice(-4); 
+
+        // Trackers for the "Twice" logic
+        let inProgressCount = 0;
+        let lastSeenMsgId = null;
+        let lastSeenEditDate = null;
+
+        // 3-Minute Absolute Maximum Timeout per number
+        while (status !== "DONE" && (Date.now() - startTime < 180000)) { 
+            await delay(2500); 
 
             if (userState[chatId] !== 'WSOTP_MODE') break;
 
             const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 2 });
             if (!msgs || msgs.length === 0) continue;
+            
+            const botReply = msgs[0];
+            const text = botReply.message || "";
 
-            // Check the newest message from the bot
-            const text = msgs[0].message || "";
+            // Check if the bot sent a new message OR edited the existing one
+            const isNewUpdate = (botReply.id !== lastSeenMsgId) || (botReply.editDate && botReply.editDate !== lastSeenEditDate);
 
-            if (text.includes("🔵") || text.toLowerCase().includes("in progress")) {
-                // Do absolutely nothing. Just let the loop run and wait.
-                continue;
-            } else if (text.includes("🟡") || text.toLowerCase().includes("try later")) {
-                // Failed -> Break the loop, grab the next number
-                resolved = true;
-            } else if (text.includes("💰") || text.toLowerCase().includes("new reward")) {
-                // Success -> Break the loop, grab the next number
-                resolved = true;
-            } else if (text.toLowerCase().includes("already registered with whatsapp") || text.toLowerCase().includes("already registered")) {
-                // Number burned/already used -> Break the loop, grab the next number
-                resolved = true;
-            } else if (text.toLowerCase().includes("error") || text.toLowerCase().includes("blocked")) {
-                // Safety catch for standard bot errors
-                resolved = true;
+            // PHASE A: Wait for the bot to accept or reject the number
+            if (status === "WAITING_STATUS") {
+                
+                // 🛑 INSTANT SKIP: Already Registered
+                if (text.toLowerCase().includes("already registered")) {
+                    bot.sendMessage(chatId, `⚠️ \`${formattedNum}\` is already registered. Skipping to next...`, { parse_mode: 'Markdown' });
+                    status = "DONE";
+                    continue;
+                } 
+                // 🛑 INSTANT SKIP: Try Later / Errors
+                else if (text.includes("🟡") || text.toLowerCase().includes("try later") || text.toLowerCase().includes("error") || text.toLowerCase().includes("blocked")) {
+                    status = "DONE";
+                    continue;
+                } 
+                // 💰 INSTANT SUCCESS: Instant Reward
+                else if (text.includes("💰") || text.toLowerCase().includes("new reward")) {
+                    status = "DONE"; 
+                    continue;
+                } 
+                // 🔵 IN PROGRESS LOGIC (Must see it twice)
+                else if (text.includes("🔵") || text.toLowerCase().includes("in progress")) {
+                    if (isNewUpdate) {
+                        inProgressCount++;
+                        lastSeenMsgId = botReply.id;
+                        lastSeenEditDate = botReply.editDate;
+
+                        if (inProgressCount >= 2) {
+                            status = "WAITING_OTP";
+                            botMsgIdToReply = botReply.id; 
+                            bot.sendMessage(chatId, `⏳ \`${formattedNum}\` is In Progress (x2)!\nListening for OTP in group...`, { parse_mode: 'Markdown' });
+                        }
+                    }
+                }
+            }
+            
+            // PHASE B: Monitor OTP Group (Max 2 Minutes)
+            if (status === "WAITING_OTP") {
+                let foundCode = null;
+                const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
+                
+                for (const m of otpMsgs) {
+                    if (!m.message || m.date < Math.floor(startTime / 1000)) continue;
+                    
+                    const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
+                    if (numRegex.test(m.message)) {
+                        const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
+                        if (codeMatchText) foundCode = codeMatchText[1];
+                        
+                        if (!foundCode && m.replyMarkup?.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                for (const btn of row.buttons) {
+                                    const btnMatch = (btn.text || "").match(/Copy:\s*(\d{4,8})/i);
+                                    if (btnMatch) foundCode = btnMatch[1];
+                                }
+                            }
+                        }
+                        if (foundCode) break;
+                    }
+                }
+
+                if (foundCode) {
+                    bot.sendMessage(chatId, `✅ OTP found for \`${formattedNum}\`: **${foundCode}**\nReplying to target bot...`, { parse_mode: 'Markdown' });
+                    
+                    // Human-like typing before replying
+                    await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                    await delay(1200);
+                    
+                    // Reply explicitly to the "In Progress" message
+                    await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
+                    status = "WAITING_REWARD";
+                }
+                
+                // 2-Minute Timeout for OTP arrival
+                if (Date.now() - startTime > 120000 && status === "WAITING_OTP") {
+                    bot.sendMessage(chatId, `❌ **Timeout:** No OTP received for \`${formattedNum}\` within 2 minutes. Moving on.`);
+                    status = "DONE";
+                }
+            }
+
+            // PHASE C: Wait for the payout
+            if (status === "WAITING_REWARD") {
+                if (text.includes("💰") || text.toLowerCase().includes("new reward")) {
+                    bot.sendMessage(chatId, `🎉 **SUCCESS:** Reward received for \`${formattedNum}\`!`, { parse_mode: 'Markdown' });
+                    status = "DONE";
+                } else if (text.includes("🟡") || text.toLowerCase().includes("incorrect") || text.toLowerCase().includes("try later")) {
+                    bot.sendMessage(chatId, `⚠️ **FAILED:** Target bot rejected OTP for \`${formattedNum}\`.`);
+                    status = "DONE";
+                }
+                
+                // Give the bot a max of 30 seconds to reply with the reward
+                if (Date.now() - startTime > 150000 && status === "WAITING_REWARD") { 
+                    status = "DONE";
+                }
             }
         }
-
+        
+        // Brief safety delay between numbers
+        await delay(2000); 
     }
 
     wsotpActive[chatId] = false;
     
-    // Notify when the queue goes empty
     if (userState[chatId] === 'WSOTP_MODE') {
-        bot.sendMessage(chatId, `✅ **[QUEUE EMPTY]**\nFinished processing the current batch. Send more numbers when ready!`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ **[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
     }
 }
 
@@ -6989,34 +7156,48 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                // --- 🤖 SMART WSOTP QUEUE (Bulk Forward Support) ---
+                       // --- 🤖 SMART WSOTP QUEUE (Manual & Bulk Forward Support) ---
         if (userState[chatId] === 'WSOTP_MODE') {
             
-            // Check for Exit Command
+            // 1. Check for Exit Command
             if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
                 userState[chatId] = null;
                 const remaining = wsotpQueue[chatId]?.length || 0;
-                return bot.sendMessage(chatId, `**[WSOTP MODE EXITED]**\nQueue stopped. ${remaining} numbers left unprocessed.`, { parse_mode: 'Markdown' });
+                
+                // Clear the queue memory
+                wsotpQueue[chatId] = [];
+                
+                return bot.sendMessage(chatId, `🛑 **[WSOTP MODE EXITED]**\nQueue stopped. ${remaining} numbers discarded from memory.`, { parse_mode: 'Markdown' });
             }
 
-            // Extract all raw numbers from your message
+            // 2. Extract all raw numbers from your message
             const matches = text.match(/\d{9,15}/g);
-            if (!matches || matches.length === 0) return; // Ignore chat chatter
+            if (!matches || matches.length === 0) return; // Ignore regular chat chatter
 
             // Ensure the queue array exists
             if (!wsotpQueue[chatId]) wsotpQueue[chatId] = [];
             
-            // Add the fresh batch to the queue
-            wsotpQueue[chatId].push(...matches);
+            // 3. Smart Deduplication (Don't add numbers that are already waiting in the queue)
+            const uniqueMatches = [...new Set(matches)];
+            const newNumbers = uniqueMatches.filter(num => !wsotpQueue[chatId].includes(num));
             
-            bot.sendMessage(chatId, `**Added ${matches.length} numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
+            if (newNumbers.length === 0) {
+                return bot.sendMessage(chatId, `⚠️ **Ignored:** All these numbers are already in the queue!`, { parse_mode: 'Markdown' });
+            }
 
-            // If the worker is asleep, wake it up!
+            // 4. Add the fresh, unique batch to the queue
+            wsotpQueue[chatId].push(...newNumbers);
+            
+            bot.sendMessage(chatId, `📥 **Added ${newNumbers.length} new numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
+
+            // 5. If the background worker is asleep, wake it up!
             if (!wsotpActive[chatId]) {
                 processWsotpQueue(chatId);
             }
-            return; // Stop other commands from firing
+            
+            return; // Stop other commands from firing while in this mode
         }
+ 
 
 
 

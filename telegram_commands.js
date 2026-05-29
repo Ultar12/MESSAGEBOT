@@ -2368,11 +2368,11 @@ async function processWsotpQueue(chatId) {
         // Send to bot
         await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
         
-        // --- LIVE LISTENER LOOP ---
+                // --- LIVE LISTENER LOOP ---
         let resolved = false;
         let timeoutAttempts = 0;
         const POLL_INTERVAL = 3000; // Check every 3 seconds
-        const MAX_WAIT_ATTEMPTS = 60; // Max 3 minutes per number to prevent infinite freezing
+        const MAX_WAIT_ATTEMPTS = 60; // Max 3 minutes per number
 
         while (!resolved && timeoutAttempts < MAX_WAIT_ATTEMPTS) {
             await delay(POLL_INTERVAL);
@@ -2395,11 +2395,15 @@ async function processWsotpQueue(chatId) {
             } else if (text.includes("💰") || text.toLowerCase().includes("new reward")) {
                 // Success -> Break the loop, grab the next number
                 resolved = true;
+            } else if (text.toLowerCase().includes("already registered with whatsapp") || text.toLowerCase().includes("already registered")) {
+                // Number burned/already used -> Break the loop, grab the next number
+                resolved = true;
             } else if (text.toLowerCase().includes("error") || text.toLowerCase().includes("blocked")) {
                 // Safety catch for standard bot errors
                 resolved = true;
             }
         }
+
     }
 
     wsotpActive[chatId] = false;

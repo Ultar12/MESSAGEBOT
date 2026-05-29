@@ -2207,7 +2207,8 @@ bot.onText(/\/wsotp/, async (msg) => {
 });
 
 
-    // ==========================================
+    
+        // ==========================================
 // THE BACKGROUND WORKER ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2240,7 +2241,7 @@ async function processWsotpQueue(chatId) {
         else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
         else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
 
-        // 2. LIVE WHATSAPP CHECK
+        // 2. LIVE WHATSAPP CHECK (Runs right before sending to target bot)
         let isWaActive = true;
         const activeFolders = Object.keys(clients).filter(f => clients[f]);
         
@@ -2255,13 +2256,13 @@ async function processWsotpQueue(chatId) {
                 }
             } catch (e) {
                 if (!wsotpWarnedNoWa) {
-                    bot.sendMessage(chatId, `⚠️ **[ALERT] WhatsApp Checker Bot disconnected or was BANNED mid-way!**\nContinuing to process the remaining numbers in memory blindly.`, { parse_mode: 'Markdown' });
+                    bot.sendMessage(chatId, `**[ALERT] WhatsApp Checker Bot disconnected or was BANNED mid-way!**\nContinuing to process the remaining numbers in memory blindly.`, { parse_mode: 'Markdown' });
                     wsotpWarnedNoWa = true;
                 }
             }
         } else {
             if (!wsotpWarnedNoWa) {
-                bot.sendMessage(chatId, `⚠️ **[ALERT] No WhatsApp bots connected!**\nSkipping WA checks and running numbers blindly.`, { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, `**[ALERT] No WhatsApp bots connected!**\nSkipping WA checks and running numbers blindly.`, { parse_mode: 'Markdown' });
                 wsotpWarnedNoWa = true;
             }
         }
@@ -2289,8 +2290,8 @@ async function processWsotpQueue(chatId) {
         let lastSeenMsgId = null;
         let lastSeenEditDate = null;
 
-        // 3-Minute Absolute Maximum Timeout per number
-        while (status !== "DONE" && (Date.now() - startTime < 180000)) { 
+        // 15-Minute Absolute Maximum Timeout per number (900,000 ms)
+        while (status !== "DONE" && (Date.now() - startTime < 900000)) { 
             await delay(2500); 
 
             if (userState[chatId] !== 'WSOTP_MODE') break;
@@ -2313,9 +2314,8 @@ async function processWsotpQueue(chatId) {
                     status = "DONE";
                     continue;
                 } 
-                // 🛑 INSTANT SKIP: Cooldown / Submit Again
+                // 🛑 SILENT SKIP: Cooldown / Submit Again (No chat spam)
                 else if (text.toLowerCase().includes("please submit this number again")) {
-                    bot.sendMessage(chatId, `⏱️ \`${formattedNum}\` is on cooldown. Skipping to next...`, { parse_mode: 'Markdown' });
                     status = "DONE";
                     continue;
                 }
@@ -2339,13 +2339,13 @@ async function processWsotpQueue(chatId) {
                         if (inProgressCount >= 2) {
                             status = "WAITING_OTP";
                             botMsgIdToReply = botReply.id; 
-                            bot.sendMessage(chatId, `⏳ \`${formattedNum}\` is In Progress (x2)!\nListening for OTP in group...`, { parse_mode: 'Markdown' });
+                            bot.sendMessage(chatId, `⏳ \`${formattedNum}\` is In Progress (x2)!\nListening for OTP in group for 15 minutes...`, { parse_mode: 'Markdown' });
                         }
                     }
                 }
             }
             
-            // PHASE B: Monitor OTP Group (Max 2 Minutes)
+            // PHASE B: Monitor OTP Group (Max 15 Minutes)
             if (status === "WAITING_OTP") {
                 let foundCode = null;
                 const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
@@ -2382,9 +2382,9 @@ async function processWsotpQueue(chatId) {
                     status = "WAITING_REWARD";
                 }
                 
-                // 2-Minute Timeout for OTP arrival
-                if (Date.now() - startTime > 120000 && status === "WAITING_OTP") {
-                    bot.sendMessage(chatId, `**Timeout:** No OTP received for \`${formattedNum}\` within 2 minutes. Moving on.`);
+                // 15-Minute Timeout for OTP arrival
+                if (Date.now() - startTime > 900000 && status === "WAITING_OTP") {
+                    bot.sendMessage(chatId, `**Timeout:** No OTP received for \`${formattedNum}\` within 15 minutes. Moving on.`);
                     status = "DONE";
                 }
             }
@@ -2400,7 +2400,7 @@ async function processWsotpQueue(chatId) {
                 }
                 
                 // Give the bot a max of 30 seconds to reply with the reward
-                if (Date.now() - startTime > 150000 && status === "WAITING_REWARD") { 
+                if (Date.now() - startTime > 930000 && status === "WAITING_REWARD") { 
                     status = "DONE";
                 }
             }
@@ -2413,10 +2413,9 @@ async function processWsotpQueue(chatId) {
     wsotpActive[chatId] = false;
     
     if (userState[chatId] === 'WSOTP_MODE') {
-        bot.sendMessage(chatId, `**[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ **[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
     }
 }
-
 
 
 

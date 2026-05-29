@@ -78,10 +78,16 @@ export let currentOtpSenderId = null;
 export let spyMemory = new Set();
 export let spyFound = new Set();
 
+// ==========================================
+// WSOTP GLOBAL STATE TRACKERS
+// ==========================================
 const wsotpQueue = {};
 const wsotpActive = {};
-let wsotpWarnedNoWa = false; // Prevents spamming the admin if WA bot dies
+let wsotpWarnedNoWa = false;
 
+// Tracks active numbers waiting for Bot responses
+const trackedWsotp = {}; 
+let wsotpListenerActive = false; 
 
 
 
@@ -2202,15 +2208,14 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-    // ==========================================
-// THE BACKGROUND WORKER ENGINE
+ // ==========================================
+// 1. THE SENDER ENGINE (FIRE & FORGET)
 // ==========================================
 async function processWsotpQueue(chatId) {
     if (wsotpActive[chatId]) return; 
     wsotpActive[chatId] = true;
 
     const TARGET_BOT = "wsotp200bot";
-    const OTP_GROUP = "-1003645249777"; 
     const { Api } = await import("telegram");
 
     try {
@@ -2223,6 +2228,11 @@ async function processWsotpQueue(chatId) {
     }
 
     wsotpWarnedNoWa = false; 
+
+    // WAKE UP THE BACKGROUND LISTENER
+    if (!wsotpListenerActive) {
+        runWsotpListener(chatId);
+    }
 
     while (wsotpQueue[chatId].length > 0) {
         const currentMode = userState[chatId];
@@ -2251,157 +2261,197 @@ async function processWsotpQueue(chatId) {
                 }
             } catch (e) {
                 if (!wsotpWarnedNoWa) {
-                    bot.sendMessage(chatId, `⚠️ **[ALERT] WhatsApp Checker Bot disconnected or was BANNED mid-way!**\nContinuing to process the remaining numbers in memory blindly.`, { parse_mode: 'Markdown' });
+                    bot.sendMessage(chatId, `⚠️ **[ALERT] WhatsApp Checker Bot disconnected/BANNED!**\nContinuing to send numbers blindly.`, { parse_mode: 'Markdown' });
                     wsotpWarnedNoWa = true;
                 }
             }
         } else {
             if (!wsotpWarnedNoWa) {
-                bot.sendMessage(chatId, `⚠️ **[ALERT] No WhatsApp bots connected!**\nSkipping WA checks and running numbers blindly.`, { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, `⚠️ **[ALERT] No WhatsApp bots connected!**\nSkipping WA checks entirely.`, { parse_mode: 'Markdown' });
                 wsotpWarnedNoWa = true;
             }
         }
 
         if (!isWaActive) continue; 
 
-        // 3. HUMAN-LIKE TYPING & SENDING
+        // 3. TRACK THE NUMBER IN THE BACKGROUND LISTENER
+        trackedWsotp[formattedNum] = {
+            mode: currentMode,
+            count: 0,
+            lastMsgId: null,
+            lastEdit: null,
+            status: 'WAITING'
+        };
+
+        // 4. HUMAN-LIKE TYPING & SENDING (Target: 25 nums/min = 2.4 sec total delay)
         try {
             await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-            await delay(Math.floor(Math.random() * 800) + 1200); 
+            await delay(1000); // Type for exactly 1 second
             await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
         } catch (e) {
-            console.error(`[WSOTP] Failed to send ${formattedNum} to target:`, e.message);
+            console.error(`[WSOTP] Failed to send ${formattedNum}:`, e.message);
+            delete trackedWsotp[formattedNum];
             continue;
         }
         
-        // 4. THE LIVE LISTENER LOOP
-        let status = "WAITING_STATUS"; 
-        let botMsgIdToReply = null;
-        const startTime = Date.now();
-        const searchDigits = formattedNum.slice(-4); 
-
-        let inProgressCount = 0;
-        let lastSeenMsgId = null;
-        let lastSeenEditDate = null;
-
-        // 3-Minute Absolute Maximum Timeout for the whole block to prevent freezing forever
-        while (status !== "DONE" && (Date.now() - startTime < 180000)) { 
-            await delay(2500); 
-
-            if (userState[chatId] !== currentMode) break;
-
-            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 2 });
-            if (!msgs || msgs.length === 0) continue;
-            
-            const botReply = msgs[0];
-            const text = botReply.message || "";
-
-            const isNewUpdate = (botReply.id !== lastSeenMsgId) || (botReply.editDate && botReply.editDate !== lastSeenEditDate);
-
-            // PHASE A: Wait for status
-            if (status === "WAITING_STATUS") {
-                if (text.toLowerCase().includes("already registered")) {
-                    bot.sendMessage(chatId, `⚠️ \`${formattedNum}\` is already registered. Skipping...`, { parse_mode: 'Markdown' });
-                    status = "DONE";
-                    continue;
-                } else if (text.toLowerCase().includes("please submit this number again")) {
-                    bot.sendMessage(chatId, `⏱️ \`${formattedNum}\` is on cooldown. Skipping...`, { parse_mode: 'Markdown' });
-                    status = "DONE";
-                    continue;
-                } else if (text.includes("🟡") || text.includes("⚫️") || text.toLowerCase().includes("badnum") || text.toLowerCase().includes("try later") || text.toLowerCase().includes("error") || text.toLowerCase().includes("blocked")) {
-                    bot.sendMessage(chatId, `⚫️ \`${formattedNum}\` returned BadNum/Try Later. Skipping...`, { parse_mode: 'Markdown' });
-                    status = "DONE";
-                    continue;
-                } else if (text.includes("💰") || text.toLowerCase().includes("new reward")) {
-                    status = "DONE"; 
-                    continue;
-                } else if (text.includes("🔵") || text.toLowerCase().includes("in progress")) {
-                    if (isNewUpdate) {
-                        inProgressCount++;
-                        lastSeenMsgId = botReply.id;
-                        lastSeenEditDate = botReply.editDate;
-
-                        if (inProgressCount >= 2) {
-                            if (currentMode === 'WSOTP_FILE_MODE') {
-                                status = "WAITING_OTP";
-                                botMsgIdToReply = botReply.id; 
-                                bot.sendMessage(chatId, `⏳ \`${formattedNum}\` is In Progress (x2)!\nListening for OTP in group for 2 minutes...`, { parse_mode: 'Markdown' });
-                            } else {
-                                // Manual Mode: We hit x2! Now WAIT for the user to submit OTP and the bot to reply with the reward.
-                                status = "WAITING_REWARD";
-                                bot.sendMessage(chatId, `⏳ \`${formattedNum}\` is In Progress (x2)!\nWaiting for you to submit the OTP and for the Reward Notification...`, { parse_mode: 'Markdown' });
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // PHASE B: Monitor OTP Group (ONLY happens in FILE_MODE)
-            if (status === "WAITING_OTP") {
-                let foundCode = null;
-                const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
-                
-                for (const m of otpMsgs) {
-                    if (!m.message || m.date < Math.floor(startTime / 1000)) continue;
-                    
-                    const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
-                    if (numRegex.test(m.message)) {
-                        const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
-                        if (codeMatchText) foundCode = codeMatchText[1];
-                        
-                        if (!foundCode && m.replyMarkup?.rows) {
-                            for (const row of m.replyMarkup.rows) {
-                                for (const btn of row.buttons) {
-                                    const btnMatch = (btn.text || "").match(/Copy:\s*(\d{4,8})/i);
-                                    if (btnMatch) foundCode = btnMatch[1];
-                                }
-                            }
-                        }
-                        if (foundCode) break;
-                    }
-                }
-
-                if (foundCode) {
-                    bot.sendMessage(chatId, `✅ OTP found for \`${formattedNum}\`: **${foundCode}**\nReplying to target bot...`, { parse_mode: 'Markdown' });
-                    
-                    await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                    await delay(1200);
-                    await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
-                    status = "WAITING_REWARD";
-                }
-                
-                // Strict 2-Minute Timeout (120,000 ms) for OTP Search
-                if (Date.now() - startTime > 120000 && status === "WAITING_OTP") {
-                    bot.sendMessage(chatId, `**Timeout:** No OTP received for \`${formattedNum}\` within 2 minutes. Moving on.`);
-                    status = "DONE";
-                }
-            }
-
-            // PHASE C: Wait for the payout (Happens in BOTH modes)
-            if (status === "WAITING_REWARD") {
-                if (text.includes("💰") || text.toLowerCase().includes("new reward")) {
-                    bot.sendMessage(chatId, `🎉 **SUCCESS:** Reward received for \`${formattedNum}\`! Moving to next number...`, { parse_mode: 'Markdown' });
-                    status = "DONE";
-                } else if (text.includes("🟡") || text.toLowerCase().includes("incorrect") || text.toLowerCase().includes("try later")) {
-                    bot.sendMessage(chatId, `**FAILED:** Target bot rejected OTP for \`${formattedNum}\`. Moving to next number...`, { parse_mode: 'Markdown' });
-                    status = "DONE";
-                }
-                // Timeout is naturally handled by the 3-minute `while` loop condition at the top
-            }
-        }
-        
-        await delay(2000); 
+        // Exact 1.4s rest delay before grabbing the next number (Total Cycle = 2.4s)
+        await delay(1400); 
     }
 
     wsotpActive[chatId] = false;
     
     if (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
-        bot.sendMessage(chatId, `✅ **[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ **[WSOTP SENDER FINISHED]**\nAll numbers sent to bot. The listener is still watching for replies in the background.`, { parse_mode: 'Markdown' });
     }
 }
 
-    
+// ==========================================
+// 2. THE ASYNCHRONOUS LISTENER LOOP
+// ==========================================
+async function runWsotpListener(chatId) {
+    if (wsotpListenerActive) return;
+    wsotpListenerActive = true;
+    const TARGET_BOT = "wsotp200bot";
 
+    while (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
+        
+        // Sleep the listener if no numbers are waiting to save CPU
+        const activeNums = Object.keys(trackedWsotp);
+        if (activeNums.length === 0 && (!wsotpQueue[chatId] || wsotpQueue[chatId].length === 0)) {
+            await delay(3000);
+            continue;
+        }
+
+        try {
+            // Fetch last 15 messages so we don't miss rapid bot responses
+            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 15 });
+            
+            for (const msg of msgs) {
+                const text = msg.message || "";
+                
+                // Extract number from bot's reply (Handles both top-line formatting and Reward Notification formatting)
+                let botNum = null;
+                const directMatch = text.match(/^(\d{9,15})/);
+                if (directMatch) {
+                    botNum = directMatch[1];
+                } else {
+                    const rewardMatch = text.match(/Number:\s*(\d{9,15})/i);
+                    if (rewardMatch) botNum = rewardMatch[1];
+                }
+                
+                if (!botNum) continue;
+
+                // Is this number currently in our tracking array?
+                const trackData = trackedWsotp[botNum];
+                if (!trackData || trackData.status !== 'WAITING') continue;
+
+                const isNewUpdate = (msg.id !== trackData.lastMsgId) || (msg.editDate && msg.editDate !== trackData.lastEdit);
+
+                // --- INSTANT TRASH CONDITIONS ---
+                if (text.toLowerCase().includes("already registered") || 
+                    text.toLowerCase().includes("please submit this number again") ||
+                    text.includes("🟡") || text.includes("⚫️") || 
+                    text.toLowerCase().includes("try later") || 
+                    text.toLowerCase().includes("badnum") || 
+                    text.includes("💰") || text.toLowerCase().includes("new reward")) {
+                    
+                    // Kill it from memory
+                    delete trackedWsotp[botNum];
+                    continue;
+                }
+
+                // --- DOUBLE "IN PROGRESS" DETECTION ---
+                if (text.includes("🔵") || text.toLowerCase().includes("in progress")) {
+                    if (isNewUpdate) {
+                        trackData.count++;
+                        trackData.lastMsgId = msg.id;
+                        trackData.lastEdit = msg.editDate;
+
+                        if (trackData.count >= 2) {
+                            if (trackData.mode === 'WSOTP_FILE_MODE') {
+                                trackData.status = 'HUNTING';
+                                bot.sendMessage(chatId, `⏳ \`${botNum}\` is In Progress (x2)!\nStarting 3-min OTP Hunt...`, { parse_mode: 'Markdown' });
+                                
+                                // FIRE ASYNCHRONOUS OTP HUNTER
+                                huntOtpAsync(chatId, botNum, msg.id);
+                            } else {
+                                // Manual Mode: Alert user but do not hunt for OTP
+                                bot.sendMessage(chatId, `✅ \`${botNum}\` is In Progress (x2)!\n(Manual Mode - Skipping Auto OTP)`, { parse_mode: 'Markdown' });
+                                delete trackedWsotp[botNum];
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+
+        await delay(2500); // Check chat every 2.5 seconds
+    }
+    
+    wsotpListenerActive = false; // Graceful shutdown when user types STOP
+}
+
+// ==========================================
+// 3. THE ASYNCHRONOUS OTP HUNTER
+// ==========================================
+async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply) {
+    const OTP_GROUP = "-1003645249777"; 
+    const TARGET_BOT = "wsotp200bot";
+    const { Api } = await import("telegram");
+    
+    const searchDigits = formattedNum.slice(-4);
+    const startTime = Date.now();
+    const MAX_TIME = 180000; // 3 Minutes Exact (180,000ms)
+
+    while (Date.now() - startTime < MAX_TIME) {
+        
+        // Stop hunting if user forcibly exits WSOTP mode entirely
+        if (userState[chatId] !== 'WSOTP_FILE_MODE') break;
+
+        let foundCode = null;
+        try {
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
+            
+            for (const m of otpMsgs) {
+                if (!m.message || m.date < Math.floor(startTime / 1000)) continue;
+                
+                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
+                if (numRegex.test(m.message)) {
+                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
+                    if (codeMatchText) foundCode = codeMatchText[1];
+                    
+                    if (!foundCode && m.replyMarkup?.rows) {
+                        for (const row of m.replyMarkup.rows) {
+                            for (const btn of row.buttons) {
+                                const btnMatch = (btn.text || "").match(/Copy:\s*(\d{4,8})/i);
+                                if (btnMatch) foundCode = btnMatch[1];
+                            }
+                        }
+                    }
+                    if (foundCode) break;
+                }
+            }
+
+            if (foundCode) {
+                bot.sendMessage(chatId, `✅ OTP found for \`${formattedNum}\`: **${foundCode}**\nReplying to target bot...`, { parse_mode: 'Markdown' });
+                
+                // Human-like reply sequence
+                await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                await delay(1200);
+                await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
+                
+                break; // Kill the hunt loop, it successfully sent it!
+            }
+        } catch (e) {}
+
+        await delay(3000); // Check OTP group every 3 seconds
+    }
+
+    // Clean this number out of tracking memory when the hunt finishes or times out
+    if (trackedWsotp[formattedNum]) delete trackedWsotp[formattedNum];
+}
+   
+    
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---
     bot.onText(/\/validate/, async (msg) => {

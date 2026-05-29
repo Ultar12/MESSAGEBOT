@@ -2409,8 +2409,6 @@ bot.onText(/\/wsotp/, async (msg) => {
 });
 
 
-
-
     // ==========================================
 // THE BACKGROUND WORKER ENGINE
 // ==========================================
@@ -2517,6 +2515,12 @@ async function processWsotpQueue(chatId) {
                     status = "DONE";
                     continue;
                 } 
+                // 🛑 INSTANT SKIP: Cooldown / Submit Again
+                else if (text.toLowerCase().includes("please submit this number again")) {
+                    bot.sendMessage(chatId, `⏱️ \`${formattedNum}\` is on cooldown. Skipping to next...`, { parse_mode: 'Markdown' });
+                    status = "DONE";
+                    continue;
+                }
                 // 🛑 INSTANT SKIP: Try Later / Errors
                 else if (text.includes("🟡") || text.toLowerCase().includes("try later") || text.toLowerCase().includes("error") || text.toLowerCase().includes("blocked")) {
                     status = "DONE";
@@ -2569,7 +2573,7 @@ async function processWsotpQueue(chatId) {
                 }
 
                 if (foundCode) {
-                    bot.sendMessage(chatId, `✅ OTP found for \`${formattedNum}\`: **${foundCode}**\nReplying to target bot...`, { parse_mode: 'Markdown' });
+                    bot.sendMessage(chatId, `OTP found for \`${formattedNum}\`: **${foundCode}**\nReplying to target bot...`, { parse_mode: 'Markdown' });
                     
                     // Human-like typing before replying
                     await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
@@ -2582,7 +2586,7 @@ async function processWsotpQueue(chatId) {
                 
                 // 2-Minute Timeout for OTP arrival
                 if (Date.now() - startTime > 120000 && status === "WAITING_OTP") {
-                    bot.sendMessage(chatId, `❌ **Timeout:** No OTP received for \`${formattedNum}\` within 2 minutes. Moving on.`);
+                    bot.sendMessage(chatId, `**Timeout:** No OTP received for \`${formattedNum}\` within 2 minutes. Moving on.`);
                     status = "DONE";
                 }
             }
@@ -2593,7 +2597,7 @@ async function processWsotpQueue(chatId) {
                     bot.sendMessage(chatId, `🎉 **SUCCESS:** Reward received for \`${formattedNum}\`!`, { parse_mode: 'Markdown' });
                     status = "DONE";
                 } else if (text.includes("🟡") || text.toLowerCase().includes("incorrect") || text.toLowerCase().includes("try later")) {
-                    bot.sendMessage(chatId, `⚠️ **FAILED:** Target bot rejected OTP for \`${formattedNum}\`.`);
+                    bot.sendMessage(chatId, `**FAILED:** Target bot rejected OTP for \`${formattedNum}\`.`);
                     status = "DONE";
                 }
                 
@@ -2611,7 +2615,7 @@ async function processWsotpQueue(chatId) {
     wsotpActive[chatId] = false;
     
     if (userState[chatId] === 'WSOTP_MODE') {
-        bot.sendMessage(chatId, `✅ **[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `**[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
     }
 }
 

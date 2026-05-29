@@ -1114,208 +1114,6 @@ if (sock) {
 
                                 
 
-// --- UPGRADED CUSTOM API OTP FORWARDER (CRASH-PROOF + SPAM-PROOF) ---
-export function setupApiOtpForwarder(activeClients) {
-    console.log("[MONITOR] Starting Ultra-Fast & Crash-Proof API OTP Polling...");
-
-    const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
-    const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773"; 
-
-    const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
-    const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
-
-    const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
-    const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
-
-    // 1. SETUP LOCAL JSON DATABASE
-    const DB_FILE = path.join(process.cwd(), 'api_memory.json');
-    let processedSmsIds = new Set();
-    
-    // ✅ THE MAGIC LOCK (Prevents startup spam)
-    let isFirstRun = true; 
-
-    // Load memory from file on startup
-    try {
-        if (fs.existsSync(DB_FILE)) {
-            const savedIds = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-            if (savedIds.length > 0) {
-                processedSmsIds = new Set(savedIds);
-                isFirstRun = false; // We have memory! No need to lock.
-                console.log(`[API] Restored ${processedSmsIds.size} old SMS IDs from memory.`);
-            }
-        }
-    } catch (e) {
-        console.error("⚠️ [API] Could not read memory file, starting fresh blind run.");
-    }
-
-    // Helper function to save memory to file
-    const saveMemoryToFile = () => {
-        try {
-            const idArray = Array.from(processedSmsIds).slice(-1500);
-            fs.writeFileSync(DB_FILE, JSON.stringify(idArray));
-        } catch (e) {}
-    };
-
-    const apiCountryMap = {
-        "Venezuela": "🇻🇪", "Brazil": "🇧🇷", "Colombia": "🇨🇴", "Argentina": "🇦🇷", "Peru": "🇵🇪", 
-        "Chile": "🇨🇱", "Ecuador": "🇪🇨", "Bolivia": "🇧🇴", "Paraguay": "🇵🇾", "Uruguay": "🇺🇾", 
-        "Guyana": "🇬🇾", "Haiti": "🇭🇹", "Dominican Republic": "🇩🇴", "Cuba": "🇨🇺",
-        "Zimbabwe": "🇿🇼", "Nigeria": "🇳🇬", "Guinea": "🇬🇳", "South Africa": "🇿🇦", 
-        "Burkina Faso": "🇧🇫", "Senegal": "🇸🇳", "Kenya": "🇰🇪", "Egypt": "🇪🇬", "Morocco": "🇲🇦", 
-        "Algeria": "🇩🇿", "Ghana": "🇬🇭", "Ivory Coast": "🇨🇮", "Cameroon": "🇨🇲", "Mali": "🇲🇱", 
-        "Tanzania": "🇹🇿", "Uganda": "🇺🇬", "Angola": "🇦🇴", "Mozambique": "🇲🇿", "Zambia": "🇿🇲",
-        "Rwanda": "🇷🇼", "Sudan": "🇸🇩", "Ethiopia": "🇪🇹", "Somalia": "🇸🇴", "Djibouti": "🇩🇯",
-        "Indonesia": "🇮🇩", "Philippines": "🇵🇭", "Vietnam": "🇻🇳", "Malaysia": "🇲🇾", 
-        "Thailand": "🇹🇭", "Cambodia": "🇰🇭", "Laos": "🇱🇦", "Myanmar": "🇲🇲", "Singapore": "🇸🇬",
-        "India": "🇮🇳", "Pakistan": "🇵🇰", "Bangladesh": "🇧🇩", "Sri Lanka": "🇱🇰", "Nepal": "🇳🇵",
-        "China": "🇨🇳", "Japan": "🇯🇵", "South Korea": "🇰🇷", "Taiwan": "🇹🇼", "Hong Kong": "🇭🇰",
-        "Russia": "🇷🇺", "Kyrgyzstan": "🇰🇬", "Kazakhstan": "🇰🇿", "Uzbekistan": "🇺🇿", 
-        "Tajikistan": "🇹🇯", "Turkmenistan": "🇹🇲", "Turkey": "🇹🇷", "Iran": "🇮🇷", "Iraq": "🇮🇶", 
-        "Saudi Arabia": "🇸🇦", "UAE": "🇦🇪", "Yemen": "🇾🇪", "Oman": "🇴🇲", "Jordan": "🇯🇴", 
-        "Lebanon": "🇱🇧", "Syria": "🇸🇾", "Israel": "🇮🇱", "Kuwait": "🇰🇼", "Qatar": "🇶🇦", "Bahrain": "🇧🇭",
-        "United States": "🇺🇸", "Canada": "🇨🇦", "Mexico": "🇲🇽", "Guatemala": "🇬🇹", 
-        "Honduras": "🇭🇳", "El Salvador": "🇸🇻", "Nicaragua": "🇳🇮", "Costa Rica": "🇨🇷", "Panama": "🇵🇦",
-        "United Kingdom": "🇬🇧", "France": "🇫🇷", "Germany": "🇩🇪", "Spain": "🇪🇸", "Italy": "🇮🇹",
-        "Netherlands": "🇳🇱", "Belgium": "🇧🇪", "Switzerland": "🇨🇭", "Austria": "🇦🇹", "Sweden": "🇸🇪",
-        "Norway": "🇳🇴", "Denmark": "🇩🇰", "Finland": "🇫🇮", "Poland": "🇵🇱", "Ukraine": "🇺🇦", 
-        "Romania": "🇷🇴", "Greece": "🇬🇷", "Portugal": "🇵🇹", "Czech Republic": "🇨🇿", "Hungary": "🇭🇺",
-        "Bulgaria": "🇧🇬", "Serbia": "🇷🇸", "Croatia": "🇭🇷", "Ireland": "🇮🇪",
-        "Australia": "🇦🇺", "New Zealand": "🇳🇿", "Fiji": "🇫🇯", "Papua New Guinea": "🇵🇬"
-    };
-
-    // The recursive polling function (Prevents overlapping requests)
-    const pollApi = async () => {
-        try {
-            const response = await fetch(`${CUSTOM_API_URL}/sms/list?api_key=${API_KEY}&limit=50&page=1`);
-            if (!response.ok) throw new Error("API not reachable");
-            const data = await response.json();
-
-            if (data.ok && data.sms && Array.isArray(data.sms)) {
-                const recentMessages = data.sms.reverse();
-                let hasNewMessages = false;
-
-                for (const sms of recentMessages) {
-                    if (processedSmsIds.has(sms.id)) continue;
-                    
-                    processedSmsIds.add(sms.id);
-                    hasNewMessages = true;
-
-                    // Memory limit to keep the bot fast
-                    if (processedSmsIds.size > 1500) {
-                        const iterator = processedSmsIds.values();
-                        processedSmsIds.delete(iterator.next().value);
-                    }
-
-                    // ✅ MAGIC LOCK: Memorize but DO NOT process/send on fresh startup
-                    if (isFirstRun) continue;
-
-                    const messageText = sms.message || "";
-                    let code = null;
-
-                    // Extracts code
-                    const textCodeMatch = messageText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                    if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
-
-                    if (code) {
-                        let platform = sms.service || "WhatsApp"; 
-                        if (messageText.toLowerCase().includes("business") || messageText.includes("WB")) {
-                            platform = "WA Business";
-                        }
-
-                        // ✅ RECORD STATS ONLY FOR TRULY NEW MESSAGES
-                        try {
-                            await incrementDailyStat("EDEN_API");
-                        } catch (dbErr) {
-                            // Ignore db errors to keep the loop fast
-                        }
-
-                        const fullCountry = sms.country || "Unknown";
-                        const flagEmoji = apiCountryMap[fullCountry] || "🌍";
-
-                        let rawNumber = sms.phone || "Unknown";
-                        let maskedNumber = rawNumber;
-                        
-                        if (rawNumber !== "Unknown" && rawNumber.length >= 8) {
-                            const firstPart = rawNumber.slice(0, 4); 
-                            const lastPart = rawNumber.slice(-4);    
-                            maskedNumber = `${firstPart}•ULT•${lastPart}`; // ✅ YOUR CUSTOM MASK
-
-                        }
-
-                        const design = 
-                            `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
-                            `┃❃╭──────────────\n` +
-                            `┃❃│ Platform : ${platform}\n` +
-                            `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
-                            `┃❃│ Number   : ${maskedNumber}\n` +
-                            `┃❃│ Code     : CODE_FIX\n` +
-                            `┃❃╰───────────────\n` +
-                            `╰═════════════════⊷`;
-
-                        // --- SEND TO TELEGRAM ---
-                        try {
-                            const formattedText = design.replace('CODE_FIX', `\`${code}\``);
-                            const tgMsg = await senderBot.sendMessage(TELEGRAM_TARGET_GROUP, formattedText, {
-                                parse_mode: 'Markdown',
-                                disable_web_page_preview: true,
-                                reply_markup: { 
-                                    inline_keyboard: [
-                                        [{ text: `Copy: ${code}`, copy_text: { text: code }, style: 'success' }], 
-                                        [
-                                            { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
-                                            { text: `Channel`, url: `https://t.me/+iEEWbmC6Pdw0MDI1`, style: 'primary' }
-                                        ],
-                                        // ✅ YOUR CUSTOM BUTTON ROW
-                                        [
-                                            { text: `💰Rent WhatsApp💰`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
-                                        ]
-                                    ] 
-                                }
-                            });
-                            console.log(`[API FORWARDED] Code ${code} sent to Telegram.`);
-
-                            setTimeout(async () => { 
-                                try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
-                            }, 86400000);
-                        } catch (err) {}
-
-                        // --- SEND TO WHATSAPP ---
-                        const sock = getDedicatedSender(activeClients); 
-                        if (sock) {
-                            try {
-                                const formattedWa = design.replace('CODE_FIX', `*${code}*`);
-                                const inviteInfo = await sock.groupGetInviteInfo(WHATSAPP_INVITE_CODE);
-                                try {
-                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                                } catch (e) {
-                                    await sock.groupAcceptInvite(WHATSAPP_INVITE_CODE);
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    await sock.sendMessage(inviteInfo.id, { text: formattedWa });
-                                }
-                            } catch (fatalErr) { updateOtpSender(null, true); }
-                        }
-                    }
-                }
-                
-                // ✅ UNLOCK AFTER THE FIRST BATCH IS READ
-                isFirstRun = false; 
-
-                if (hasNewMessages) {
-                    saveMemoryToFile();
-                }
-            }
-        } catch (e) {
-            // Silently catch errors so the loop doesn't break
-        } finally {
-            // Wait exactly 1 second AFTER the previous request finishes
-            setTimeout(pollApi, 1000);
-        }
-    };
-
-    // Kick off the infinite loop
-    pollApi();
-}
-
 
 const ADMIN_ID = process.env.ADMIN_ID;
 // Define SUBADMIN_IDS from environment variables (comma-separated list)
@@ -2364,7 +2162,7 @@ bot.onText(/\/wsotp/, async (msg) => {
             return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for /wsotp.");
         }
 
-        let statusMsg = await bot.sendMessage(chatId, "⏳ Downloading file and loading numbers into memory...");
+        let statusMsg = await bot.sendMessage(chatId, "Downloading file and loading numbers into memory...");
         
         try {
             const fileLink = await bot.getFileLink(doc.file_id);
@@ -2380,7 +2178,7 @@ bot.onText(/\/wsotp/, async (msg) => {
             userState[chatId] = 'WSOTP_MODE'; // Keep mode active so user can type STOP
 
             bot.editMessageText(
-                `🤖 **[WSOTP FILE MODE ACTIVE]** 🤖\n\n` +
+                `**[WSOTP FILE MODE ACTIVE]**\n\n` +
                 `Loaded ${uniqueNumbers.length} numbers into memory.\n` +
                 `Starting live WA verification and OTP extraction loop...\n\n` +
                 `Type \`STOP\` or \`/done\` to abort.`, 
@@ -2399,7 +2197,7 @@ bot.onText(/\/wsotp/, async (msg) => {
     // --- MODE 2: MANUAL BATCH PROCESSING ---
     userState[chatId] = 'WSOTP_MODE';
     bot.sendMessage(chatId, 
-        `🤖 **[WSOTP MANUAL MODE ACTIVE]** 🤖\n\n` +
+        `**[WSOTP MANUAL MODE ACTIVE]**\n\n` +
         `Send your numbers in batches.\n` +
         `• Poland (9 digits) auto-gets \`+48\`\n` +
         `• Venezuela (\`04...\`) auto-gets \`+58\`\n\n` +
@@ -7149,7 +6947,7 @@ const cleanNumbers = matches.map(n => {
                 if (count > 0) {
                     try {
                         await addNumbersToDb(finalBatch);
-                        bot.sendMessage(chatId, `✅ **BATCH SAVED:** ${count} Venezuela numbers.`, { parse_mode: 'Markdown' });
+                        bot.sendMessage(chatId, `**BATCH SAVED:** ${count} Venezuela numbers.`, { parse_mode: 'Markdown' });
                     } catch (e) {
                         bot.sendMessage(chatId, `[ERROR] Partial save failed: ${e.message}`);
                     }
@@ -7160,7 +6958,7 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                       // --- 🤖 SMART WSOTP QUEUE (Manual & Bulk Forward Support) ---
+                       // --- SMART WSOTP QUEUE (Manual & Bulk Forward Support) ---
         if (userState[chatId] === 'WSOTP_MODE') {
             
             // 1. Check for Exit Command
@@ -7171,7 +6969,7 @@ const cleanNumbers = matches.map(n => {
                 // Clear the queue memory
                 wsotpQueue[chatId] = [];
                 
-                return bot.sendMessage(chatId, `🛑 **[WSOTP MODE EXITED]**\nQueue stopped. ${remaining} numbers discarded from memory.`, { parse_mode: 'Markdown' });
+                return bot.sendMessage(chatId, `**[WSOTP MODE EXITED]**\nQueue stopped. ${remaining} numbers discarded from memory.`, { parse_mode: 'Markdown' });
             }
 
             // 2. Extract all raw numbers from your message
@@ -7186,13 +6984,13 @@ const cleanNumbers = matches.map(n => {
             const newNumbers = uniqueMatches.filter(num => !wsotpQueue[chatId].includes(num));
             
             if (newNumbers.length === 0) {
-                return bot.sendMessage(chatId, `⚠️ **Ignored:** All these numbers are already in the queue!`, { parse_mode: 'Markdown' });
+                return bot.sendMessage(chatId, `**Ignored:** All these numbers are already in the queue!`, { parse_mode: 'Markdown' });
             }
 
             // 4. Add the fresh, unique batch to the queue
             wsotpQueue[chatId].push(...newNumbers);
             
-            bot.sendMessage(chatId, `📥 **Added ${newNumbers.length} new numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `**Added ${newNumbers.length} new numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
 
             // 5. If the background worker is asleep, wake it up!
             if (!wsotpActive[chatId]) {

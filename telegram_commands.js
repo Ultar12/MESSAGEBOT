@@ -85,9 +85,6 @@ const wsotpQueue = {};
 const wsotpActive = {};
 let wsotpWarnedNoWa = false;
 
-// Tracks active numbers waiting for Bot responses
-const trackedWsotp = {}; 
-let wsotpListenerActive = false; 
 
 
 
@@ -2208,8 +2205,9 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
- // ==========================================
-// 1. THE SENDER ENGINE (FIRE & FORGET)
+
+          // ==========================================
+// 1. THE BATCH SENDER & WAITER ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
     if (wsotpActive[chatId]) return; 
@@ -2229,170 +2227,150 @@ async function processWsotpQueue(chatId) {
 
     wsotpWarnedNoWa = false; 
 
-    // WAKE UP THE BACKGROUND LISTENER
-    if (!wsotpListenerActive) {
-        runWsotpListener(chatId);
-    }
-
     while (wsotpQueue[chatId].length > 0) {
         const currentMode = userState[chatId];
         if (currentMode !== 'WSOTP_MANUAL_MODE' && currentMode !== 'WSOTP_FILE_MODE') break; 
 
-        const rawNum = wsotpQueue[chatId].shift();
-        let formattedNum = rawNum.replace(/\D/g, '');
-        
-        // 1. SMART PREFIX FORMATTING
-        if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
-        else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
-        else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
+        let activeBatchTracker = {};
+        let currentBatchSize = 0;
 
-        // 2. LIVE WHATSAPP CHECK
-        let isWaActive = true;
-        const activeFolders = Object.keys(clients).filter(f => clients[f]);
-        
-        if (activeFolders.length > 0) {
-            const sock = clients[activeFolders[0]];
-            const jid = `${formattedNum}@s.whatsapp.net`;
+        // --- 1. GATHER AND SEND 10 VALID NUMBERS ---
+        while (currentBatchSize < 10 && wsotpQueue[chatId].length > 0) {
+            const rawNum = wsotpQueue[chatId].shift();
+            let formattedNum = rawNum.replace(/\D/g, '');
+            
+            // Smart Prefix Formatting
+            if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
+            else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+            else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
+
+            // Live WA Check
+            let isWaActive = true;
+            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+            
+            if (activeFolders.length > 0) {
+                const sock = clients[activeFolders[0]];
+                const jid = `${formattedNum}@s.whatsapp.net`;
+                try {
+                    const [waCheck] = await sock.onWhatsApp(jid);
+                    if (!waCheck?.exists) isWaActive = false; 
+                } catch (e) {
+                    if (!wsotpWarnedNoWa) {
+                        bot.sendMessage(chatId, `⚠️ **[ALERT] WA Checker Bot BANNED/Offline!**\nContinuing blindly.`, { parse_mode: 'Markdown' });
+                        wsotpWarnedNoWa = true;
+                    }
+                }
+            }
+
+            if (!isWaActive) continue; // Skip dead numbers, grab another to fill the 10 slots
+
+            // Track this number
+            activeBatchTracker[formattedNum] = {
+                count: 0,
+                lastMsgId: null,
+                lastEditDate: null
+            };
+            currentBatchSize++;
+
+            // Human-like typing & sending
             try {
-                const [waCheck] = await sock.onWhatsApp(jid);
-                if (!waCheck?.exists) {
-                    isWaActive = false; 
-                    console.log(`[WSOTP] Skipped dead WA number: ${formattedNum}`);
-                }
+                await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                await delay(1200); 
+                await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
             } catch (e) {
-                if (!wsotpWarnedNoWa) {
-                    bot.sendMessage(chatId, `⚠️ **[ALERT] WhatsApp Checker Bot disconnected/BANNED!**\nContinuing to send numbers blindly.`, { parse_mode: 'Markdown' });
-                    wsotpWarnedNoWa = true;
+                delete activeBatchTracker[formattedNum];
+            }
+            await delay(1000); // Brief delay between sends
+        }
+
+        if (Object.keys(activeBatchTracker).length === 0) continue;
+
+        bot.sendMessage(chatId, `📦 **Batch of ${currentBatchSize} sent.**\nWaiting for bot to finish processing these before sending the next batch...`, { parse_mode: 'Markdown' });
+
+        // --- 2. WAIT FOR BATCH TO RESOLVE ---
+        let batchStartTime = Date.now();
+        let batchTimeout = 300000; // 5-Minute Max Timeout for the entire batch to resolve
+
+        while (Object.keys(activeBatchTracker).length > 0 && (Date.now() - batchStartTime < batchTimeout)) {
+            if (userState[chatId] !== currentMode) break;
+
+            await delay(2500); // Check messages every 2.5 seconds
+
+            // Fetch last 30 messages to ensure we don't miss anything in a batch of 10
+            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 30 }); 
+            
+            for (const msg of msgs) {
+                const text = msg.message || "";
+                
+                // Identify the number in the bot's message
+                let botNum = null;
+                const directMatch = text.match(/^(\d{9,15})/);
+                if (directMatch) botNum = directMatch[1];
+                else {
+                    const rewardMatch = text.match(/Number:\s*(\d{9,15})/i);
+                    if (rewardMatch) botNum = rewardMatch[1];
+                }
+                
+                if (!botNum || !activeBatchTracker[botNum]) continue;
+
+                let trackData = activeBatchTracker[botNum];
+                const isNewUpdate = (msg.id !== trackData.lastMsgId) || (msg.editDate && msg.editDate !== trackData.lastEditDate);
+                const textLower = text.toLowerCase();
+
+                // 🛑 CHECK FOR REJECTIONS / COMPLETIONS
+                if (textLower.includes("already registered") || 
+                    textLower.includes("please submit this number again") ||
+                    text.includes("🟡") || text.includes("⚫️") || 
+                    textLower.includes("try later") || 
+                    textLower.includes("badnum") || 
+                    textLower.includes("error") || 
+                    textLower.includes("blocked") || 
+                    text.includes("💰") || 
+                    textLower.includes("new reward")) {
+                    
+                    // Mark as resolved! Remove from tracking list.
+                    delete activeBatchTracker[botNum];
+                } 
+                
+                // 🔵 CHECK FOR DOUBLE "IN PROGRESS"
+                else if (text.includes("🔵") || textLower.includes("in progress")) {
+                    if (isNewUpdate) {
+                        trackData.count++;
+                        trackData.lastMsgId = msg.id;
+                        trackData.lastEditDate = msg.editDate;
+
+                        if (trackData.count >= 2) {
+                            if (currentMode === 'WSOTP_FILE_MODE') {
+                                bot.sendMessage(chatId, `⏳ \`${botNum}\` is In Progress (x2)!\nStarting 3-min OTP Hunt in background...`, { parse_mode: 'Markdown' });
+                                // Spawn background hunter for this number
+                                huntOtpAsync(chatId, botNum, msg.id);
+                            } else {
+                                bot.sendMessage(chatId, `✅ \`${botNum}\` is In Progress (x2)! (Manual Mode)`, { parse_mode: 'Markdown' });
+                            }
+                            
+                            // Mark as resolved so the batch sender can move on!
+                            delete activeBatchTracker[botNum];
+                        }
+                    }
                 }
             }
-        } else {
-            if (!wsotpWarnedNoWa) {
-                bot.sendMessage(chatId, `⚠️ **[ALERT] No WhatsApp bots connected!**\nSkipping WA checks entirely.`, { parse_mode: 'Markdown' });
-                wsotpWarnedNoWa = true;
-            }
         }
 
-        if (!isWaActive) continue; 
-
-        // 3. TRACK THE NUMBER IN THE BACKGROUND LISTENER
-        trackedWsotp[formattedNum] = {
-            mode: currentMode,
-            count: 0,
-            lastMsgId: null,
-            lastEdit: null,
-            status: 'WAITING'
-        };
-
-        // 4. HUMAN-LIKE TYPING & SENDING (Target: 25 nums/min = 2.4 sec total delay)
-        try {
-            await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-            await delay(1000); // Type for exactly 1 second
-            await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
-        } catch (e) {
-            console.error(`[WSOTP] Failed to send ${formattedNum}:`, e.message);
-            delete trackedWsotp[formattedNum];
-            continue;
+        // If the 5-minute timeout hit but some numbers are stuck
+        if (Object.keys(activeBatchTracker).length > 0) {
+            bot.sendMessage(chatId, `⚠️ **Batch Timeout:** ${Object.keys(activeBatchTracker).length} numbers didn't respond in time. Moving to the next batch.`);
         }
-        
-        // Exact 1.4s rest delay before grabbing the next number (Total Cycle = 2.4s)
-        await delay(1400); 
     }
 
     wsotpActive[chatId] = false;
     
     if (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
-        bot.sendMessage(chatId, `✅ **[WSOTP SENDER FINISHED]**\nAll numbers sent to bot. The listener is still watching for replies in the background.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ **[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
     }
 }
 
 // ==========================================
-// 2. THE ASYNCHRONOUS LISTENER LOOP
-// ==========================================
-async function runWsotpListener(chatId) {
-    if (wsotpListenerActive) return;
-    wsotpListenerActive = true;
-    const TARGET_BOT = "wsotp200bot";
-
-    while (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
-        
-        // Sleep the listener if no numbers are waiting to save CPU
-        const activeNums = Object.keys(trackedWsotp);
-        if (activeNums.length === 0 && (!wsotpQueue[chatId] || wsotpQueue[chatId].length === 0)) {
-            await delay(3000);
-            continue;
-        }
-
-        try {
-            // Fetch last 15 messages so we don't miss rapid bot responses
-            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 15 });
-            
-            for (const msg of msgs) {
-                const text = msg.message || "";
-                
-                // Extract number from bot's reply (Handles both top-line formatting and Reward Notification formatting)
-                let botNum = null;
-                const directMatch = text.match(/^(\d{9,15})/);
-                if (directMatch) {
-                    botNum = directMatch[1];
-                } else {
-                    const rewardMatch = text.match(/Number:\s*(\d{9,15})/i);
-                    if (rewardMatch) botNum = rewardMatch[1];
-                }
-                
-                if (!botNum) continue;
-
-                // Is this number currently in our tracking array?
-                const trackData = trackedWsotp[botNum];
-                if (!trackData || trackData.status !== 'WAITING') continue;
-
-                const isNewUpdate = (msg.id !== trackData.lastMsgId) || (msg.editDate && msg.editDate !== trackData.lastEdit);
-
-                // --- INSTANT TRASH CONDITIONS ---
-                if (text.toLowerCase().includes("already registered") || 
-                    text.toLowerCase().includes("please submit this number again") ||
-                    text.includes("🟡") || text.includes("⚫️") || 
-                    text.toLowerCase().includes("try later") || 
-                    text.toLowerCase().includes("badnum") || 
-                    text.includes("💰") || text.toLowerCase().includes("new reward")) {
-                    
-                    // Kill it from memory
-                    delete trackedWsotp[botNum];
-                    continue;
-                }
-
-                // --- DOUBLE "IN PROGRESS" DETECTION ---
-                if (text.includes("🔵") || text.toLowerCase().includes("in progress")) {
-                    if (isNewUpdate) {
-                        trackData.count++;
-                        trackData.lastMsgId = msg.id;
-                        trackData.lastEdit = msg.editDate;
-
-                        if (trackData.count >= 2) {
-                            if (trackData.mode === 'WSOTP_FILE_MODE') {
-                                trackData.status = 'HUNTING';
-                                bot.sendMessage(chatId, `⏳ \`${botNum}\` is In Progress (x2)!\nStarting 3-min OTP Hunt...`, { parse_mode: 'Markdown' });
-                                
-                                // FIRE ASYNCHRONOUS OTP HUNTER
-                                huntOtpAsync(chatId, botNum, msg.id);
-                            } else {
-                                // Manual Mode: Alert user but do not hunt for OTP
-                                bot.sendMessage(chatId, `✅ \`${botNum}\` is In Progress (x2)!\n(Manual Mode - Skipping Auto OTP)`, { parse_mode: 'Markdown' });
-                                delete trackedWsotp[botNum];
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (e) {}
-
-        await delay(2500); // Check chat every 2.5 seconds
-    }
-    
-    wsotpListenerActive = false; // Graceful shutdown when user types STOP
-}
-
-// ==========================================
-// 3. THE ASYNCHRONOUS OTP HUNTER
+// 2. THE ASYNCHRONOUS OTP HUNTER (3 MINS)
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply) {
     const OTP_GROUP = "-1003645249777"; 
@@ -2405,7 +2383,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply) {
 
     while (Date.now() - startTime < MAX_TIME) {
         
-        // Stop hunting if user forcibly exits WSOTP mode entirely
+        // Stop hunting if user forcibly exits WSOTP mode
         if (userState[chatId] !== 'WSOTP_FILE_MODE') break;
 
         let foundCode = null;
@@ -2446,10 +2424,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply) {
 
         await delay(3000); // Check OTP group every 3 seconds
     }
-
-    // Clean this number out of tracking memory when the hunt finishes or times out
-    if (trackedWsotp[formattedNum]) delete trackedWsotp[formattedNum];
 }
+  
    
     
 

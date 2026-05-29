@@ -1786,14 +1786,22 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     const OTP_BOT_TOKEN = "8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY";
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
-        // --- LISTENER: Trigger when a user sends 3 or 4 digits (NO LIMITS) ---
-    bot.onText(/^(\d{3,4})$/, async (msg, match) => {
+
+
+        // --- LISTENER: Trigger when a user sends 3+ digits, or a full phone number ---
+    bot.onText(/^[\+\d\s\-\.()]{3,}$/, async (msg) => {
         const chatId = msg.chat.id;
         
         // ONLY run this feature inside your main OTP Target Group
         if (chatId.toString() !== "-1003645249777") return;
 
-        const searchDigits = match[1]; // Grabs either the 3 or 4 digits they typed
+        // Clean the input to get purely the digits
+        const cleanNum = msg.text.replace(/\D/g, '');
+        if (cleanNum.length < 3) return; // Failsafe
+
+        // SMART EXTRACT: If they sent a full number, grab the last 4 digits. 
+        // If they only typed 3 digits, use those exactly.
+        const searchDigits = cleanNum.length >= 4 ? cleanNum.slice(-4) : cleanNum;
         const now = Date.now();
 
         // 1. SEND LOADING ANIMATION MESSAGE FIRST
@@ -1821,13 +1829,38 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
                 // Ignore empty messages or messages older than 10 minutes
                 if (!m.message || m.date < tenMinsAgo) continue;
 
-                // Explicitly search for the 3 or 4 digits at the END of the "Number" line 
-                const numRegex = new RegExp(`Number[^\\n]*?${searchDigits}\\s*(?:\\n|$)`, 'i');
-                const codeMatch = m.message.match(/Code[^\n]*?(\d{3,8})/i);
+                // Check if the "Number" line contains the extracted digits
+                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
 
-                if (numRegex.test(m.message) && codeMatch) {
-                    foundCode = codeMatch[1];
-                    break; // Stop searching once we find the newest match
+                if (numRegex.test(m.message)) {
+                    
+                    // NUMBER MATCHED! Now we must find the code.
+                    
+                    // Method A: Check the text body (Fallback)
+                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
+                    if (codeMatchText) {
+                        foundCode = codeMatchText[1];
+                    }
+
+                    // Method B: Check the Inline Buttons (For your new UI)
+                    if (!foundCode && m.replyMarkup && m.replyMarkup.rows) {
+                        for (const row of m.replyMarkup.rows) {
+                            for (const btn of row.buttons) {
+                                const btnText = btn.text || "";
+                                // Look for "Copy: 123456" on the button
+                                const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
+                                if (btnMatch) {
+                                    foundCode = btnMatch[1];
+                                    break;
+                                }
+                            }
+                            if (foundCode) break;
+                        }
+                    }
+
+                    if (foundCode) {
+                        break; // Stop searching once we find the newest match
+                    }
                 }
             }
 
@@ -1864,12 +1897,13 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
         } catch (e) {
             console.error("OTP Search Error:", e);
-            // Clean up the loading message if the search crashed completely
             if (loadingMsg && loadingMsg.message_id) {
                 try { await senderBot.deleteMessage(chatId, loadingMsg.message_id); } catch(err){}
             }
         }
     });
+
+    
 
     // --- BURST FORWARD BROADCAST ---
     async function executeBroadcast(chatId, targetId, contentObj) {

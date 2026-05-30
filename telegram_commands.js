@@ -2148,7 +2148,14 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-    // ==========================================
+    
+     // ==========================================
+// WSOTP GLOBAL MEMORY MAPS
+// ==========================================
+const telegramCleanupMap = {}; // Tracks Telegram chat messages to delete
+const manualOtpPrompts = {};   // Links your manual reply to the exact target bot message
+
+// ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2255,7 +2262,8 @@ async function processWsotpQueue(chatId) {
                     msgIdsToClean: [sentMsg.id], 
                     addedAt: Date.now(),
                     inProgressCounted: false,
-                    hunterSpawned: false
+                    hunterSpawned: false,
+                    manualPromptSent: false // Tracks if we already sent the user a manual prompt
                 };
             } catch (e) {
                 stats.sent--;
@@ -2308,10 +2316,8 @@ async function processWsotpQueue(chatId) {
                     trackData.seenUpdates.add(updateKey);
                     
                     const textLower = text.toLowerCase();
-                    // 🔴 DETECTS EITHER THE RED EMOJI OR THE WORDS
                     const isErrorCode = text.includes("🔴") || textLower.includes("error code");
 
-                    // 🛑 ONLY add to cleanup array if it's NOT an error code
                     if (!isErrorCode) {
                         trackData.msgIdsToClean.push(msg.id); 
                     }
@@ -2329,6 +2335,14 @@ async function processWsotpQueue(chatId) {
                         
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
                         try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+
+                        // 🧹 NUKE MANUAL TG MESSAGES
+                        if (telegramCleanupMap[botNum]) {
+                            for (const tgId of telegramCleanupMap[botNum]) {
+                                try { await bot.deleteMessage(chatId, tgId); } catch(e){}
+                            }
+                            delete telegramCleanupMap[botNum];
+                        }
 
                         stats.trash++;
                         if (trackData.inProgressCounted) {
@@ -2358,6 +2372,14 @@ async function processWsotpQueue(chatId) {
                         trackData.msgIdsToClean.push(msg.id);
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
                         try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+
+                        // 🧹 NUKE MANUAL TG MESSAGES
+                        if (telegramCleanupMap[botNum]) {
+                            for (const tgId of telegramCleanupMap[botNum]) {
+                                try { await bot.deleteMessage(chatId, tgId); } catch(e){}
+                            }
+                            delete telegramCleanupMap[botNum];
+                        }
 
                         stats.completed++;
                         if (trackData.inProgressCounted) {
@@ -2390,6 +2412,20 @@ async function processWsotpQueue(chatId) {
                                     delete activeTracker[botNum];
                                     isBackground = true;
                                 }
+                            }
+
+                            // 🔔 SEND MANUAL PROMPT TO CHAT
+                            if (!trackData.manualPromptSent || isErrorCode) {
+                                if (!telegramCleanupMap[botNum]) telegramCleanupMap[botNum] = [];
+                                
+                                let promptText = `🔔 **MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
+                                if (isErrorCode) promptText = `🔴 **WRONG CODE ENTERED**\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
+
+                                const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+                                
+                                telegramCleanupMap[botNum].push(promptMsg.message_id);
+                                manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
+                                trackData.manualPromptSent = true;
                             }
 
                             const isPoland = botNum.startsWith('48');
@@ -2430,6 +2466,15 @@ async function processWsotpQueue(chatId) {
 
         for (const num in backgroundTracker) {
             if (nowTime - backgroundTracker[num].addedAt > 1800000) {
+                
+                // Nuke TG Prompts on timeout to prevent memory leaks
+                if (telegramCleanupMap[num]) {
+                    for (const tgId of telegramCleanupMap[num]) {
+                        try { await bot.deleteMessage(chatId, tgId); } catch(e){}
+                    }
+                    delete telegramCleanupMap[num];
+                }
+
                 if (backgroundTracker[num].inProgressCounted) {
                     stats.inProgress = Math.max(0, stats.inProgress - 1);
                 }
@@ -2533,7 +2578,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     await addLog(`❌ \`${formattedNum}\`: Gave up after 5 minutes.`);
 }
 
-    
+                        
+           
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---
@@ -6985,6 +7031,37 @@ bot.onText(/\/pdf/, async (msg) => {
         if (userState[chatId + '_lastMsgId'] === msg.message_id) return;
         userState[chatId + '_lastMsgId'] = msg.message_id;
 
+
+        // 🧠 --- NEW: MANUAL OTP LISTENER ---
+        if (msg.reply_to_message && manualOtpPrompts[msg.reply_to_message.message_id]) {
+            const promptData = manualOtpPrompts[msg.reply_to_message.message_id];
+            const manualCode = text.replace(/\D/g, ''); // Extract only digits
+            
+            if (manualCode.length >= 3) {
+                try {
+                    // Save your reply message ID so the Main Engine can delete it upon success
+                    if (!telegramCleanupMap[promptData.botNum]) telegramCleanupMap[promptData.botNum] = [];
+                    telegramCleanupMap[promptData.botNum].push(msg.message_id);
+
+                    const TARGET_BOT = "wsotp200bot";
+                    const { Api } = await import("telegram");
+                    
+                    await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                    
+                    // Send the manual code directly to the target bot
+                    await paymeUserBot.sendMessage(TARGET_BOT, { message: manualCode, replyTo: promptData.targetBotMsgId });
+                    
+                    // Temporary confirmation message (Will also be deleted upon success)
+                    const confMsg = await bot.sendMessage(chatId, `Manual code ${manualCode} sent for ${promptData.botNum}!`);
+                    telegramCleanupMap[promptData.botNum].push(confMsg.message_id);
+
+                } catch (err) {
+                    const errMsg = await bot.sendMessage(chatId, `Failed to send manual code: ${err.message}`);
+                    telegramCleanupMap[promptData.botNum].push(errMsg.message_id);
+                }
+                return; // Stop normal text commands from executing
+            }
+        }
         
         // RATE LIMIT CHECK
         if (!isUserAdmin && !isSubAdmin && !checkRateLimit(userId)) {

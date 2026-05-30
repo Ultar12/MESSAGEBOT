@@ -2204,8 +2204,9 @@ bot.onText(/\/wsotp/, async (msg) => {
 });
 
     
-   // ==========================================
-// 1. THE BATCH SENDER & WAITER ENGINE
+   
+// ==========================================
+// 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
     if (wsotpActive[chatId]) return; 
@@ -2229,40 +2230,47 @@ async function processWsotpQueue(chatId) {
     let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, logs: [] };
     let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
 
-    // Function to handle the scrolling activity log without spamming chat
+    let activeTracker = {};     // The sliding window (Max 50)
+    let backgroundTracker = {}; // Stalled numbers (>15 mins) waiting for a late response
+
     const addLog = async (msg) => {
         stats.logs.unshift(msg);
-        if (stats.logs.length > 6) stats.logs.pop(); // Keep only the 6 most recent events
+        if (stats.logs.length > 6) stats.logs.pop(); 
         await updateStats();
     };
 
     const updateStats = async () => {
         const left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+        const activeCount = Object.keys(activeTracker).length;
+        const bgCount = Object.keys(backgroundTracker).length;
         const logsText = stats.logs.join('\n');
         
         const txt = 
             `**[WSOTP LIVE DASHBOARD]**\n\n` +
             `Queue Remaining: ${left}\n` +
-            `Sent to Bot: ${stats.sent}\n` +
+            `Active Window: ${activeCount} / 50\n` +
+            `Background Waiting: ${bgCount}\n` +
+            `Total Sent to Bot: ${stats.sent}\n` +
             `In Progress (x2): ${stats.inProgress}\n` +
             `Completed/Paid: ${stats.completed}\n` +
             `Trash (Deleted): ${stats.trash}\n\n` +
             `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
-            `_Auto-deleting junk messages..._`;
+            `_Streaming engine active..._`;
         try {
             await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
         } catch(e) {} 
     };
 
-    while (wsotpQueue[chatId].length > 0) {
+    // Main Loop runs as long as there are numbers in the queue OR numbers actively being tracked
+    while (wsotpQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {
         const currentMode = userState[chatId];
         if (currentMode !== 'WSOTP_MANUAL_MODE' && currentMode !== 'WSOTP_FILE_MODE') break; 
 
-        let activeBatchTracker = {};
-        let currentBatchSize = 0;
-
-        // --- 1. GATHER AND SEND 10 VALID NUMBERS ---
-        while (currentBatchSize < 10 && wsotpQueue[chatId].length > 0) {
+        // --- 1. REPLENISH THE WINDOW (Up to 50) ---
+        // We only send a max of 4 numbers per tick so the bot doesn't get stuck typing and ignore chat messages.
+        let replenishedThisTick = 0;
+        
+        while (Object.keys(activeTracker).length < 50 && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
             const rawNum = wsotpQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             
@@ -2289,7 +2297,7 @@ async function processWsotpQueue(chatId) {
 
             if (!isWaActive) continue; 
 
-            currentBatchSize++;
+            replenishedThisTick++;
             stats.sent++;
 
             try {
@@ -2298,33 +2306,27 @@ async function processWsotpQueue(chatId) {
                 
                 const sentMsg = await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
                 
-                activeBatchTracker[formattedNum] = {
+                // Track this number with an added timestamp
+                activeTracker[formattedNum] = {
                     count: 0,
                     lastMsgId: null,
                     lastEditDate: null,
-                    sentMsgId: sentMsg.id 
+                    sentMsgId: sentMsg.id,
+                    addedAt: Date.now()
                 };
             } catch (e) {
                 stats.sent--;
-                currentBatchSize--;
+                replenishedThisTick--;
             }
             
             await updateStats();
             await delay(1000); 
         }
 
-        if (Object.keys(activeBatchTracker).length === 0) continue;
-
-        // --- 2. WAIT FOR BATCH TO RESOLVE ---
-        let batchStartTime = Date.now();
-        let batchTimeout = 300000; 
-
-        while (Object.keys(activeBatchTracker).length > 0 && (Date.now() - batchStartTime < batchTimeout)) {
-            if (userState[chatId] !== currentMode) break;
-
-            await delay(2500); 
-
-            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 30 }); 
+        // --- 2. LISTEN FOR RESPONSES ---
+        // Fetch last 100 messages to ensure we don't miss anything with 50 active numbers
+        try {
+            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 100 }); 
             
             for (const msg of msgs) {
                 const text = msg.message || "";
@@ -2337,9 +2339,18 @@ async function processWsotpQueue(chatId) {
                     if (rewardMatch) botNum = rewardMatch[1];
                 }
                 
-                if (!botNum || !activeBatchTracker[botNum]) continue;
+                if (!botNum) continue;
 
-                let trackData = activeBatchTracker[botNum];
+                // Check both Active and Background trackers
+                let isBackground = false;
+                let trackData = activeTracker[botNum];
+                if (!trackData) {
+                    trackData = backgroundTracker[botNum];
+                    isBackground = !!trackData;
+                }
+                
+                if (!trackData) continue;
+
                 const isNewUpdate = (msg.id !== trackData.lastMsgId) || (msg.editDate && msg.editDate !== trackData.lastEditDate);
                 const textLower = text.toLowerCase();
 
@@ -2352,19 +2363,21 @@ async function processWsotpQueue(chatId) {
                     textLower.includes("error") || 
                     textLower.includes("blocked")) {
                     
-                    try {
-                        await paymeUserBot.deleteMessages(TARGET_BOT, [msg.id, trackData.sentMsgId], { revoke: true });
-                    } catch (delErr) {}
+                    try { await paymeUserBot.deleteMessages(TARGET_BOT, [msg.id, trackData.sentMsgId], { revoke: true }); } catch (delErr) {}
 
                     stats.trash++;
-                    delete activeBatchTracker[botNum];
+                    if (isBackground) delete backgroundTracker[botNum];
+                    else delete activeTracker[botNum];
+                    
                     await updateStats();
                 } 
                 
                 // 💰 CHECK FOR INSTANT REWARD (Pre-OTP)
                 else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
                     stats.completed++;
-                    delete activeBatchTracker[botNum];
+                    if (isBackground) delete backgroundTracker[botNum];
+                    else delete activeTracker[botNum];
+                    
                     await addLog(`🎉 \`${botNum}\`: Instant Reward!`);
                 }
 
@@ -2379,27 +2392,41 @@ async function processWsotpQueue(chatId) {
                             stats.inProgress++;
                             
                             if (currentMode === 'WSOTP_FILE_MODE') {
-                                // Spawn background hunter, passing stats and addLog function to it!
                                 huntOtpAsync(chatId, botNum, msg.id, stats, addLog);
                             } else {
                                 await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual)`);
                             }
                             
-                            delete activeBatchTracker[botNum];
+                            if (isBackground) delete backgroundTracker[botNum];
+                            else delete activeTracker[botNum];
+                            
                             await updateStats();
                         }
                     }
                 }
             }
+        } catch (readErr) {}
+
+        // --- 3. CHECK FOR 15-MINUTE STALLS ---
+        for (const num in activeTracker) {
+            // 15 Minutes = 900,000 milliseconds
+            if (Date.now() - activeTracker[num].addedAt > 900000) {
+                backgroundTracker[num] = activeTracker[num];
+                delete activeTracker[num]; // Removes it from the active 50, triggering a replacement!
+                await addLog(`🕒 \`${num}\`: Stalled for 15m. Moved to background tracking.`);
+            }
         }
+
+        await delay(2500); // Breathe before checking again
     }
 
     wsotpActive[chatId] = false;
     
     if (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
-        bot.sendMessage(chatId, `**[WSOTP QUEUE EMPTY]**\nFinished processing all numbers in memory.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `**[WSOTP QUEUE EMPTY]**\nFinished processing all numbers.`, { parse_mode: 'Markdown' });
     }
 }
+
 
 // ==========================================
 // 2. THE ASYNCHRONOUS OTP HUNTER

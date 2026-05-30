@@ -2147,9 +2147,7 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-
-   
-         // ==========================================
+    // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2174,7 +2172,7 @@ async function processWsotpQueue(chatId) {
     let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, logs: [] };
     let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
 
-    let activeTracker = {};     // The sliding window (Max 50)
+    let activeTracker = {};     // The sliding window (Max 25)
     let backgroundTracker = {}; // Holds "In Progress x2" AND "Stalled" numbers waiting for a reward
 
     const addLog = async (msg) => {
@@ -2209,7 +2207,7 @@ async function processWsotpQueue(chatId) {
         const currentMode = userState[chatId];
         if (currentMode !== 'WSOTP_MANUAL_MODE' && currentMode !== 'WSOTP_FILE_MODE') break; 
 
-        // --- 1. REPLENISH THE WINDOW (Up to 50) ---
+        // --- 1. REPLENISH THE WINDOW (Up to 25) ---
         let replenishedThisTick = 0;
         
         while (Object.keys(activeTracker).length < 25 && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
@@ -2250,8 +2248,7 @@ async function processWsotpQueue(chatId) {
                 
                 activeTracker[formattedNum] = {
                     count: 0,
-                    lastMsgId: null,
-                    lastEditDate: null,
+                    seenUpdates: new Set(), // 🛑 NEW: Stores exact message fingerprints to stop duplicate counting
                     sentMsgId: sentMsg.id,
                     addedAt: Date.now(),
                     hunterSpawned: false
@@ -2273,8 +2270,7 @@ async function processWsotpQueue(chatId) {
                 const text = msg.message || "";
                 if (!text) continue;
 
-                // BULLETPROOF NUMBER MATCHER: 
-                // Extracts ONLY digits from the message and sees if any of our tracked numbers are inside it.
+                // BULLETPROOF NUMBER MATCHER
                 const rawTextDigits = text.replace(/\D/g, '');
                 
                 let trackData = null;
@@ -2299,10 +2295,13 @@ async function processWsotpQueue(chatId) {
                     }
                 }
                 
-                // If this message isn't about one of our active/background numbers, skip it.
                 if (!trackData) continue;
 
-                const isNewUpdate = (msg.id !== trackData.lastMsgId) || (msg.editDate && msg.editDate !== trackData.lastEditDate);
+                // 🛑 NEW: FINGERPRINT CHECKER (Kills the Ping-Pong Bug)
+                if (!trackData.seenUpdates) trackData.seenUpdates = new Set();
+                const updateKey = `${msg.id}_${msg.editDate || '0'}`;
+                const isNewUpdate = !trackData.seenUpdates.has(updateKey);
+
                 const textLower = text.toLowerCase();
 
                 // 🛑 AUTO-DELETE TRASH REJECTIONS
@@ -2336,14 +2335,14 @@ async function processWsotpQueue(chatId) {
                 // 🔵 CHECK FOR DOUBLE "IN PROGRESS"
                 else if (text.includes("🔵") || textLower.includes("in progress")) {
                     if (isNewUpdate) {
+                        trackData.seenUpdates.add(updateKey); // Save fingerprint to memory
                         trackData.count++;
-                        trackData.lastMsgId = msg.id;
-                        trackData.lastEditDate = msg.editDate;
 
-                        if (trackData.count >= 2) {
+                        // 🛑 NEW: STRICT === 2 RULE (Stops the runaway counter)
+                        if (trackData.count === 2) {
                             stats.inProgress++;
                             
-                            // MOVE TO BACKGROUND: This frees up a slot in the 50-limit immediately
+                            // MOVE TO BACKGROUND
                             if (!isBackground) {
                                 backgroundTracker[botNum] = activeTracker[botNum];
                                 delete activeTracker[botNum];
@@ -2364,7 +2363,6 @@ async function processWsotpQueue(chatId) {
                                     await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)`);
                                 }
                             }
-                            
                             await updateStats();
                         }
                     }
@@ -2448,7 +2446,11 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
                 await addLog(`✅ \`${formattedNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                await delay(1200);
+                
+                // 🛑 JITTER ANTI-BAN: Random delay between 1s and 2.5s before hitting send
+                // This protects you if 5 numbers find their OTP at the exact same millisecond.
+                await delay(Math.floor(Math.random() * 1500) + 1000);
+                
                 await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
                 break; // Break the hunt loop to move to the reward tracking phase!
@@ -2479,10 +2481,6 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
                     
                     if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
                         stats.completed++;
-                        
-                        // Prevent the main loop from double counting it by removing it from the background tracker
-                        // (You'll need to make sure backgroundTracker is accessible, or just let the main loop naturally clean it up)
-                        // It's perfectly safe to just log it here and return!
                         await addLog(`🎉 \`${formattedNum}\`: Paid/Success!`);
                         return; 
                         
@@ -2499,8 +2497,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
     
     await addLog(`⏳ \`${formattedNum}\`: Reward verification timeout.`);
 }
-               
-        
+
 
     
 

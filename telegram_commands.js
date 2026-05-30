@@ -2323,7 +2323,10 @@ async function processWsotpQueue(chatId) {
                         try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
 
                         stats.trash++;
-                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1); 
+                        if (trackData.inProgressCounted) {
+                            stats.inProgress = Math.max(0, stats.inProgress - 1);
+                            trackData.inProgressCounted = false; // Prevent double subtraction
+                        }
                         
                         if (isBackground) delete backgroundTracker[botNum];
                         else delete activeTracker[botNum];
@@ -2348,12 +2351,15 @@ async function processWsotpQueue(chatId) {
                         try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
 
                         stats.completed++;
-                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1); 
+                        if (trackData.inProgressCounted) {
+                            stats.inProgress = Math.max(0, stats.inProgress - 1); 
+                            trackData.inProgressCounted = false;
+                        }
 
                         if (isBackground) delete backgroundTracker[botNum];
                         else delete activeTracker[botNum];
                         
-                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
+                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr} USD)!`);
                         await updateStats();
                     }
 
@@ -2371,7 +2377,7 @@ async function processWsotpQueue(chatId) {
                                 isBackground = true;
                             }
 
-                            // Spawn Concurrent Background Hunter
+                            // Spawn Concurrent Background Hunter instantly
                             if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
                                 const isPoland = botNum.startsWith('48');
@@ -2381,7 +2387,6 @@ async function processWsotpQueue(chatId) {
                                     // SPANWS INSTANTLY (No await, no queue)
                                     huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                     
-                                    await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
                                 } else {
                                     await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)...`);
                                 }
@@ -2406,7 +2411,9 @@ async function processWsotpQueue(chatId) {
 
         for (const num in backgroundTracker) {
             if (nowTime - backgroundTracker[num].addedAt > 1800000) {
-                if (backgroundTracker[num].inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
+                if (backgroundTracker[num].inProgressCounted) {
+                    stats.inProgress = Math.max(0, stats.inProgress - 1);
+                }
                 delete backgroundTracker[num];
             }
         }
@@ -2429,14 +2436,18 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
+    // Grabs ONLY the last 4 digits
     const searchDigits = formattedNum.slice(-4);
     const startTime = Date.now();
     const MAX_TIME = 300000; // 5 Minutes Max Scanning Time
+
+    await addLog(`⏳ \`${formattedNum}\`: x2 Detected! Waiting 5s...`);
 
     // Strictly wait 5 seconds before making the first scan
     await delay(5000);
 
     let foundCode = null;
+    await addLog(`🔍 \`${formattedNum}\`: Scanning for \`...${searchDigits}\`...`);
     
     // --- INFINITE POLLING LOOP (Until code is found or 5 mins expire) ---
     while (Date.now() - startTime < MAX_TIME) {
@@ -2452,7 +2463,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 // Ignore messages older than 5 minutes
                 if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
                 
-                // HYPER-AGGRESSIVE MATCHER: If the 4 digits exist *anywhere* in the message
+                // HYPER-AGGRESSIVE MATCHER: If the 4 digits exist *anywhere* in the message text
                 if (m.message.includes(searchDigits)) {
                     
                     // Look for any 6-digit sequence with or without a dash (e.g. 123456 or 123-456)
@@ -2461,11 +2472,11 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                         foundCode = codeMatch[1] + codeMatch[2]; // Fuses "123" and "456" into "123456"
                     }
                     
-                    // Check buttons just in case
+                    // Check buttons just in case the text regex missed it
                     if (!foundCode && m.replyMarkup?.rows) {
                         for (const row of m.replyMarkup.rows) {
                             for (const btn of row.buttons) {
-                                const btnMatch = (btn.text || "").match(/Copy:\s*(\d{4,8})/i);
+                                const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
                                 if (btnMatch) foundCode = btnMatch[1];
                             }
                         }
@@ -2485,8 +2496,9 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 
                 const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
+                // Drop the sent message ID in the garbage bag for the main loop to clean up later
                 trackData.msgIdsToClean.push(sentOtp.id);
-                return; // Code sent! The main loop handles the reward and clears the stats.
+                return; // Code sent! The main loop natively handles the reward and clears the stats.
             }
         } catch (e) {}
 
@@ -2497,6 +2509,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     await addLog(`❌ \`${formattedNum}\`: Gave up after 5 minutes.`);
 }
 
+                
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

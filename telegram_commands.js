@@ -857,9 +857,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         code = checkButtons(latestMsg.replyMarkup.rows);
                     }
 
-                                        if (!code) {
-                        // 🧠 UPGRADED CODE MATCHER: Explicitly targets "OTP:" or "Code:" to avoid random IDs
-                        const codeExplicit = combinedText.match(/(?:Code|OTP|Kode|Codigo)[^\n\d]*?(\d{3})[-\s]?(\d{3})/i);
+                    if (!code) {
+                        // 🧠 UPGRADED CODE MATCHER: Now explicitly targets the 🔑 emoji as well!
+                        const codeExplicit = combinedText.match(/(?:Code|OTP|Kode|Codigo|🔑)[^\n\d]*?(\d{3})[-\s]?(\d{3})/i);
                         if (codeExplicit) {
                             code = codeExplicit[1] + codeExplicit[2];
                         } else {
@@ -867,6 +867,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
                         }
                     }
+
 
 
                     if (code) {
@@ -953,10 +954,14 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         }
 
                         
-                        maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
-                        maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');
+                     // Clean it up perfectly for the ASCII box
+                        maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
+                        maskedNumber = maskedNumber.replace(/\+/g, ''); // 🛑 STRICTLY REMOVES THE + SIGN
+                        maskedNumber = maskedNumber.replace(/…/g, '•••'); // Convert single ellipsis char to 3 bullets
+                        maskedNumber = maskedNumber.replace(/[*_`\[\]\.]/g, '•'); // Convert periods/asterisks to bullet
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
                         maskedNumber = maskedNumber.replace(/[xX]+/g, '•••');
+                        maskedNumber = maskedNumber.replace(/\s+/g, '').trim(); // Remove all spaces to fuse it together!
 
                         // --- INJECTED STRICT SPY LOGIC ---
                         try {

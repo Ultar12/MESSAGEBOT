@@ -2359,7 +2359,7 @@ async function processWsotpQueue(chatId) {
                         if (isBackground) delete backgroundTracker[botNum];
                         else delete activeTracker[botNum];
                         
-                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr} USD)!`);
+                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
                         await updateStats();
                     }
 
@@ -2384,7 +2384,7 @@ async function processWsotpQueue(chatId) {
 
                                 if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
                                     
-                                    // SPANWS INSTANTLY (No await, no queue)
+                                    // SPAWNS INSTANTLY (No queue, full concurrency!)
                                     huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                     
                                 } else {
@@ -2429,7 +2429,7 @@ async function processWsotpQueue(chatId) {
 }
 
 // ==========================================
-// 2. THE CONTINUOUS OTP HUNTER
+// 2. THE CONTINUOUS OTP HUNTER (USING bot.onText LOGIC)
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
     const OTP_GROUP = "-1003645249777"; 
@@ -2463,22 +2463,25 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 // Ignore messages older than 5 minutes
                 if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
                 
-                // HYPER-AGGRESSIVE MATCHER: If the 4 digits exist *anywhere* in the message text
-                if (m.message.includes(searchDigits)) {
+                // 🛑 YOUR EXACT bot.onText LOGIC:
+                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
+
+                if (numRegex.test(m.message)) {
                     
-                    // Look for any 6-digit sequence with or without a dash (e.g. 123456 or 123-456)
-                    const codeMatch = m.message.match(/\b(\d{3})[-\s]?(\d{3})\b/);
-                    if (codeMatch) {
-                        foundCode = codeMatch[1] + codeMatch[2]; // Fuses "123" and "456" into "123456"
+                    // Method A: Text Body Extraction
+                    const codeMatchText = m.message.match(/(?:Code|OTP|Kode)[^\n]*?([\d\-]{3,8})/i);
+                    if (codeMatchText) {
+                        foundCode = codeMatchText[1].replace(/\D/g, ''); 
                     }
                     
-                    // Check buttons just in case the text regex missed it
+                    // Method B: Inline Buttons
                     if (!foundCode && m.replyMarkup?.rows) {
                         for (const row of m.replyMarkup.rows) {
                             for (const btn of row.buttons) {
                                 const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
                                 if (btnMatch) foundCode = btnMatch[1];
                             }
+                            if (foundCode) break;
                         }
                     }
                     
@@ -2509,7 +2512,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     await addLog(`❌ \`${formattedNum}\`: Gave up after 5 minutes.`);
 }
 
-                
+    
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

@@ -2202,6 +2202,8 @@ bot.onText(/\/wsotp/, async (msg) => {
         { parse_mode: 'Markdown' }
     );
 
+});
+
 
 
 

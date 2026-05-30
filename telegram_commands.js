@@ -935,33 +935,33 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         let fullCountry = countryMap[countryCode].name;
                         let flagEmoji = countryMap[countryCode].flag;
 
-                       let maskedNumber = "Unknown";
+                         let maskedNumber = "Unknown";
                         
-                        // 🧠 UPGRADED NUMBER MATCHER: Forces it to find "Number" or 📞/☎️, ignoring the "Service" ID
-                        const explicitNumMatch = combinedText.match(/(?:Number|Num|Phone|📞|☎️)[\s:]*([+\d][\d\*xX\-\.•_]+)/i);
+                        // 1. Explicitly targets "Number:" or "📞" to bypass "Service IDs"
+                        const explicitNumMatch = combinedText.match(/(?:Number|Num|Phone|📞|☎️)[\s:]*([+\dX][^\s┨\n]*)/i);
                         
+                        // 2. Targets short-line formats like "#VE 🟢 5841•••1029" (grabs everything until space)
+                        const shortLineMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|#[a-zA-Z]{2})\]?[^\d+X\n]*([+\dX][^\s┨\n]*)/i);
+                        
+                        // 3. Pure masked pattern fallback
+                        const maskPattern = /\d{2,6}[\u200B-\u200D\uFEFF]*[*xX•\u2022.a-zA-Z]{2,}[\u200B-\u200D\uFEFF]*\d{2,6}/i;
+
                         if (explicitNumMatch && explicitNumMatch[1]) {
                             maskedNumber = explicitNumMatch[1].trim();
-                        } else {
-                            // Classic masked pattern fallback (e.g. +6288*****1190)
-                            const fallbackMatch = combinedText.match(/\+?\d{2,6}[*xX•\u2022_]{2,}\d{2,6}/i);
-                            if (fallbackMatch) {
-                                maskedNumber = fallbackMatch[0];
-                            } else {
-                                const unifiedMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|#[a-zA-Z]{2})\]?[^\d+X]*([+\dX][^\s┨\n]*)/i);
-                                if (unifiedMatch && unifiedMatch[1]) maskedNumber = unifiedMatch[1].trim();
-                            }
+                        } else if (shortLineMatch && shortLineMatch[1]) {
+                            maskedNumber = shortLineMatch[1].trim();
+                        } else if (maskPattern.test(combinedText)) {
+                            maskedNumber = combinedText.match(maskPattern)[0].trim();
                         }
-
                         
-                     // Clean it up perfectly for the ASCII box
+                        // Clean it up perfectly for the ASCII box
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '');
                         maskedNumber = maskedNumber.replace(/\+/g, ''); // 🛑 STRICTLY REMOVES THE + SIGN
                         maskedNumber = maskedNumber.replace(/…/g, '•••'); // Convert single ellipsis char to 3 bullets
                         maskedNumber = maskedNumber.replace(/[*_`\[\]\.]/g, '•'); // Convert periods/asterisks to bullet
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
                         maskedNumber = maskedNumber.replace(/[xX]+/g, '•••');
-                        maskedNumber = maskedNumber.replace(/\s+/g, '').trim(); // Remove all spaces to fuse it together!
+
 
                         // --- INJECTED STRICT SPY LOGIC ---
                         try {

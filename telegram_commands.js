@@ -85,6 +85,10 @@ const wsotpQueue = {};
 const wsotpActive = {};
 let wsotpWarnedNoWa = false;
 
+// NEW: Sequential Queue for OTP Hunting
+const hunterQueue = {};
+const hunterActive = {};
+
 
 
 
@@ -2147,7 +2151,8 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-    // ==========================================
+    
+       // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2168,12 +2173,16 @@ async function processWsotpQueue(chatId) {
 
     wsotpWarnedNoWa = false; 
 
+    // Initialize Hunter Queues
+    hunterQueue[chatId] = [];
+    hunterActive[chatId] = false;
+
     // --- LIVE DASHBOARD INITIALIZATION ---
-    let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, logs: [] };
+    let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [] };
     let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
 
-    let activeTracker = {};     // The sliding window (Max 25)
-    let backgroundTracker = {}; // Holds "In Progress x2" AND "Stalled" numbers waiting for a reward
+    let activeTracker = {};     
+    let backgroundTracker = {}; 
 
     const addLog = async (msg) => {
         stats.logs.unshift(msg);
@@ -2185,6 +2194,7 @@ async function processWsotpQueue(chatId) {
         const left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
         const activeCount = Object.keys(activeTracker).length;
         const bgCount = Object.keys(backgroundTracker).length;
+        const hqCount = hunterQueue[chatId] ? hunterQueue[chatId].length : 0;
         const logsText = stats.logs.join('\n');
         
         const txt = 
@@ -2193,11 +2203,13 @@ async function processWsotpQueue(chatId) {
             `Active Window: ${activeCount} / 25\n` +
             `Background Waiting: ${bgCount}\n` +
             `Total Sent to Bot: ${stats.sent}\n` +
-            `In Progress (x2): ${stats.inProgress}\n` +
+            `Current In Progress (x2): ${stats.inProgress}\n` +
+            `Hunting Queue: ${hqCount} waiting\n` +
             `Completed/Paid: ${stats.completed}\n` +
+            `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
             `Trash (Deleted): ${stats.trash}\n\n` +
             `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
-            `_Streaming engine active..._`;
+            `_High-speed streaming & cleaning active..._`;
         try {
             await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
         } catch(e) {} 
@@ -2248,10 +2260,11 @@ async function processWsotpQueue(chatId) {
                 
                 activeTracker[formattedNum] = {
                     count: 0,
-                    seenUpdates: new Set(), // 🛑 NEW: Stores exact message fingerprints to stop duplicate counting
-                    sentMsgId: sentMsg.id,
+                    seenUpdates: new Set(), 
+                    msgIdsToClean: [sentMsg.id], 
                     addedAt: Date.now(),
-                    hunterSpawned: false
+                    hunterSpawned: false,
+                    inProgressCounted: false 
                 };
             } catch (e) {
                 stats.sent--;
@@ -2262,7 +2275,7 @@ async function processWsotpQueue(chatId) {
             await delay(1000); 
         }
 
-        // --- 2. LISTEN FOR RESPONSES ---
+        // --- 2. LISTEN FOR RESPONSES & REWARDS ---
         try {
             const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 100 }); 
             
@@ -2270,7 +2283,6 @@ async function processWsotpQueue(chatId) {
                 const text = msg.message || "";
                 if (!text) continue;
 
-                // BULLETPROOF NUMBER MATCHER
                 const rawTextDigits = text.replace(/\D/g, '');
                 
                 let trackData = null;
@@ -2297,70 +2309,101 @@ async function processWsotpQueue(chatId) {
                 
                 if (!trackData) continue;
 
-                // 🛑 NEW: FINGERPRINT CHECKER (Kills the Ping-Pong Bug)
                 if (!trackData.seenUpdates) trackData.seenUpdates = new Set();
                 const updateKey = `${msg.id}_${msg.editDate || '0'}`;
                 const isNewUpdate = !trackData.seenUpdates.has(updateKey);
 
-                const textLower = text.toLowerCase();
+                if (isNewUpdate) {
+                    trackData.seenUpdates.add(updateKey);
+                    trackData.msgIdsToClean.push(msg.id); 
 
-                // 🛑 AUTO-DELETE TRASH REJECTIONS
-                if (textLower.includes("already registered") || 
-                    textLower.includes("please submit this number again") ||
-                    text.includes("🟡") || text.includes("⚫️") || 
-                    textLower.includes("try later") || 
-                    textLower.includes("badnum") || 
-                    textLower.includes("error") || 
-                    textLower.includes("blocked")) {
-                    
-                    try { await paymeUserBot.deleteMessages(TARGET_BOT, [msg.id, trackData.sentMsgId], { revoke: true }); } catch (delErr) {}
+                    const textLower = text.toLowerCase();
 
-                    stats.trash++;
-                    if (isBackground) delete backgroundTracker[botNum];
-                    else delete activeTracker[botNum];
-                    
-                    await updateStats();
-                } 
-                
-                // 💰 CHECK FOR INSTANT / PRE-OTP REWARD
-                else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
-                    stats.completed++;
-                    if (isBackground) delete backgroundTracker[botNum];
-                    else delete activeTracker[botNum];
-                    
-                    await addLog(`🎉 \`${botNum}\`: Paid/Success!`);
-                    await updateStats();
-                }
+                    // 🛑 AUTO-DELETE TRASH REJECTIONS
+                    if (textLower.includes("already registered") || 
+                        textLower.includes("please submit this number again") ||
+                        text.includes("🟡") || text.includes("⚫️") || 
+                        textLower.includes("try later") || 
+                        textLower.includes("incorrect") || 
+                        textLower.includes("badnum") || 
+                        textLower.includes("error") || 
+                        textLower.includes("blocked")) {
+                        
+                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
+                        try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
 
-                // 🔵 CHECK FOR DOUBLE "IN PROGRESS"
-                else if (text.includes("🔵") || textLower.includes("in progress")) {
-                    if (isNewUpdate) {
-                        trackData.seenUpdates.add(updateKey); // Save fingerprint to memory
+                        stats.trash++;
+                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1); 
+                        
+                        if (isBackground) delete backgroundTracker[botNum];
+                        else delete activeTracker[botNum];
+                        
+                        await updateStats();
+                    } 
+                    
+                    // 💰 CHECK FOR SUCCESS / PAID
+                    else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
+                        
+                        // 💵 DOLLAR EXTRACTION
+                        let amountStr = "0.00";
+                        const amountMatch = text.match(/Amount:\s*([\d.]+)\s*USD/i) || text.match(/Amount:\s*([\d.]+)/i);
+                        if (amountMatch) {
+                            const val = parseFloat(amountMatch[1]);
+                            if (!isNaN(val)) {
+                                stats.earned += val;
+                                amountStr = val.toFixed(2);
+                            }
+                        }
+
+                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
+                        try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+
+                        stats.completed++;
+                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1); 
+
+                        if (isBackground) delete backgroundTracker[botNum];
+                        else delete activeTracker[botNum];
+                        
+                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr} USD)!`);
+                        await updateStats();
+                    }
+
+                    // 🔵 CHECK FOR DOUBLE "IN PROGRESS"
+                    else if (text.includes("🔵") || textLower.includes("in progress")) {
                         trackData.count++;
 
-                        // 🛑 NEW: STRICT === 2 RULE (Stops the runaway counter)
                         if (trackData.count === 2) {
                             stats.inProgress++;
+                            trackData.inProgressCounted = true;
                             
-                            // MOVE TO BACKGROUND
                             if (!isBackground) {
                                 backgroundTracker[botNum] = activeTracker[botNum];
                                 delete activeTracker[botNum];
                                 isBackground = true;
                             }
 
-                            // Spawn Hunter only once
                             if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
                                 const isPoland = botNum.startsWith('48');
 
                                 if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
-                                    huntOtpAsync(chatId, botNum, msg.id, stats, addLog);
+                                    
+                                    // ADD TO SEQUENTIAL QUEUE
+                                    hunterQueue[chatId].push({ botNum, msgId: msg.id, trackData, addLog, updateStats });
+                                    
                                     if (currentMode === 'WSOTP_MANUAL_MODE') {
-                                        await addLog(`✅ \`${botNum}\`: Hunting OTP (Manual Non-Poland)`);
+                                        await addLog(`⚡ \`${botNum}\`: Queued for OTP Hunt (Manual)...`);
+                                    } else {
+                                        await addLog(`⚡ \`${botNum}\`: Queued for OTP Hunt...`);
                                     }
+
+                                    // Wake up the sequential worker if it's sleeping
+                                    if (!hunterActive[chatId]) {
+                                        processHunterQueue(chatId);
+                                    }
+
                                 } else {
-                                    await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)`);
+                                    await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)...`);
                                 }
                             }
                             await updateStats();
@@ -2373,7 +2416,6 @@ async function processWsotpQueue(chatId) {
         // --- 3. BACKGROUND MEMORY MANAGEMENT ---
         const nowTime = Date.now();
         
-        // 15-Minute Stalls: Move to background
         for (const num in activeTracker) {
             if (nowTime - activeTracker[num].addedAt > 900000) {
                 backgroundTracker[num] = activeTracker[num];
@@ -2382,9 +2424,9 @@ async function processWsotpQueue(chatId) {
             }
         }
 
-        // 30-Minute Garbage Collection: Delete dead background trackers
         for (const num in backgroundTracker) {
             if (nowTime - backgroundTracker[num].addedAt > 1800000) {
+                if (backgroundTracker[num].inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
                 delete backgroundTracker[num];
             }
         }
@@ -2400,30 +2442,55 @@ async function processWsotpQueue(chatId) {
 }
 
 // ==========================================
-// 2. THE ASYNCHRONOUS OTP HUNTER
+// 2. SEQUENTIAL HUNTER QUEUE MANAGER
 // ==========================================
-async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog) {
+async function processHunterQueue(chatId) {
+    hunterActive[chatId] = true;
+
+    while (hunterQueue[chatId] && hunterQueue[chatId].length > 0) {
+        if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') break;
+
+        const task = hunterQueue[chatId].shift();
+        
+        // Update dashboard to reflect accurate queue count
+        if (task.updateStats) await task.updateStats();
+
+        await huntOtpAsync(chatId, task.botNum, task.msgId, task.trackData, task.addLog);
+    }
+
+    hunterActive[chatId] = false;
+}
+
+// ==========================================
+// 3. THE TACTICAL 5x5s OTP HUNTER
+// ==========================================
+async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
     const OTP_GROUP = "-1003645249777"; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
     const searchDigits = formattedNum.slice(-4);
-    const startTime = Date.now();
-    const MAX_TIME = 180000; // 3 Minutes Exact
-
-    await addLog(`⏳ \`${formattedNum}\`: Starting 3-min OTP Hunt...`);
+    await addLog(`⏳ \`${formattedNum}\`: Initiating 5x5s OTP Hunt...`);
 
     let foundCode = null;
+    let attempts = 0;
     
-    // --- PHASE 1: HUNT FOR THE OTP ---
-    while (Date.now() - startTime < MAX_TIME) {
+    // --- 5x5s TACTICAL POLLING LOOP ---
+    while (attempts < 5) {
         if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') return; 
 
+        // Wait 5 seconds BEFORE pulling
+        await delay(5000);
+        attempts++;
+
         try {
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
             
             for (const m of otpMsgs) {
-                if (!m.message || m.date < Math.floor(startTime / 1000)) continue;
+                if (!m.message) continue;
+                
+                // Ignore messages older than 5 minutes
+                if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
                 
                 const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
                 if (numRegex.test(m.message)) {
@@ -2443,62 +2510,23 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
             }
 
             if (foundCode) {
-                await addLog(`✅ \`${formattedNum}\`: OTP Found (${foundCode}). Replying...`);
+                await addLog(`✅ \`${formattedNum}\`: Found (${foundCode}) on attempt ${attempts}. Replying...`);
                 
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                await delay(1200); 
                 
-                // 🛑 JITTER ANTI-BAN: Random delay between 1s and 2.5s before hitting send
-                // This protects you if 5 numbers find their OTP at the exact same millisecond.
-                await delay(Math.floor(Math.random() * 1500) + 1000);
+                const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
-                await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
-                
-                break; // Break the hunt loop to move to the reward tracking phase!
+                trackData.msgIdsToClean.push(sentOtp.id);
+                return; // Code sent! Engine handles the success reward natively.
             }
         } catch (e) {}
-
-        await delay(3000); 
     }
 
-    if (!foundCode) {
-        await addLog(`\`${formattedNum}\`: OTP Timeout (3 mins).`);
-        return;
-    }
-
-    // --- PHASE 2: WAIT FOR REWARD (Post-OTP) ---
-    const rewardStart = Date.now();
-    const REWARD_TIMEOUT = 90000; // Wait up to 1.5 mins for bot to verify code and pay
-    
-    while (Date.now() - rewardStart < REWARD_TIMEOUT) {
-        try {
-            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 10 });
-            for (const msg of msgs) {
-                const text = msg.message || "";
-                
-                // Bulletproof Number Check
-                if (text.replace(/\D/g, '').includes(formattedNum)) {
-                    const textLower = text.toLowerCase();
-                    
-                    if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
-                        stats.completed++;
-                        await addLog(`🎉 \`${formattedNum}\`: Paid/Success!`);
-                        return; 
-                        
-                    } else if (text.includes("🟡") || textLower.includes("incorrect") || textLower.includes("try later")) {
-                        await addLog(`⚠️ \`${formattedNum}\`: Bot rejected OTP.`);
-                        return; 
-                    }
-                }
-            }
-        } catch (e) {}
-        
-        await delay(2500);
-    }
-    
-    await addLog(`⏳ \`${formattedNum}\`: Reward verification timeout.`);
+    // All 5 attempts failed
+    await addLog(`\`${formattedNum}\`: No OTP after 5 attempts.`);
 }
-
-
+ 
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

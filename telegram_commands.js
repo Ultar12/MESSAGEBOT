@@ -857,10 +857,17 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         code = checkButtons(latestMsg.replyMarkup.rows);
                     }
 
-                    if (!code) {
-                        const textCodeMatch = combinedText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
-                        if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
+                                        if (!code) {
+                        // 🧠 UPGRADED CODE MATCHER: Explicitly targets "OTP:" or "Code:" to avoid random IDs
+                        const codeExplicit = combinedText.match(/(?:Code|OTP|Kode|Codigo)[^\n\d]*?(\d{3})[-\s]?(\d{3})/i);
+                        if (codeExplicit) {
+                            code = codeExplicit[1] + codeExplicit[2];
+                        } else {
+                            const textCodeMatch = combinedText.match(/(?:\b|[^0-9])(\d{3})[-\s]?(\d{3})(?:\b|[^0-9])/);
+                            if (textCodeMatch) code = textCodeMatch[1] + textCodeMatch[2];
+                        }
                     }
+
 
                     if (code) {
                         const now = Date.now();
@@ -927,15 +934,24 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         let fullCountry = countryMap[countryCode].name;
                         let flagEmoji = countryMap[countryCode].flag;
 
-                        let maskedNumber = "Unknown";
-                        const unifiedMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|📞|☎️|📱|#[a-zA-Z]{2})\]?[^\d+X]*([+\dX][^\s┨\n]*)/i);
-
-                        if (unifiedMatch && unifiedMatch[1]) {
-                            maskedNumber = unifiedMatch[1].trim();
+                       let maskedNumber = "Unknown";
+                        
+                        // 🧠 UPGRADED NUMBER MATCHER: Forces it to find "Number" or 📞/☎️, ignoring the "Service" ID
+                        const explicitNumMatch = combinedText.match(/(?:Number|Num|Phone|📞|☎️)[\s:]*([+\d][\d\*xX\-\.•_]+)/i);
+                        
+                        if (explicitNumMatch && explicitNumMatch[1]) {
+                            maskedNumber = explicitNumMatch[1].trim();
                         } else {
-                            const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.a-zA-Z]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
-                            if (fallbackMatch) maskedNumber = fallbackMatch[0];
+                            // Classic masked pattern fallback (e.g. +6288*****1190)
+                            const fallbackMatch = combinedText.match(/\+?\d{2,6}[*xX•\u2022_]{2,}\d{2,6}/i);
+                            if (fallbackMatch) {
+                                maskedNumber = fallbackMatch[0];
+                            } else {
+                                const unifiedMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|#[a-zA-Z]{2})\]?[^\d+X]*([+\dX][^\s┨\n]*)/i);
+                                if (unifiedMatch && unifiedMatch[1]) maskedNumber = unifiedMatch[1].trim();
+                            }
                         }
+
                         
                         maskedNumber = maskedNumber.replace(/[\u200B-\u200D\uFEFF\u200C]/g, '').trim();
                         maskedNumber = maskedNumber.replace(/[*_`\[\]]/g, '•');

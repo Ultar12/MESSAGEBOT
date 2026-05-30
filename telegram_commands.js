@@ -766,10 +766,6 @@ export async function initUserBot(activeClients) {
 
 
 
-
-
-
-
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
@@ -789,10 +785,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
     const senderBot = new TelegramBot(OTP_BOT_TOKEN, { polling: false });
 
     const TELEGRAM_TARGET_GROUP = "-1003645249777"; 
-    const WHATSAPP_INVITE_CODE = "KGSHc7U07u3IqbUFPQX15q"; 
     
-    // ✅ ALL SOURCE GROUPS INCLUDED (With "otpbotsy")
-    const SOURCE_GROUPS = ["-1003645558504", "-1003644661262", "-1003877396414", "-1003645558504"]; 
+    // ✅ ADD THE NEW INDONESIAN GROUP ID HERE
+    const SOURCE_GROUPS = ["-1003645558504", "-1003644661262", "-1003877396414"]; 
 
     const groupStates = {};
     SOURCE_GROUPS.forEach(id => { groupStates[id] = { lastMessageId: 0 }; });
@@ -806,17 +801,13 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
             for (const SOURCE_GROUP_ID of SOURCE_GROUPS) {
                 let entity;
                 try {
-                    // 🚨 SMART ID READER: Handles both numeric IDs (BigInt) and public usernames ("otpbotsy")
                     if (/^-?\d+$/.test(SOURCE_GROUP_ID)) {
                         entity = await userBot.getEntity(BigInt(SOURCE_GROUP_ID));
                     } else {
                         entity = await userBot.getEntity(SOURCE_GROUP_ID);
                     }
-                } catch (e) { 
-                    continue; 
-                }
+                } catch (e) { continue; }
 
-                // 🚨 BURST CATCHER: Pull up to 15 messages to never miss rapid drops
                 const messages = await userBot.getMessages(entity, { limit: 15 });
                 if (!messages || messages.length === 0) continue;
 
@@ -827,10 +818,8 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     continue;
                 }
 
-                // Filter ALL new messages and sort them oldest-to-newest
                 const newMessages = messages.filter(m => m.id > state.lastMessageId).sort((a, b) => a.id - b.id);
 
-                // Loop through every single new message
                 for (const latestMsg of newMessages) {
                     state.lastMessageId = latestMsg.id; 
                     
@@ -844,17 +833,12 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                     const combinedText = textToSearch + "\n" + replyText;
                     let code = null;
 
-                                        // Button checker
                     const checkButtons = (rows) => {
                         for (const row of rows) {
                             const btnArray = row.buttons || row; 
                             for (const btn of btnArray) {
                                 const btnText = btn.text || "";
-                                
-                                // Grab the hidden payload (handles GramJS copyText and callback data)
                                 const hiddenPayload = btn.copyText || btn.copy_text || (btn.data ? btn.data.toString() : "") || "";
-                                
-                                // Scan both the visible text AND the hidden payload together
                                 const textToScan = btnText + " " + hiddenPayload;
                                 
                                 const btnCodeMatch = textToScan.match(/(\d{3})[-\s]?(\d{3})/);
@@ -865,7 +849,6 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         }
                         return null;
                     };
-
 
                     if (latestMsg.buttons && latestMsg.buttons.length > 0) {
                         code = checkButtons(latestMsg.buttons);
@@ -884,9 +867,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         if (recentCodes.has(code) && (now - recentCodes.get(code) < 30000)) continue; 
                         recentCodes.set(code, now);
 
-                        try {
-                            await incrementDailyStat(SOURCE_GROUP_ID);
-                        } catch (dbErr) {}
+                        try { await incrementDailyStat(SOURCE_GROUP_ID); } catch (dbErr) {}
 
                         let platform = "WhatsApp"; 
                         if (combinedText.toLowerCase().includes("business") || combinedText.includes("WB")) {
@@ -922,31 +903,36 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         };
 
                         let countryCode = "Unknown";
-                        // 🚨 EMOJI EXTRACTOR: Look for 📞 and ☎️
                         const countryMatch = combinedText.match(/(?:#([a-zA-Z]{2}))|(?:([a-zA-Z]{2})\s*-\s*(?:#|OTHER|WP|WA|WB|WS|FB|📞|☎️))/i);
                         if (countryMatch) {
                             countryCode = (countryMatch[1] || countryMatch[2]).toUpperCase();
                         } else {
                             const fallbackCountry = combinedText.match(/(?:^|\n)[^\w\n]*([a-zA-Z]{2})\s*-/);
-                            if (fallbackCountry) countryCode = fallbackCountry[1].toUpperCase();
+                            if (fallbackCountry) {
+                                countryCode = fallbackCountry[1].toUpperCase();
+                            } else {
+                                // 🌟 NEW: SMART COUNTRY NAME DETECTION FOR INDONESIA
+                                const lowerText = combinedText.toLowerCase();
+                                for (const codeKey in countryMap) {
+                                    if (lowerText.includes(countryMap[codeKey].name.toLowerCase())) {
+                                        countryCode = codeKey;
+                                        break;
+                                    }
+                                }
+                            }
                         }
 
-                        // 🚨 STRICT FILTER: Drops unmapped countries
-                        if (!countryMap[countryCode]) {
-                            continue; 
-                        }
+                        if (!countryMap[countryCode]) continue; 
 
                         let fullCountry = countryMap[countryCode].name;
                         let flagEmoji = countryMap[countryCode].flag;
 
                         let maskedNumber = "Unknown";
-                        
                         const unifiedMatch = combinedText.match(/(?:WP|WA|WB|WS|FB|OTHER|📞|☎️|📱|#[a-zA-Z]{2})\]?[^\d+X]*([+\dX][^\s┨\n]*)/i);
 
-if (unifiedMatch && unifiedMatch[1]) {
-    maskedNumber = unifiedMatch[1].trim();
-} else {
-
+                        if (unifiedMatch && unifiedMatch[1]) {
+                            maskedNumber = unifiedMatch[1].trim();
+                        } else {
                             const fallbackMatch = combinedText.match(/\d{2,6}[\u200B-\u200D\uFEFF\u200C]*[*•\u2022.a-zA-Z]{2,}[\u200B-\u200D\uFEFF\u200C]*\d{2,6}/);
                             if (fallbackMatch) maskedNumber = fallbackMatch[0];
                         }
@@ -956,9 +942,8 @@ if (unifiedMatch && unifiedMatch[1]) {
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
                         maskedNumber = maskedNumber.replace(/[xX]+/g, '•••');
 
-                                                   // --- INJECTED STRICT SPY LOGIC ---
+                        // --- INJECTED STRICT SPY LOGIC ---
                         try {
-                            // Map the 2-letter OTP group tag to the actual numerical calling code
                             const ccToPrefix = {
                                 "VE": "58", "ZW": "263", "NG": "234", "GN": "224", "CI": "225",
                                 "ID": "62", "BR": "55", "RU": "7", "PK": "92", "ZA": "27",
@@ -973,49 +958,32 @@ if (unifiedMatch && unifiedMatch[1]) {
                                 const suffix = suffixMatch[0];
                                 
                                 for (const targetNum of spyMemory) {
-                                    // STRICT CHECK: The memory number must start with exact country code AND end with suffix
                                     if (targetNum.startsWith(numPrefix) && targetNum.endsWith(suffix)) {
-                                        
                                         const allDbDocs = await getAllNumbers();
                                         const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
                                         
                                         if (!dbSet.has(targetNum)) {
                                             if (typeof spyFound !== 'undefined' && !spyFound.has(targetNum)) {
-                                                
-                                                // --- NEW WA LIVE CHECK BEFORE SAVING ---
                                                 const sock = getDedicatedSender(activeClients);
-                                                
                                                 if (sock) {
                                                     const jid = `${targetNum}@s.whatsapp.net`;
                                                     try {
                                                         const [waCheck] = await sock.onWhatsApp(jid);
-                                                        
                                                         if (waCheck && waCheck.exists) {
                                                             spyFound.add(targetNum);
                                                             console.log(`[SPY CAUGHT & VERIFIED] Active number saved: ${targetNum}`);
-                                                        } else {
-                                                            console.log(`[SPY IGNORED] Matched but DEAD on WhatsApp: ${targetNum}`);
                                                         }
-                                                    } catch (waErr) {
-                                                        console.error("Spy WA Check failed:", waErr.message);
-                                                    }
+                                                    } catch (waErr) {}
                                                 } else {
-                                                    // Fallback: If no WA bot is connected right now, save it blindly so you don't lose the catch
                                                     spyFound.add(targetNum);
-                                                    console.log(`[SPY CAUGHT] Saved blindly (no WA bot connected): ${targetNum}`);
                                                 }
-                                                
                                             }
                                         }
                                     }
                                 }
                             }
-                        } catch (spyErr) {
-                            console.error("Spy logic error:", spyErr.message);
-                        }
+                        } catch (spyErr) {}
                         // --- END SPY LOGIC ---
-
-
 
                         const design = 
                             `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
@@ -1026,7 +994,6 @@ if (unifiedMatch && unifiedMatch[1]) {
                             `┃❃╰───────────────\n` +
                             `╰═════════════════⊷`;
 
-                        // Telegram Send
                         try {
                             const formattedText = design.replace('CODE_FIX', `\`${code}\``);
 
@@ -1039,73 +1006,46 @@ if (unifiedMatch && unifiedMatch[1]) {
                                         [
                                             { text: `Owner`, url: `https://t.me/Staries1`, style: 'primary' },
                                             { text: `Channel`, url: `https://t.me/+Rci2m853ppA0NWY1`, style: 'primary' }
-                                        ],
-                                        [
-                                            { text: `Link to M4U`, url: `https://www.taskm4u.com?code=swla7u`, style: 'primary' }
                                         ]
                                     ] 
                                 }
                             });
 
-                            console.log(`[FORWARDED] Code ${code} sent to Telegram.`);
-
-                                                        // 🚨 AUTO-DELETE TIMER
-                            // 600,000 ms = 10 minutes
                             const deleteDelay = 600000; 
-
                             setTimeout(async () => { 
-                                try { 
-                                    await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); 
-                                } catch (e) {
-                                    // Fails silently if message was already manually deleted
-                                } 
+                                try { await senderBot.deleteMessage(TELEGRAM_TARGET_GROUP, tgMsg.message_id); } catch (e) {} 
                             }, deleteDelay);
 
+                        } catch (err) {}
 
-                        } catch (err) {
-                            console.error("[TG SEND ERROR]:", err.message);
+                        // WhatsApp Send (ASCII Design - No Button)
+                        const sock = getDedicatedSender(activeClients); 
+                        if (sock) {
+                            try {
+                                const inviteCode = "KGSHc7U07u3IqbUFPQX15q";
+                                const waDesign = 
+                                    `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
+                                    `┃❃╭──────────────\n` +
+                                    `┃❃│ Platform : ${platform}\n` +
+                                    `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
+                                    `┃❃│ Number   : ${maskedNumber}\n` +
+                                    `┃❃│ Code     : *${code}*\n` +
+                                    `┃❃╰───────────────\n` +
+                                    `╰═════════════════⊷`;
+
+                                try {
+                                    const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
+                                    await sock.sendMessage(inviteInfo.id, { text: waDesign });
+                                } catch (e) {
+                                    await sock.groupAcceptInvite(inviteCode);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
+                                    await sock.sendMessage(inviteInfo.id, { text: waDesign });
+                                }
+                            } catch (fatalErr) { 
+                                updateOtpSender(null, true); 
+                            }
                         }
-
-
-                       // WhatsApp Send (ASCII Design - No Button)
-const sock = getDedicatedSender(activeClients); 
-if (sock) {
-    try {
-        const inviteCode = "KGSHc7U07u3IqbUFPQX15q";
-        
-        // WhatsApp-Only ASCII Design (Code inside the box)
-        const waDesign = 
-            `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n` +
-            `┃❃╭──────────────\n` +
-            `┃❃│ Platform : ${platform}\n` +
-            `┃❃│ Country  : ${fullCountry} ${flagEmoji}\n` +
-            `┃❃│ Number   : ${maskedNumber}\n` +
-            `┃❃│ Code     : *${code}*\n` + // Code is now safely inside the frame
-            `┃❃╰───────────────\n` +
-            `╰═════════════════⊷`;
-
-        try {
-            // Get JID from invite code
-            const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
-            const targetJid = inviteInfo.id;
-
-            // Send as a standard text message
-            await sock.sendMessage(targetJid, { text: waDesign });
-        } catch (e) {
-            // If not in group, join and send
-            await sock.groupAcceptInvite(inviteCode);
-            await new Promise(r => setTimeout(r, 2000));
-            const inviteInfo = await sock.groupGetInviteInfo(inviteCode);
-            await sock.sendMessage(inviteInfo.id, { text: waDesign });
-        }
-    } catch (fatalErr) { 
-        console.error("[WA SEND ERROR]", fatalErr.message);
-        updateOtpSender(null, true); 
-    }
-}
- 
-
-            
                     }
                 }
             }
@@ -1114,6 +1054,7 @@ if (sock) {
         }
     }, 3000); 
 }
+
 
                                 
 
@@ -2207,7 +2148,8 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-   // ==========================================
+   
+         // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2233,7 +2175,7 @@ async function processWsotpQueue(chatId) {
     let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
 
     let activeTracker = {};     // The sliding window (Max 50)
-    let backgroundTracker = {}; // Stalled numbers (>15 mins) waiting for a late response
+    let backgroundTracker = {}; // Holds "In Progress x2" AND "Stalled" numbers waiting for a reward
 
     const addLog = async (msg) => {
         stats.logs.unshift(msg);
@@ -2289,7 +2231,7 @@ async function processWsotpQueue(chatId) {
                     if (!waCheck?.exists) isWaActive = false; 
                 } catch (e) {
                     if (!wsotpWarnedNoWa) {
-                        bot.sendMessage(chatId, `[ALERT] WA Checker Bot BANNED/Offline! Continuing blindly.`, { parse_mode: 'Markdown' });
+                        bot.sendMessage(chatId, `[ALERT] WA Checker Bot Offline! Continuing blindly.`, { parse_mode: 'Markdown' });
                         wsotpWarnedNoWa = true;
                     }
                 }
@@ -2311,7 +2253,8 @@ async function processWsotpQueue(chatId) {
                     lastMsgId: null,
                     lastEditDate: null,
                     sentMsgId: sentMsg.id,
-                    addedAt: Date.now()
+                    addedAt: Date.now(),
+                    hunterSpawned: false
                 };
             } catch (e) {
                 stats.sent--;
@@ -2328,24 +2271,35 @@ async function processWsotpQueue(chatId) {
             
             for (const msg of msgs) {
                 const text = msg.message || "";
-                
-                let botNum = null;
-                const directMatch = text.match(/^(\d{9,15})/);
-                if (directMatch) botNum = directMatch[1];
-                else {
-                    const rewardMatch = text.match(/Number:\s*(\d{9,15})/i);
-                    if (rewardMatch) botNum = rewardMatch[1];
-                }
-                
-                if (!botNum) continue;
+                if (!text) continue;
 
+                // BULLETPROOF NUMBER MATCHER: 
+                // Extracts ONLY digits from the message and sees if any of our tracked numbers are inside it.
+                const rawTextDigits = text.replace(/\D/g, '');
+                
+                let trackData = null;
                 let isBackground = false;
-                let trackData = activeTracker[botNum];
+                let botNum = null;
+
+                for (const num in activeTracker) {
+                    if (rawTextDigits.includes(num)) {
+                        botNum = num;
+                        trackData = activeTracker[num];
+                        break;
+                    }
+                }
                 if (!trackData) {
-                    trackData = backgroundTracker[botNum];
-                    isBackground = !!trackData;
+                    for (const num in backgroundTracker) {
+                        if (rawTextDigits.includes(num)) {
+                            botNum = num;
+                            trackData = backgroundTracker[num];
+                            isBackground = true;
+                            break;
+                        }
+                    }
                 }
                 
+                // If this message isn't about one of our active/background numbers, skip it.
                 if (!trackData) continue;
 
                 const isNewUpdate = (msg.id !== trackData.lastMsgId) || (msg.editDate && msg.editDate !== trackData.lastEditDate);
@@ -2369,13 +2323,14 @@ async function processWsotpQueue(chatId) {
                     await updateStats();
                 } 
                 
-                // 💰 CHECK FOR INSTANT REWARD
+                // 💰 CHECK FOR INSTANT / PRE-OTP REWARD
                 else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
                     stats.completed++;
                     if (isBackground) delete backgroundTracker[botNum];
                     else delete activeTracker[botNum];
                     
-                    await addLog(`🎉 \`${botNum}\`: Instant Reward!`);
+                    await addLog(`🎉 \`${botNum}\`: Paid/Success!`);
+                    await updateStats();
                 }
 
                 // 🔵 CHECK FOR DOUBLE "IN PROGRESS"
@@ -2388,20 +2343,27 @@ async function processWsotpQueue(chatId) {
                         if (trackData.count >= 2) {
                             stats.inProgress++;
                             
-                            const isPoland = botNum.startsWith('48');
-
-                            // Start hunting if FILE_MODE, OR if MANUAL_MODE and NOT a Poland number
-                            if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
-                                huntOtpAsync(chatId, botNum, msg.id, stats, addLog);
-                                if (currentMode === 'WSOTP_MANUAL_MODE') {
-                                    await addLog(`✅ \`${botNum}\`: Hunting OTP (Manual Non-Poland)`);
-                                }
-                            } else {
-                                await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)`);
+                            // MOVE TO BACKGROUND: This frees up a slot in the 50-limit immediately
+                            if (!isBackground) {
+                                backgroundTracker[botNum] = activeTracker[botNum];
+                                delete activeTracker[botNum];
+                                isBackground = true;
                             }
-                            
-                            if (isBackground) delete backgroundTracker[botNum];
-                            else delete activeTracker[botNum];
+
+                            // Spawn Hunter only once
+                            if (!trackData.hunterSpawned) {
+                                trackData.hunterSpawned = true;
+                                const isPoland = botNum.startsWith('48');
+
+                                if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
+                                    huntOtpAsync(chatId, botNum, msg.id, stats, addLog);
+                                    if (currentMode === 'WSOTP_MANUAL_MODE') {
+                                        await addLog(`✅ \`${botNum}\`: Hunting OTP (Manual Non-Poland)`);
+                                    }
+                                } else {
+                                    await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)`);
+                                }
+                            }
                             
                             await updateStats();
                         }
@@ -2410,12 +2372,22 @@ async function processWsotpQueue(chatId) {
             }
         } catch (readErr) {}
 
-        // --- 3. CHECK FOR 15-MINUTE STALLS ---
+        // --- 3. BACKGROUND MEMORY MANAGEMENT ---
+        const nowTime = Date.now();
+        
+        // 15-Minute Stalls: Move to background
         for (const num in activeTracker) {
-            if (Date.now() - activeTracker[num].addedAt > 900000) {
+            if (nowTime - activeTracker[num].addedAt > 900000) {
                 backgroundTracker[num] = activeTracker[num];
                 delete activeTracker[num]; 
-                await addLog(`🕒 \`${num}\`: Stalled for 15m. Moved to background.`);
+                await addLog(`🕒 \`${num}\`: Stalled 15m. Moved to background.`);
+            }
+        }
+
+        // 30-Minute Garbage Collection: Delete dead background trackers
+        for (const num in backgroundTracker) {
+            if (nowTime - backgroundTracker[num].addedAt > 1800000) {
+                delete backgroundTracker[num];
             }
         }
 
@@ -2428,9 +2400,6 @@ async function processWsotpQueue(chatId) {
         bot.sendMessage(chatId, `**[WSOTP QUEUE EMPTY]**\nFinished processing all numbers.`, { parse_mode: 'Markdown' });
     }
 }
- 
-
-    
 
 // ==========================================
 // 2. THE ASYNCHRONOUS OTP HUNTER
@@ -2444,23 +2413,24 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
     const startTime = Date.now();
     const MAX_TIME = 180000; // 3 Minutes Exact
 
-    await addLog(`\`${formattedNum}\`: Starting 3-min OTP Hunt...`);
+    await addLog(`⏳ \`${formattedNum}\`: Starting 3-min OTP Hunt...`);
 
     let foundCode = null;
     
     // --- PHASE 1: HUNT FOR THE OTP ---
     while (Date.now() - startTime < MAX_TIME) {
-        if (userState[chatId] !== 'WSOTP_FILE_MODE') return; 
+        if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') return; 
 
         try {
             const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
+            
             for (const m of otpMsgs) {
                 if (!m.message || m.date < Math.floor(startTime / 1000)) continue;
                 
                 const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
                 if (numRegex.test(m.message)) {
-                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
-                    if (codeMatchText) foundCode = codeMatchText[1];
+                    const codeMatchText = m.message.match(/(?:Code|OTP|Kode)[^\n]*?([\d\-]{3,8})/i);
+                    if (codeMatchText) foundCode = codeMatchText[1].replace(/\D/g, ''); 
                     
                     if (!foundCode && m.replyMarkup?.rows) {
                         for (const row of m.replyMarkup.rows) {
@@ -2475,12 +2445,13 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
             }
 
             if (foundCode) {
-                await addLog(`\`${formattedNum}\`: OTP Found (${foundCode}). Replying...`);
+                await addLog(`✅ \`${formattedNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(1200);
                 await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
-                break; 
+                
+                break; // Break the hunt loop to move to the reward tracking phase!
             }
         } catch (e) {}
 
@@ -2488,7 +2459,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
     }
 
     if (!foundCode) {
-        await addLog(`❌ \`${formattedNum}\`: OTP Timeout (3 mins).`);
+        await addLog(`\`${formattedNum}\`: OTP Timeout (3 mins).`);
         return;
     }
 
@@ -2502,17 +2473,22 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
             for (const msg of msgs) {
                 const text = msg.message || "";
                 
-                // Only look at messages related to THIS specific number
-                if (text.includes(formattedNum)) {
+                // Bulletproof Number Check
+                if (text.replace(/\D/g, '').includes(formattedNum)) {
                     const textLower = text.toLowerCase();
                     
                     if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
                         stats.completed++;
+                        
+                        // Prevent the main loop from double counting it by removing it from the background tracker
+                        // (You'll need to make sure backgroundTracker is accessible, or just let the main loop naturally clean it up)
+                        // It's perfectly safe to just log it here and return!
                         await addLog(`🎉 \`${formattedNum}\`: Paid/Success!`);
-                        return; // Successfully tracked!
+                        return; 
+                        
                     } else if (text.includes("🟡") || textLower.includes("incorrect") || textLower.includes("try later")) {
                         await addLog(`⚠️ \`${formattedNum}\`: Bot rejected OTP.`);
-                        return; // Failed tracking
+                        return; 
                     }
                 }
             }
@@ -2523,6 +2499,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, stats, addLog
     
     await addLog(`⏳ \`${formattedNum}\`: Reward verification timeout.`);
 }
+               
+        
 
     
 

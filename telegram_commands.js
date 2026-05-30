@@ -2147,9 +2147,7 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-
-    
-        // ==========================================
+    // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2255,7 +2253,8 @@ async function processWsotpQueue(chatId) {
                     usedCodes: new Set(), // 🧠 MEMORY: Tracks failed codes
                     msgIdsToClean: [sentMsg.id], 
                     addedAt: Date.now(),
-                    inProgressCounted: false 
+                    inProgressCounted: false,
+                    hunterSpawned: false
                 };
             } catch (e) {
                 stats.sent--;
@@ -2308,14 +2307,15 @@ async function processWsotpQueue(chatId) {
                     trackData.seenUpdates.add(updateKey);
                     
                     const textLower = text.toLowerCase();
-                    const isErrorCode = textLower.includes("error code") || textLower.includes("incorrect") || textLower.includes("wrong");
+                    // 🔴 RED CIRCLE MATCHER 
+                    const isErrorCode = text.includes("🔴") || textLower.includes("error code") || textLower.includes("incorrect") || textLower.includes("wrong");
 
                     // 🛑 ONLY add to cleanup array if it's NOT an error code (per user request to leave them visible)
                     if (!isErrorCode) {
                         trackData.msgIdsToClean.push(msg.id); 
                     }
 
-                    // 🛑 AUTO-DELETE TRASH REJECTIONS (Strictly ignores anything with 🔵)
+                    // 🛑 AUTO-DELETE TRASH REJECTIONS (Strictly ignores anything with 🔵 or 🔴)
                     if (
                         textLower.includes("already registered") || 
                         textLower.includes("please submit this number again") ||
@@ -2323,7 +2323,7 @@ async function processWsotpQueue(chatId) {
                         textLower.includes("try later") || 
                         textLower.includes("badnum") || 
                         textLower.includes("blocked") ||
-                        (textLower.includes("error") && !text.includes("🔵"))
+                        (textLower.includes("error") && !isErrorCode && !text.includes("🔵"))
                     ) {
                         
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
@@ -2372,13 +2372,17 @@ async function processWsotpQueue(chatId) {
                         await updateStats();
                     }
 
-                    // 🔵 CHECK FOR DOUBLE "IN PROGRESS" OR "ERROR CODE" RETRY
-                    else if (text.includes("🔵") || textLower.includes("in progress")) {
-                        trackData.count++;
+                    // 🔵 OR 🔴: CHECK FOR DOUBLE "IN PROGRESS" OR "ERROR CODE" RETRY
+                    else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
+                        
+                        // Increment only on standard In Progress updates
+                        if (!isErrorCode && (text.includes("🔵") || textLower.includes("in progress"))) {
+                            trackData.count++;
+                        }
 
                         if (trackData.count === 2 || isErrorCode) {
                             
-                            if (trackData.count === 2) {
+                            if (trackData.count === 2 && !isErrorCode && !trackData.inProgressCounted) {
                                 stats.inProgress++;
                                 trackData.inProgressCounted = true;
                                 
@@ -2389,21 +2393,23 @@ async function processWsotpQueue(chatId) {
                                 }
                             }
 
-                            // 🔄 LOGIC: If it's a retry or the first x2 spawn, launch hunter!
+                            // 🔄 LOGIC: Launch hunter instantly on first x2 OR on a retry
                             const isPoland = botNum.startsWith('48');
 
                             if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
                                 
                                 if (isErrorCode) {
                                     await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
-                                } else {
+                                    // Spawns instantly to retry with the new Error Message ID
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                } else if (!trackData.hunterSpawned) {
+                                    trackData.hunterSpawned = true;
                                     await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 }
-
-                                // SPAWNS INSTANTLY
-                                huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 
-                            } else {
+                            } else if (!trackData.hunterSpawned) {
+                                trackData.hunterSpawned = true;
                                 await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)...`);
                             }
                             
@@ -2452,9 +2458,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 SMART MATCHING: We grab the Country/Carrier Prefix AND the last 4 digits
-    const searchSuffix = formattedNum.slice(-4);
-    const searchPrefix = formattedNum.substring(0, 3); // Covers +628, +584, etc.
+    // 🧠 SMART MATCHING: We strictly grab ONLY the last 3 digits
+    const searchSuffix = formattedNum.slice(-3);
 
     const startTime = Date.now();
     const MAX_TIME = 300000; // 5 Minutes Max
@@ -2476,11 +2481,11 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 if (!m.message) continue;
                 if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
                 
-                // Remove plus signs for easier matching against masked strings
+                // Remove plus signs for easier matching
                 const msgCleaned = m.message.replace(/\+/g, '');
                 
-                // 🧠 THE SMART LOCK: Message must contain both the suffix AND the prefix
-                if (msgCleaned.includes(searchSuffix) && msgCleaned.includes(searchPrefix)) {
+                // 🧠 THE MATCHER: Only strictly checks the last 3 digits
+                if (msgCleaned.includes(searchSuffix)) {
                     
                     let tempCode = null;
 
@@ -2521,7 +2526,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 
                 const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
-                // Drop the sent message ID in the garbage bag
+                // Drop the sent message ID in the garbage bag (unless it errors later, but this cleans it up upon success)
                 trackData.msgIdsToClean.push(sentOtp.id);
                 return; // Code sent!
             }
@@ -2534,7 +2539,6 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     await addLog(`❌ \`${formattedNum}\`: Gave up after 5 minutes.`);
 }
 
-    
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

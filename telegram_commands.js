@@ -2147,6 +2147,7 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
+
     // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
@@ -2250,7 +2251,7 @@ async function processWsotpQueue(chatId) {
                 activeTracker[formattedNum] = {
                     count: 0,
                     seenUpdates: new Set(), 
-                    usedCodes: new Set(), // 🧠 MEMORY: Tracks failed codes
+                    usedCodes: new Set(), 
                     msgIdsToClean: [sentMsg.id], 
                     addedAt: Date.now(),
                     inProgressCounted: false,
@@ -2307,15 +2308,15 @@ async function processWsotpQueue(chatId) {
                     trackData.seenUpdates.add(updateKey);
                     
                     const textLower = text.toLowerCase();
-                    // 🔴 RED CIRCLE MATCHER 
-                    const isErrorCode = text.includes("🔴") || textLower.includes("error code") || textLower.includes("incorrect") || textLower.includes("wrong");
+                    // 🔴 DETECTS EITHER THE RED EMOJI OR THE WORDS
+                    const isErrorCode = text.includes("🔴") || textLower.includes("error code");
 
-                    // 🛑 ONLY add to cleanup array if it's NOT an error code (per user request to leave them visible)
+                    // 🛑 ONLY add to cleanup array if it's NOT an error code
                     if (!isErrorCode) {
                         trackData.msgIdsToClean.push(msg.id); 
                     }
 
-                    // 🛑 AUTO-DELETE TRASH REJECTIONS (Strictly ignores anything with 🔵 or 🔴)
+                    // 🛑 AUTO-DELETE TRASH REJECTIONS
                     if (
                         textLower.includes("already registered") || 
                         textLower.includes("please submit this number again") ||
@@ -2354,7 +2355,6 @@ async function processWsotpQueue(chatId) {
                             }
                         }
 
-                        // Add the success message to the trash bag and nuke everything
                         trackData.msgIdsToClean.push(msg.id);
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
                         try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
@@ -2372,10 +2372,9 @@ async function processWsotpQueue(chatId) {
                         await updateStats();
                     }
 
-                    // 🔵 OR 🔴: CHECK FOR DOUBLE "IN PROGRESS" OR "ERROR CODE" RETRY
+                    // 🔵 OR 🔴: DOUBLE "IN PROGRESS" OR "ERROR CODE" RETRY
                     else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
                         
-                        // Increment only on standard In Progress updates
                         if (!isErrorCode && (text.includes("🔵") || textLower.includes("in progress"))) {
                             trackData.count++;
                         }
@@ -2393,14 +2392,12 @@ async function processWsotpQueue(chatId) {
                                 }
                             }
 
-                            // 🔄 LOGIC: Launch hunter instantly on first x2 OR on a retry
                             const isPoland = botNum.startsWith('48');
 
                             if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
                                 
                                 if (isErrorCode) {
                                     await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
-                                    // Spawns instantly to retry with the new Error Message ID
                                     huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 } else if (!trackData.hunterSpawned) {
                                     trackData.hunterSpawned = true;
@@ -2451,49 +2448,48 @@ async function processWsotpQueue(chatId) {
 }
 
 // ==========================================
-// 2. THE CONTINUOUS SMART OTP HUNTER
+// 2. THE EXACT bot.onText OTP HUNTER
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
     const OTP_GROUP = "-1003645249777"; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 SMART MATCHING: We strictly grab ONLY the last 3 digits
-    const searchSuffix = formattedNum.slice(-3);
+    // 🧠 STRICT 3 DIGITS ONLY
+    const searchDigits = formattedNum.slice(-3);
 
     const startTime = Date.now();
     const MAX_TIME = 300000; // 5 Minutes Max
 
-    // Wait exactly 5 seconds before making the first scan
     await delay(5000);
 
     let foundCode = null;
     
-    // --- INFINITE POLLING LOOP (Until code is found or 5 mins expire) ---
     while (Date.now() - startTime < MAX_TIME) {
         if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') return; 
 
         try {
-            // ⚡ FAST SCAN: Pull the last 15 messages for hyper-speed
+            // ⚡ STRICT 15 MESSAGES ONLY
             const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
             
             for (const m of otpMsgs) {
                 if (!m.message) continue;
                 if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
                 
-                // Remove plus signs for easier matching
-                const msgCleaned = m.message.replace(/\+/g, '');
+                // 🧠 YOUR EXACT bot.onText RegExp METHOD
+                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
                 
-                // 🧠 THE MATCHER: Only strictly checks the last 3 digits
-                if (msgCleaned.includes(searchSuffix)) {
+                if (numRegex.test(m.message)) {
                     
                     let tempCode = null;
 
+                    // Extracts Code from text body
                     const codeMatchText = m.message.match(/(?:Code|OTP|Kode)[^\n]*?([\d\-]{3,8})/i);
                     if (codeMatchText) {
                         tempCode = codeMatchText[1].replace(/\D/g, ''); 
                     }
                     
+                    // Extracts Code from inline buttons
                     if (!tempCode && m.replyMarkup?.rows) {
                         for (const row of m.replyMarkup.rows) {
                             for (const btn of row.buttons) {
@@ -2504,14 +2500,14 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                         }
                     }
                     
-                    // 🔄 RETRY PROTOCOL: If we already tried this exact code on this exact number, SKIP IT!
+                    // 🔄 THE RETRY MEMORY BANK
                     if (tempCode) {
                         if (trackData.usedCodes.has(tempCode)) {
                             tempCode = null; 
-                            continue; // Move to the next older message to find the other code
+                            continue; // This code already failed (🔴), keep looking for the next one
                         } else {
                             foundCode = tempCode;
-                            trackData.usedCodes.add(foundCode); // Save to memory so we never use it again
+                            trackData.usedCodes.add(foundCode); 
                             break;
                         }
                     }
@@ -2526,19 +2522,18 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 
                 const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
-                // Drop the sent message ID in the garbage bag (unless it errors later, but this cleans it up upon success)
                 trackData.msgIdsToClean.push(sentOtp.id);
-                return; // Code sent!
+                return; 
             }
         } catch (e) {}
 
-        // Rest 2.5 seconds, then scan again
         await delay(2500);
     }
 
     await addLog(`❌ \`${formattedNum}\`: Gave up after 5 minutes.`);
 }
 
+    
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

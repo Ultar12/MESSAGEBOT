@@ -85,10 +85,6 @@ const wsotpQueue = {};
 const wsotpActive = {};
 let wsotpWarnedNoWa = false;
 
-// NEW: Sequential Queue for OTP Hunting
-const hunterQueue = {};
-const hunterActive = {};
-
 
 
 
@@ -2151,8 +2147,8 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-    
-       // ==========================================
+
+    // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2173,10 +2169,6 @@ async function processWsotpQueue(chatId) {
 
     wsotpWarnedNoWa = false; 
 
-    // Initialize Hunter Queues
-    hunterQueue[chatId] = [];
-    hunterActive[chatId] = false;
-
     // --- LIVE DASHBOARD INITIALIZATION ---
     let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [] };
     let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
@@ -2194,7 +2186,6 @@ async function processWsotpQueue(chatId) {
         const left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
         const activeCount = Object.keys(activeTracker).length;
         const bgCount = Object.keys(backgroundTracker).length;
-        const hqCount = hunterQueue[chatId] ? hunterQueue[chatId].length : 0;
         const logsText = stats.logs.join('\n');
         
         const txt = 
@@ -2204,7 +2195,6 @@ async function processWsotpQueue(chatId) {
             `Background Waiting: ${bgCount}\n` +
             `Total Sent to Bot: ${stats.sent}\n` +
             `Current In Progress (x2): ${stats.inProgress}\n` +
-            `Hunting Queue: ${hqCount} waiting\n` +
             `Completed/Paid: ${stats.completed}\n` +
             `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
             `Trash (Deleted): ${stats.trash}\n\n` +
@@ -2344,7 +2334,6 @@ async function processWsotpQueue(chatId) {
                     // 💰 CHECK FOR SUCCESS / PAID
                     else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
                         
-                        // 💵 DOLLAR EXTRACTION
                         let amountStr = "0.00";
                         const amountMatch = text.match(/Amount:\s*([\d.]+)\s*USD/i) || text.match(/Amount:\s*([\d.]+)/i);
                         if (amountMatch) {
@@ -2364,7 +2353,7 @@ async function processWsotpQueue(chatId) {
                         if (isBackground) delete backgroundTracker[botNum];
                         else delete activeTracker[botNum];
                         
-                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr} USD)!`);
+                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
                         await updateStats();
                     }
 
@@ -2382,26 +2371,17 @@ async function processWsotpQueue(chatId) {
                                 isBackground = true;
                             }
 
+                            // Spawn Concurrent Background Hunter
                             if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
                                 const isPoland = botNum.startsWith('48');
 
                                 if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
                                     
-                                    // ADD TO SEQUENTIAL QUEUE
-                                    hunterQueue[chatId].push({ botNum, msgId: msg.id, trackData, addLog, updateStats });
+                                    // SPANWS INSTANTLY (No await, no queue)
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                     
-                                    if (currentMode === 'WSOTP_MANUAL_MODE') {
-                                        await addLog(`⚡ \`${botNum}\`: Queued for OTP Hunt (Manual)...`);
-                                    } else {
-                                        await addLog(`⚡ \`${botNum}\`: Queued for OTP Hunt...`);
-                                    }
-
-                                    // Wake up the sequential worker if it's sleeping
-                                    if (!hunterActive[chatId]) {
-                                        processHunterQueue(chatId);
-                                    }
-
+                                    await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
                                 } else {
                                     await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)...`);
                                 }
@@ -2442,27 +2422,7 @@ async function processWsotpQueue(chatId) {
 }
 
 // ==========================================
-// 2. SEQUENTIAL HUNTER QUEUE MANAGER
-// ==========================================
-async function processHunterQueue(chatId) {
-    hunterActive[chatId] = true;
-
-    while (hunterQueue[chatId] && hunterQueue[chatId].length > 0) {
-        if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') break;
-
-        const task = hunterQueue[chatId].shift();
-        
-        // Update dashboard to reflect accurate queue count
-        if (task.updateStats) await task.updateStats();
-
-        await huntOtpAsync(chatId, task.botNum, task.msgId, task.trackData, task.addLog);
-    }
-
-    hunterActive[chatId] = false;
-}
-
-// ==========================================
-// 3. THE TACTICAL 5x5s OTP HUNTER
+// 2. THE CONTINUOUS OTP HUNTER
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
     const OTP_GROUP = "-1003645249777"; 
@@ -2470,20 +2430,20 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const { Api } = await import("telegram");
     
     const searchDigits = formattedNum.slice(-4);
-    await addLog(`⏳ \`${formattedNum}\`: Initiating 5x5s OTP Hunt...`);
+    const startTime = Date.now();
+    const MAX_TIME = 300000; // 5 Minutes Max Scanning Time
+
+    // Strictly wait 5 seconds before making the first scan
+    await delay(5000);
 
     let foundCode = null;
-    let attempts = 0;
     
-    // --- 5x5s TACTICAL POLLING LOOP ---
-    while (attempts < 5) {
+    // --- INFINITE POLLING LOOP (Until code is found or 5 mins expire) ---
+    while (Date.now() - startTime < MAX_TIME) {
         if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') return; 
 
-        // Wait 5 seconds BEFORE pulling
-        await delay(5000);
-        attempts++;
-
         try {
+            // ALWAYS check the newest 50 messages
             const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
             
             for (const m of otpMsgs) {
@@ -2492,11 +2452,16 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 // Ignore messages older than 5 minutes
                 if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
                 
-                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
-                if (numRegex.test(m.message)) {
-                    const codeMatchText = m.message.match(/(?:Code|OTP|Kode)[^\n]*?([\d\-]{3,8})/i);
-                    if (codeMatchText) foundCode = codeMatchText[1].replace(/\D/g, ''); 
+                // HYPER-AGGRESSIVE MATCHER: If the 4 digits exist *anywhere* in the message
+                if (m.message.includes(searchDigits)) {
                     
+                    // Look for any 6-digit sequence with or without a dash (e.g. 123456 or 123-456)
+                    const codeMatch = m.message.match(/\b(\d{3})[-\s]?(\d{3})\b/);
+                    if (codeMatch) {
+                        foundCode = codeMatch[1] + codeMatch[2]; // Fuses "123" and "456" into "123456"
+                    }
+                    
+                    // Check buttons just in case
                     if (!foundCode && m.replyMarkup?.rows) {
                         for (const row of m.replyMarkup.rows) {
                             for (const btn of row.buttons) {
@@ -2505,28 +2470,33 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                             }
                         }
                     }
+                    
                     if (foundCode) break;
                 }
             }
 
             if (foundCode) {
-                await addLog(`✅ \`${formattedNum}\`: Found (${foundCode}) on attempt ${attempts}. Replying...`);
+                await addLog(`✅ \`${formattedNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                await delay(1200); 
+                
+                // Micro-Jitter (bypasses Telegram spam filters when multiple workers find OTPs at once)
+                await delay(Math.floor(Math.random() * 800) + 400); 
                 
                 const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
                 trackData.msgIdsToClean.push(sentOtp.id);
-                return; // Code sent! Engine handles the success reward natively.
+                return; // Code sent! The main loop handles the reward and clears the stats.
             }
         } catch (e) {}
+
+        // Rest 2.5 seconds, then scan again (Continuous looping!)
+        await delay(2500);
     }
 
-    // All 5 attempts failed
-    await addLog(`\`${formattedNum}\`: No OTP after 5 attempts.`);
+    await addLog(`❌ \`${formattedNum}\`: Gave up after 5 minutes.`);
 }
- 
+
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

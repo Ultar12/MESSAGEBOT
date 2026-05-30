@@ -2201,11 +2201,11 @@ bot.onText(/\/wsotp/, async (msg) => {
         `Type \`STOP\` or \`/done\` to exit.`, 
         { parse_mode: 'Markdown' }
     );
-});
 
-    
-   
-// ==========================================
+
+
+
+   // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
 // ==========================================
 async function processWsotpQueue(chatId) {
@@ -2261,13 +2261,11 @@ async function processWsotpQueue(chatId) {
         } catch(e) {} 
     };
 
-    // Main Loop runs as long as there are numbers in the queue OR numbers actively being tracked
     while (wsotpQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {
         const currentMode = userState[chatId];
         if (currentMode !== 'WSOTP_MANUAL_MODE' && currentMode !== 'WSOTP_FILE_MODE') break; 
 
         // --- 1. REPLENISH THE WINDOW (Up to 50) ---
-        // We only send a max of 4 numbers per tick so the bot doesn't get stuck typing and ignore chat messages.
         let replenishedThisTick = 0;
         
         while (Object.keys(activeTracker).length < 50 && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
@@ -2306,7 +2304,6 @@ async function processWsotpQueue(chatId) {
                 
                 const sentMsg = await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
                 
-                // Track this number with an added timestamp
                 activeTracker[formattedNum] = {
                     count: 0,
                     lastMsgId: null,
@@ -2324,7 +2321,6 @@ async function processWsotpQueue(chatId) {
         }
 
         // --- 2. LISTEN FOR RESPONSES ---
-        // Fetch last 100 messages to ensure we don't miss anything with 50 active numbers
         try {
             const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 100 }); 
             
@@ -2341,7 +2337,6 @@ async function processWsotpQueue(chatId) {
                 
                 if (!botNum) continue;
 
-                // Check both Active and Background trackers
                 let isBackground = false;
                 let trackData = activeTracker[botNum];
                 if (!trackData) {
@@ -2372,7 +2367,7 @@ async function processWsotpQueue(chatId) {
                     await updateStats();
                 } 
                 
-                // 💰 CHECK FOR INSTANT REWARD (Pre-OTP)
+                // 💰 CHECK FOR INSTANT REWARD
                 else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
                     stats.completed++;
                     if (isBackground) delete backgroundTracker[botNum];
@@ -2391,10 +2386,16 @@ async function processWsotpQueue(chatId) {
                         if (trackData.count >= 2) {
                             stats.inProgress++;
                             
-                            if (currentMode === 'WSOTP_FILE_MODE') {
+                            const isPoland = botNum.startsWith('48');
+
+                            // Start hunting if FILE_MODE, OR if MANUAL_MODE and NOT a Poland number
+                            if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
                                 huntOtpAsync(chatId, botNum, msg.id, stats, addLog);
+                                if (currentMode === 'WSOTP_MANUAL_MODE') {
+                                    await addLog(`✅ \`${botNum}\`: Hunting OTP (Manual Non-Poland)`);
+                                }
                             } else {
-                                await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual)`);
+                                await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)`);
                             }
                             
                             if (isBackground) delete backgroundTracker[botNum];
@@ -2409,15 +2410,14 @@ async function processWsotpQueue(chatId) {
 
         // --- 3. CHECK FOR 15-MINUTE STALLS ---
         for (const num in activeTracker) {
-            // 15 Minutes = 900,000 milliseconds
             if (Date.now() - activeTracker[num].addedAt > 900000) {
                 backgroundTracker[num] = activeTracker[num];
-                delete activeTracker[num]; // Removes it from the active 50, triggering a replacement!
-                await addLog(`🕒 \`${num}\`: Stalled for 15m. Moved to background tracking.`);
+                delete activeTracker[num]; 
+                await addLog(`🕒 \`${num}\`: Stalled for 15m. Moved to background.`);
             }
         }
 
-        await delay(2500); // Breathe before checking again
+        await delay(2500); 
     }
 
     wsotpActive[chatId] = false;
@@ -2426,7 +2426,9 @@ async function processWsotpQueue(chatId) {
         bot.sendMessage(chatId, `**[WSOTP QUEUE EMPTY]**\nFinished processing all numbers.`, { parse_mode: 'Markdown' });
     }
 }
+ 
 
+    
 
 // ==========================================
 // 2. THE ASYNCHRONOUS OTP HUNTER

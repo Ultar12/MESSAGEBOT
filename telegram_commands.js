@@ -2197,20 +2197,18 @@ async function processWsotpQueue(chatId) {
 
     wsotpWarnedNoWa = false; 
 
-    // --- LIVE DASHBOARD INITIALIZATION ---
+        // --- LIVE DASHBOARD INITIALIZATION ---
     let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [] };
     let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
 
     let activeTracker = {};     
     let backgroundTracker = {}; 
 
-    const addLog = async (msg) => {
-        stats.logs.unshift(msg);
-        if (stats.logs.length > 6) stats.logs.pop(); 
-        await updateStats();
-    };
+    // 🛑 RATE LIMIT THROTTLE ENGINE 
+    let lastStatEdit = 0;
+    let editPending = false;
 
-    const updateStats = async () => {
+    const forceUpdateStats = async () => {
         const left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
         const activeCount = Object.keys(activeTracker).length;
         const bgCount = Object.keys(backgroundTracker).length;
@@ -2232,6 +2230,29 @@ async function processWsotpQueue(chatId) {
             await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
         } catch(e) {} 
     };
+
+    const updateStats = async () => {
+        const now = Date.now();
+        // Only allow Telegram edits once every 3 seconds to completely bypass FloodWaits
+        if (now - lastStatEdit >= 3000) {
+            lastStatEdit = now;
+            await forceUpdateStats();
+        } else if (!editPending) {
+            editPending = true;
+            setTimeout(() => {
+                lastStatEdit = Date.now();
+                editPending = false;
+                forceUpdateStats();
+            }, 3000 - (now - lastStatEdit));
+        }
+    };
+
+    const addLog = async (msg) => {
+        stats.logs.unshift(msg);
+        if (stats.logs.length > 6) stats.logs.pop(); 
+        updateStats(); // Fired asynchronously to keep the main loop blazing fast
+    };
+
 
     while (wsotpQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {
         const currentMode = userState[chatId];
@@ -2474,15 +2495,21 @@ async function processWsotpQueue(chatId) {
             }
         } catch (readErr) {}
 
-        // --- 3. BACKGROUND MEMORY MANAGEMENT ---
+                // --- 3. BACKGROUND MEMORY MANAGEMENT ---
         const nowTime = Date.now();
+        let stalledCount = 0;
         
         for (const num in activeTracker) {
             if (nowTime - activeTracker[num].addedAt > 900000) {
                 backgroundTracker[num] = activeTracker[num];
                 delete activeTracker[num]; 
-                await addLog(`🕒 \`${num}\`: Stalled 15m. Moved to background.`);
+                stalledCount++; // Count them instead of logging individually
             }
+        }
+
+        // Group the log into a single clean line
+        if (stalledCount > 0) {
+            await addLog(`🕒 ${stalledCount} number(s) stalled 15m. Moved to bg.`);
         }
 
         for (const num in backgroundTracker) {

@@ -2115,7 +2115,7 @@ bot.onText(/\/wsotp/, async (msg) => {
 
     wsotpQueue[chatId] = wsotpQueue[chatId] || [];
 
-    // --- MODE 1: FILE BATCH PROCESSING ---
+    // --- MODE 1: FILE BATCH PROCESSING (WITH BUTTONS) ---
     if (msg.reply_to_message && msg.reply_to_message.document) {
         const doc = msg.reply_to_message.document;
         if (!doc.file_name.endsWith('.txt')) {
@@ -2133,19 +2133,26 @@ bot.onText(/\/wsotp/, async (msg) => {
             if (matches.length === 0) return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
 
             const uniqueNumbers = [...new Set(matches)];
-            wsotpQueue[chatId].push(...uniqueNumbers);
             
-            userState[chatId] = 'WSOTP_FILE_MODE'; 
+            // Hold them in memory until they click the button
+            userState[chatId + '_wsotp_temp_nums'] = uniqueNumbers; 
 
             bot.editMessageText(
-                `**[WSOTP FILE MODE ACTIVE]**\n\n` +
-                `Loaded ${uniqueNumbers.length} numbers.\n` +
-                `*OTP Auto-Reply is ON (2-Minute Timeout)*\n\n` +
-                `Type \`STOP\` or \`/done\` to abort.`, 
-                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                `**[WSOTP FILE LOADED]**\n\n` +
+                `Loaded ${uniqueNumbers.length} numbers.\n\n` +
+                `*Choose Processing Mode:*`, 
+                { 
+                    chat_id: chatId, 
+                    message_id: statusMsg.message_id, 
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: 'Auto Mode (Grabs OTP + Manual fallback)', callback_data: 'wsotp_mode_auto' }],
+                            [{ text: 'Manual Mode (Only waits for your reply)', callback_data: 'wsotp_mode_man' }]
+                        ]
+                    }
+                }
             );
-
-            if (!wsotpActive[chatId]) processWsotpQueue(chatId);
 
         } catch (err) {
             bot.editMessageText(`[ERROR] Failed to read file: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
@@ -2156,24 +2163,16 @@ bot.onText(/\/wsotp/, async (msg) => {
     // --- MODE 2: MANUAL BATCH PROCESSING ---
     userState[chatId] = 'WSOTP_MANUAL_MODE';
     bot.sendMessage(chatId, 
-        `**[WSOTP MANUAL MODE ACTIVE]**\n\n` +
+        `**[WSOTP MANUAL BATCH MODE]**\n\n` +
         `Send your numbers in batches.\n` +
         `*OTP Auto-Reply is OFF (Just verifying In Progress)*\n\n` +
         `Type \`STOP\` or \`/done\` to exit.`, 
         { parse_mode: 'Markdown' }
     );
-
 });
 
 
 
-
-    // ==========================================
-// WSOTP GLOBAL MEMORY MAPS
-// ==========================================
-const telegramCleanupMap = {}; 
-const manualOtpPrompts = {};   
-const manualOverrideMap = new Set(); // 🧠 Kill Switch
 
 // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
@@ -2251,14 +2250,15 @@ async function processWsotpQueue(chatId) {
         updateStats(); 
     };
 
-    // 🧠 ULTIMATE DAEMON: Stays awake infinitely as long as Manual/File mode is active!
-    while (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
+    // 🧠 ULTIMATE DAEMON: Stays awake for all WSOTP modes
+    while (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'].includes(userState[chatId])) {
         const currentMode = userState[chatId];
+        const isAuto = (currentMode === 'WSOTP_AUTO_MODE' || currentMode === 'WSOTP_FILE_MODE');
 
         // --- 1. REPLENISH THE WINDOW (Up to 25) ---
         let replenishedThisTick = 0;
         
-        while (Object.keys(activeTracker).length < 25 && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
+        while (Object.keys(activeTracker).length < 25 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
             const rawNum = wsotpQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             
@@ -2370,8 +2370,12 @@ async function processWsotpQueue(chatId) {
                     
                     const textLower = text.toLowerCase();
                     const isErrorCode = text.includes("🔴") || textLower.includes("error code");
+                    const isRewardOrWithdrawal = textLower.includes("reward") || textLower.includes("withdraw") || text.includes("💰");
 
-                    if (!isErrorCode) trackData.msgIdsToClean.push(msg.id); 
+                    // PROTECT REWARDS: Do not add them to the trash bin
+                    if (!isErrorCode && !isRewardOrWithdrawal) {
+                        trackData.msgIdsToClean.push(msg.id); 
+                    }
 
                     // 🛑 AUTO-DELETE TRASH REJECTIONS
                     if (
@@ -2465,7 +2469,7 @@ async function processWsotpQueue(chatId) {
                                 }
                             }
 
-                            // 🔔 SEND MANUAL PROMPT TO CHAT
+                            // 🔔 ALWAYS SEND MANUAL PROMPT TO CHAT (Both Auto and Manual modes need this)
                             if (!trackData.manualPromptSent || isErrorCode) {
                                 if (!telegramCleanupMap[botNum]) telegramCleanupMap[botNum] = [];
                                 
@@ -2483,22 +2487,18 @@ async function processWsotpQueue(chatId) {
                                 } catch (spamErr) {}
                             }
 
-                            const isPoland = botNum.startsWith('48');
-
-                            if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
-                                
-                                if (isErrorCode) {
-                                    await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
-                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
-                                } else if (!trackData.hunterSpawned) {
-                                    trackData.hunterSpawned = true;
-                                    await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
-                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
-                                }
-                                
+                            // ⚡ TRIGGER LOGIC: Auto scrapes group. Manual waits for user.
+                            if (isErrorCode) {
+                                await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
+                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                             } else if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
-                                await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)...`);
+                                if (isAuto) {
+                                    await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                } else {
+                                    await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for your reply)...`);
+                                }
                             }
                             
                             await updateStats();
@@ -2513,20 +2513,19 @@ async function processWsotpQueue(chatId) {
         let stalledCount = 0;
         
         for (const num in activeTracker) {
-            if (nowTime - activeTracker[num].addedAt > 900000) {
+            if (nowTime - activeTracker[num].addedAt > 900000) { // 15 mins
                 backgroundTracker[num] = activeTracker[num];
                 delete activeTracker[num]; 
                 stalledCount++; 
             }
         }
 
-        // Group the log into a single clean line
         if (stalledCount > 0) {
             await addLog(`🕒 ${stalledCount} number(s) stalled 15m. Moved to bg.`);
         }
 
         for (const num in backgroundTracker) {
-            if (nowTime - backgroundTracker[num].addedAt > 1800000) {
+            if (nowTime - backgroundTracker[num].addedAt > 1800000) { // 30 mins
                 
                 if (telegramCleanupMap[num]) {
                     for (const tgId of telegramCleanupMap[num]) {
@@ -2548,7 +2547,9 @@ async function processWsotpQueue(chatId) {
     wsotpActive[chatId] = false;
     bot.sendMessage(chatId, `**[WSOTP DAEMON OFFLINE]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });
 }
-
+ 
+                            
+ 
 // ==========================================
 // 2. THE EXACT bot.onText OTP HUNTER
 // ==========================================
@@ -7097,49 +7098,30 @@ bot.onText(/\/pdf/, async (msg) => {
         userState[chatId + '_lastMsgId'] = msg.message_id;
 
 
-                // --- SMART WSOTP QUEUE (Manual & Bulk Forward Support) ---
-        if (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
-            
-            // 1. Check for Exit Command
-            if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
-                const remaining = wsotpQueue[chatId]?.length || 0;
-                
-                // 🛑 WIPE THE QUEUE FROM MEMORY
-                wsotpQueue[chatId] = [];
-                
-                // 🧠 KEEP THE ENGINE AWAKE: Switch to Manual Mode so it stays listening!
-                userState[chatId] = 'WSOTP_MANUAL_MODE';
-                
-                return bot.sendMessage(chatId, `**[QUEUE WIPED]**\n${remaining} numbers discarded from memory.\n\n_The Bot is still awake in Manual Mode listening for 2x and errors!_\n_Type /start to completely exit._`, { parse_mode: 'Markdown' });
+                        // --- LISTEN FOR MANUAL OTP REPLIES ---
+        if (msg.reply_to_message && manualOtpPrompts[msg.reply_to_message.message_id]) {
+            const otpData = manualOtpPrompts[msg.reply_to_message.message_id];
+            const cleanOtp = text.replace(/\D/g, ''); // Extract just the digits
+
+            if (cleanOtp.length >= 3) {
+                bot.sendMessage(chatId, `**Manual OTP Accepted:** \`${cleanOtp}\` for \`${otpData.botNum}\`. Forwarding to bot...`, { parse_mode: 'Markdown' });
+
+                // Engage the manual override kill switch so the auto-hunter drops it
+                manualOverrideMap.add(otpData.botNum);
+
+                try {
+                    // Send directly to the WSOTP bot via Payme Userbot
+                    await paymeUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
+                } catch (e) {
+                    bot.sendMessage(chatId, `Failed to forward OTP: ${e.message}`);
+                }
+
+                // Cleanup prompt memory to prevent duplicate firing
+                delete manualOtpPrompts[msg.reply_to_message.message_id];
+                return; // Stop processing this message
             }
-
-            // 2. Extract all raw numbers from your message
-            const matches = text.match(/\d{9,15}/g);
-            if (!matches || matches.length === 0) return; // Ignore regular chat chatter
-
-            // Ensure the queue array exists
-            if (!wsotpQueue[chatId]) wsotpQueue[chatId] = [];
-            
-            // 3. Smart Deduplication
-            const uniqueMatches = [...new Set(matches)];
-            const newNumbers = uniqueMatches.filter(num => !wsotpQueue[chatId].includes(num));
-            
-            if (newNumbers.length === 0) {
-                return bot.sendMessage(chatId, `**Ignored:** All these numbers are already in the queue!`, { parse_mode: 'Markdown' });
-            }
-
-            // 4. Add the fresh batch to the queue
-            wsotpQueue[chatId].push(...newNumbers);
-            
-            bot.sendMessage(chatId, `**Added ${newNumbers.length} new numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
-
-            // 5. Wake up the background worker if it's asleep
-            if (!wsotpActive[chatId]) {
-                processWsotpQueue(chatId);
-            }
-            
-            return;
         }
+
 
         
         // RATE LIMIT CHECK
@@ -8139,6 +8121,34 @@ const cleanNumbers = matches.map(n => {
             });
         }
 
+
+
+
+                // --- WSOTP FILE MODE SELECTION ---
+        if (data === 'wsotp_mode_auto' || data === 'wsotp_mode_man') {
+            await bot.answerCallbackQuery(query.id);
+            const nums = userState[chatId + '_wsotp_temp_nums'];
+            
+            if (!nums) return bot.sendMessage(chatId, "[ERROR] Session expired. Please upload the file again.");
+
+            // Clear temp memory and load the queue
+            userState[chatId + '_wsotp_temp_nums'] = null;
+            wsotpQueue[chatId] = wsotpQueue[chatId] || [];
+            wsotpQueue[chatId].push(...nums);
+
+            const mode = data === 'wsotp_mode_auto' ? 'WSOTP_AUTO_MODE' : 'WSOTP_MAN_MODE';
+            userState[chatId] = mode;
+
+            bot.editMessageText(
+                `**[WSOTP ${mode === 'WSOTP_AUTO_MODE' ? 'AUTO' : 'MANUAL'} MODE ACTIVE]**\n\n` +
+                `Processing ${nums.length} numbers.\n` +
+                `Type \`STOP\` or \`/done\` to abort.`,
+                { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
+            );
+
+            if (!wsotpActive[chatId]) processWsotpQueue(chatId);
+            return;
+        }
 
 
         

@@ -2566,14 +2566,15 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 SMART EXTRACT: Using your exact logic to grab the last 4 (or 3) digits
+    // 🧠 STRICTLY LAST 3 DIGITS
     const cleanNum = formattedNum.replace(/\D/g, '');
-    const searchDigits = cleanNum.length >= 4 ? cleanNum.slice(-4) : cleanNum;
+    const searchDigits = cleanNum.slice(-3);
 
     const startTime = Date.now();
-    const MAX_TIME = 300000; 
+    const MAX_TIME = 300000; // 5 minutes
 
-    await delay(5000);
+    // 🛑 EXACT DELAY: Wait exactly 3 seconds before starting the scan
+    await delay(3000);
 
     let foundCode = null;
     
@@ -2588,8 +2589,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // 🧠 Fetch the last 100 messages to bypass Telegram's search indexing delay
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
+            // 🛑 EXACT LIMIT: Grab exactly the last 25 messages
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 25 });
             
             // GramJS dates are in seconds. 10 minutes = 600 seconds.
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
@@ -2598,25 +2599,19 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 // Ignore empty messages or messages older than 10 minutes
                 if (!m.message || m.date < tenMinsAgo) continue; 
                 
-                // Check if the "Number" line contains the extracted digits
+                // Check if the "Number" line contains the extracted 3 digits
                 const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
                 
                 if (numRegex.test(m.message)) {
                     
                     let tempCode = null;
 
-                    // Method A: Check the text body (Fallback)
-                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
-                    if (codeMatchText) {
-                        tempCode = codeMatchText[1]; 
-                    }
-                    
-                    // Method B: Check the Inline Buttons
-                    if (!tempCode && m.replyMarkup && m.replyMarkup.rows) {
+                    // 🛑 EXACT LOGIC: Checking ONLY the Inline Buttons (No Text Body Fallback)
+                    if (m.replyMarkup && m.replyMarkup.rows) {
                         for (const row of m.replyMarkup.rows) {
                             for (const btn of row.buttons) {
                                 const btnText = btn.text || "";
-                                // Look for "Copy: 123456" on the button
+                                // Using your exact button Regex logic
                                 const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
                                 if (btnMatch) {
                                     tempCode = btnMatch[1];
@@ -2630,7 +2625,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                     // THE RETRY MEMORY BANK
                     if (tempCode) {
                         if (trackData.usedCodes.has(tempCode)) {
-                            tempCode = null; 
+                            tempCode = null; // We already tried this code
                             continue; 
                         } else {
                             foundCode = tempCode;
@@ -2647,6 +2642,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(Math.floor(Math.random() * 800) + 400); 
                 
+                // DIRECT REPLY: Forcefully replies to the specific 2x message ID
                 const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
                 trackData.msgIdsToClean.push(sentOtp.id);
@@ -2656,11 +2652,12 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             // Ignore fetch errors to keep the loop alive
         }
 
-        await delay(2500);
+        await delay(2500); // Loop every 2.5 seconds
     }
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
 }
+
 
 
                                   

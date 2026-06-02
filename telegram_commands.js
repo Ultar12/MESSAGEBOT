@@ -215,6 +215,15 @@ const wsTaskQueue = [];
 let activeTaskAccount = 'payme'; // Default to Payme (Option 1)
 let isProcessingWsQueue = false;
 
+
+// ==========================================
+// WSOTP GLOBAL MEMORY MAPS
+// ==========================================
+const telegramCleanupMap = {}; 
+const manualOtpPrompts = {};   
+const manualOverrideMap = new Set(); // 🧠 Kill Switch
+
+
 // 1. This is the main function your Express server calls
 export async function processWsTask(payload) {
     if (!payload || !payload.phone_number) {

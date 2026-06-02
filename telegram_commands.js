@@ -2589,8 +2589,11 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // 🛑 EXACT LIMIT: Grab exactly the last 25 messages
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 25 });
+            // 🛑 FIX: Safely wrap the ID in BigInt to prevent silent GramJS peer crashes
+            const safePeer = BigInt(OTP_GROUP);
+            
+            // EXACT LIMIT: Grab exactly the last 25 messages
+            const otpMsgs = await userBot.getMessages(safePeer, { limit: 25 });
             
             // GramJS dates are in seconds. 10 minutes = 600 seconds.
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
@@ -2606,12 +2609,15 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                     
                     let tempCode = null;
 
-                    // 🛑 EXACT LOGIC: Checking ONLY the Inline Buttons (No Text Body Fallback)
+                    // 🛑 EXACT LOGIC: Checking ONLY the Inline Buttons for "Copy: XXXXX"
                     if (m.replyMarkup && m.replyMarkup.rows) {
                         for (const row of m.replyMarkup.rows) {
-                            for (const btn of row.buttons) {
+                            // Safely handle GramJS button array structure
+                            const btnArray = row.buttons || row; 
+                            for (const btn of btnArray) {
                                 const btnText = btn.text || "";
-                                // Using your exact button Regex logic
+                                
+                                // Your exact Regex
                                 const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
                                 if (btnMatch) {
                                     tempCode = btnMatch[1];
@@ -2649,7 +2655,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 return; 
             }
         } catch (e) {
-            // Ignore fetch errors to keep the loop alive
+            // 🛑 FIX: Actually log the error to your console so you know if GramJS crashes
+            console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message);
         }
 
         await delay(2500); // Loop every 2.5 seconds
@@ -2658,9 +2665,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
 }
 
-
-
-                                  
+                             
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

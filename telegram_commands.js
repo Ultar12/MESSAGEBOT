@@ -2566,55 +2566,59 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 STRICT COUNTRY CODE & SUFFIX MATCHER
-    const searchPrefix = formattedNum.slice(0, 2); // Grabs the country code (e.g., '62', '58')
-    const searchSuffix = formattedNum.slice(-3);   // Grabs the last 3 digits
+    // 🧠 EXTRACT PREFIX (Country) AND SUFFIX (Last 3)
+    const cleanNum = formattedNum.replace(/\D/g, '');
+    const searchPrefix = cleanNum.slice(0, 2); 
+    const searchSuffix = cleanNum.slice(-3);
 
     const startTime = Date.now();
-    const MAX_TIME = 300000; 
+    const MAX_TIME = 300000; // 5 mins
 
-    await delay(5000);
+    await delay(5000); // Give OTP time to arrive
 
     let foundCode = null;
     
     while (Date.now() - startTime < MAX_TIME) {
         if (!['WSOTP_FILE_AUTO', 'WSOTP_MANUAL_MODE'].includes(userState[chatId])) return; 
 
-        // THE KILL SWITCH CHECK
-        if (manualOverrideMap.has(formattedNum)) {
-            await addLog(`[ABORT] \`${formattedNum}\`: Manual code entered. Hunter stopped.`);
-            manualOverrideMap.delete(formattedNum); 
+        // 🛑 THE KILL SWITCH CHECK
+        if (manualOverrideMap.has(cleanNum)) {
+            await addLog(`[ABORT] \`${cleanNum}\`: Manual code entered. Hunter stopped.`);
+            manualOverrideMap.delete(cleanNum); 
             return; 
         }
 
         try {
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
+            // 🛑 FIX 1: Increased limit to 100 so it never misses messages in a busy group
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
+            const timeLimit = Math.floor(Date.now() / 1000) - 300; // Only look at last 5 mins
             
             for (const m of otpMsgs) {
-                if (!m.message) continue;
-                if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
+                if (!m.message || m.date < timeLimit) continue; 
                 
-                // 🧠 MUST MATCH "Number", THEN THE COUNTRY CODE, THEN THE SUFFIX ON THE SAME LINE
-                const numRegex = new RegExp(`Number[^\\n]*?${searchPrefix}[^\\n]*?${searchSuffix}`, 'i');
+                // 🛑 FIX 2: Bulletproof Regex (Number + Prefix + Suffix)
+                const numRegex = new RegExp(`Number.*?${searchPrefix}.*?${searchSuffix}`, 'i');
                 
                 if (numRegex.test(m.message)) {
                     
                     let tempCode = null;
 
+                    // Method A: Check Text Body
                     const codeMatchText = m.message.match(/(?:Code|OTP|Kode)[^\n]*?([\d\-]{4,8})/i);
                     if (codeMatchText) {
                         tempCode = codeMatchText[1].replace(/\D/g, ''); 
                     }
                     
-                    if (!tempCode && m.replyMarkup?.rows) {
+                    // Method B: Check Inline Buttons (Using your exact bot.onText logic)
+                    if (!tempCode && m.replyMarkup && m.replyMarkup.rows) {
                         for (const row of m.replyMarkup.rows) {
                             for (const btn of row.buttons) {
                                 const btnText = btn.text || "";
-                                const copyData = btn.copyText || btn.copy_text || btn.data || "";
-                                const scanString = btnText + " " + copyData;
-                                
-                                const btnMatch = scanString.match(/(?:Copy|OTP|Code|🔑).*?([\d\-]{4,8})/i) || scanString.match(/([\d]{3}[-\s]?[\d]{3,4})/);
-                                if (btnMatch) tempCode = btnMatch[1].replace(/\D/g, ''); 
+                                const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
+                                if (btnMatch) {
+                                    tempCode = btnMatch[1];
+                                    break;
+                                }
                             }
                             if (tempCode) break;
                         }
@@ -2623,7 +2627,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                     // THE RETRY MEMORY BANK
                     if (tempCode) {
                         if (trackData.usedCodes.has(tempCode)) {
-                            tempCode = null; 
+                            tempCode = null; // We already tried this code
                             continue; 
                         } else {
                             foundCode = tempCode;
@@ -2635,23 +2639,27 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             }
 
             if (foundCode) {
-                await addLog(`[FOUND] \`${formattedNum}\`: Code ${foundCode}. Replying...`);
+                await addLog(`\`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(Math.floor(Math.random() * 800) + 400); 
                 
+                // 🚀 DIRECT REPLY: Forcefully replies to the specific 2x message ID!
                 const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                 
                 trackData.msgIdsToClean.push(sentOtp.id);
-                return; 
+                return; // Stop hunting
             }
-        } catch (e) {}
+        } catch (e) {
+            // Ignore silent fetch errors
+        }
 
-        await delay(2500);
+        await delay(2500); // Loop every 2.5 seconds
     }
 
-    await addLog(`[FAILED] \`${formattedNum}\`: Gave up after 5 minutes.`);
+    await addLog(`\`${cleanNum}\`: Gave up after 5 minutes.`);
 }
+
 
                             
  

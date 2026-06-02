@@ -2107,74 +2107,49 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
 
 
 
-bot.onText(/\/wsotp/, async (msg) => {
-    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
-    const chatId = msg.chat.id;
-    const userId = chatId.toString();
+    bot.onText(/\/wsotp/, async (msg) => {
+        if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
 
-    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-    wsotpQueue[chatId] = wsotpQueue[chatId] || [];
+        wsotpQueue[chatId] = wsotpQueue[chatId] || [];
 
-    // --- MODE 1: FILE BATCH PROCESSING ---
-    if (msg.reply_to_message && msg.reply_to_message.document) {
-        const doc = msg.reply_to_message.document;
-        if (!doc.file_name.endsWith('.txt')) {
-            return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for /wsotp.");
+        // --- MODE 1: FILE UPLOAD ---
+        if (msg.reply_to_message && msg.reply_to_message.document) {
+            const doc = msg.reply_to_message.document;
+            if (!doc.file_name.endsWith('.txt')) {
+                return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for /wsotp.");
+            }
+
+            // Save the file ID in memory and prompt for mode
+            userState[chatId + '_wsotp_file'] = doc.file_id;
+
+            return bot.sendMessage(chatId, `**[FILE DETECTED]**\nFile: ${doc.file_name}\n\nSelect Processing Mode:`, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'Auto (Grab OTP + Send Alert)', callback_data: 'wsotp_mode_auto' }],
+                        [{ text: 'Manual (Alert Only, No Grab)', callback_data: 'wsotp_mode_manual' }],
+                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                    ]
+                }
+            });
         }
 
-        let statusMsg = await bot.sendMessage(chatId, "⏳ Downloading file and loading numbers into memory...");
-        
-        try {
-            const fileLink = await bot.getFileLink(doc.file_id);
-            const response = await fetch(fileLink);
-            const textData = await response.text();
-
-            const matches = textData.match(/\d{7,15}/g) || [];
-            if (matches.length === 0) return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
-
-            const uniqueNumbers = [...new Set(matches)];
-            wsotpQueue[chatId].push(...uniqueNumbers);
-            
-            userState[chatId] = 'WSOTP_FILE_MODE'; 
-
-            bot.editMessageText(
-                `**[WSOTP FILE MODE ACTIVE]**\n\n` +
-                `Loaded ${uniqueNumbers.length} numbers.\n` +
-                `*OTP Auto-Reply is ON (2-Minute Timeout)*\n\n` +
-                `Type \`STOP\` or \`/done\` to abort.`, 
-                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
-            );
-
-            if (!wsotpActive[chatId]) processWsotpQueue(chatId);
-
-        } catch (err) {
-            bot.editMessageText(`[ERROR] Failed to read file: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
-        }
-        return;
-    }
-
-    // --- MODE 2: MANUAL BATCH PROCESSING ---
-    userState[chatId] = 'WSOTP_MANUAL_MODE';
-    bot.sendMessage(chatId, 
-        `**[WSOTP MANUAL MODE ACTIVE]**\n\n` +
-        `Send your numbers in batches.\n` +
-        `*OTP Auto-Reply is OFF (Just verifying In Progress)*\n\n` +
-        `Type \`STOP\` or \`/done\` to exit.`, 
-        { parse_mode: 'Markdown' }
-    );
-
-});
+        // --- MODE 2: TYPING NUMBERS ---
+        userState[chatId] = 'WSOTP_MANUAL_MODE';
+        bot.sendMessage(chatId, 
+            `**[WSOTP TYPING MODE]**\n\n` +
+            `Send your numbers in batches.\n\n` +
+            `Type \`STOP\` or \`/done\` to exit.`, 
+            { parse_mode: 'Markdown' }
+        );
+    });
 
 
 
-
-    // ==========================================
-// WSOTP GLOBAL MEMORY MAPS
-// ==========================================
-const telegramCleanupMap = {}; 
-const manualOtpPrompts = {};   
-const manualOverrideMap = new Set(); // 🧠 Kill Switch
 
 // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE
@@ -2197,14 +2172,12 @@ async function processWsotpQueue(chatId) {
 
     wsotpWarnedNoWa = false; 
 
-    // --- LIVE DASHBOARD INITIALIZATION ---
     let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [] };
     let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
 
     let activeTracker = {};     
     let backgroundTracker = {}; 
 
-    // 🛑 RATE LIMIT THROTTLE ENGINE 
     let lastStatEdit = 0;
     let editPending = false;
 
@@ -2224,8 +2197,8 @@ async function processWsotpQueue(chatId) {
             `Completed/Paid: ${stats.completed}\n` +
             `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
             `Trash (Deleted): ${stats.trash}\n\n` +
-            `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
-            `_Smart Retry Engine active..._`;
+            `**Live Activity Feed:**\n${logsText || "Waiting for activity..."}\n\n` +
+            `Smart Retry Engine active...`;
         try {
             await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
         } catch(e) {} 
@@ -2252,8 +2225,7 @@ async function processWsotpQueue(chatId) {
         updateStats(); 
     };
 
-    // 🧠 ULTIMATE DAEMON: Stays awake infinitely as long as Manual/File mode is active!
-    while (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
+    while (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_AUTO', 'WSOTP_FILE_MANUAL'].includes(userState[chatId])) {
         const currentMode = userState[chatId];
 
         // --- 1. REPLENISH THE WINDOW (Up to 25) ---
@@ -2322,40 +2294,62 @@ async function processWsotpQueue(chatId) {
                 const text = msg.message || "";
                 if (!text) continue;
 
+                const textLower = text.toLowerCase();
+                
+                // 🛡️ THE WITHDRAWAL SHIELD
+                if (text.includes("💲") || textLower.includes("withdrawal") || textLower.includes("usdc") || textLower.includes("transfer fees") || textLower.includes("rid:")) {
+                    continue; 
+                }
+
                 let trackData = null;
                 let isBackground = false;
                 let botNum = null;
 
-                const potentialNums = text.match(/\d{9,15}/g); 
-                if (potentialNums) {
-                    for (const n of potentialNums) {
-                        if (activeTracker[n]) {
-                            botNum = n; trackData = activeTracker[n]; break;
-                        }
-                        if (backgroundTracker[n]) {
-                            botNum = n; trackData = backgroundTracker[n]; isBackground = true; break;
+                const rawTextDigits = text.replace(/\D/g, '');
+                
+                for (const num in activeTracker) {
+                    if (rawTextDigits.includes(num)) {
+                        botNum = num;
+                        trackData = activeTracker[num];
+                        break;
+                    }
+                }
+                if (!trackData) {
+                    for (const num in backgroundTracker) {
+                        if (rawTextDigits.includes(num)) {
+                            botNum = num;
+                            trackData = backgroundTracker[num];
+                            isBackground = true;
+                            break;
                         }
                     }
+                }
 
-                    // 👽 ALIEN ADOPTER: Adopts numbers sent manually or caught by /wsotp mid-process
-                    if (!trackData && potentialNums.length > 0) {
-                        const textLower = text.toLowerCase();
-                        if (text.includes("🔵") || text.includes("🟡") || text.includes("⚫️") || text.includes("🟢") || text.includes("🔴") || textLower.includes("error") || textLower.includes("incorrect") || textLower.includes("reward") || textLower.includes("success")) {
-                            
-                            botNum = potentialNums[0]; 
-                            activeTracker[botNum] = {
-                                count: 0,
-                                seenUpdates: new Set(), 
-                                usedCodes: new Set(), 
-                                msgIdsToClean: [], 
-                                addedAt: Date.now(),
-                                inProgressCounted: false,
-                                hunterSpawned: false,
-                                manualPromptSent: false
-                            };
-                            trackData = activeTracker[botNum];
-                            isBackground = false;
-                            stats.sent++;
+                if (!trackData) {
+                    const alienMatches = text.match(/(?:\+?\d[\d\s\-]{8,15}\d)/g);
+                    if (alienMatches) {
+                        for (let n of alienMatches) {
+                            n = n.replace(/\D/g, ''); 
+                            if (n.length >= 9 && n.length <= 15) {
+                                if (text.includes("🔵") || text.includes("🟡") || text.includes("⚫️") || text.includes("🔴") || textLower.includes("error") || textLower.includes("incorrect")) {
+                                    
+                                    botNum = n; 
+                                    activeTracker[botNum] = {
+                                        count: 0,
+                                        seenUpdates: new Set(), 
+                                        usedCodes: new Set(), 
+                                        msgIdsToClean: [], 
+                                        addedAt: Date.now(),
+                                        inProgressCounted: false,
+                                        hunterSpawned: false,
+                                        manualPromptSent: false
+                                    };
+                                    trackData = activeTracker[botNum];
+                                    isBackground = false;
+                                    stats.sent++;
+                                    break; 
+                                }
+                            }
                         }
                     }
                 }
@@ -2369,10 +2363,12 @@ async function processWsotpQueue(chatId) {
                 if (isNewUpdate) {
                     trackData.seenUpdates.add(updateKey);
                     
-                    const textLower = text.toLowerCase();
-                    const isErrorCode = text.includes("🔴") || textLower.includes("error code");
+                    const isErrorCode = text.includes("🔴") || textLower.includes("error code") || textLower.includes("incorrect") || textLower.includes("wrong");
 
-                    if (!isErrorCode) trackData.msgIdsToClean.push(msg.id); 
+                    // Only add to trash if it's NOT an error code
+                    if (!isErrorCode) {
+                        trackData.msgIdsToClean.push(msg.id); 
+                    }
 
                     // 🛑 AUTO-DELETE TRASH REJECTIONS
                     if (
@@ -2388,7 +2384,6 @@ async function processWsotpQueue(chatId) {
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
                         try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
 
-                        // 🧹 NUKE MANUAL TG MESSAGES
                         if (telegramCleanupMap[botNum]) {
                             for (const tgId of telegramCleanupMap[botNum]) {
                                 try { await bot.deleteMessage(chatId, tgId); } catch(e){}
@@ -2409,7 +2404,7 @@ async function processWsotpQueue(chatId) {
                     } 
                     
                     // 💰 CHECK FOR SUCCESS / PAID
-                    else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
+                    else if (text.includes("💰") || textLower.includes("new reward") || textLower.includes("reward notification")) {
                         
                         let amountStr = "0.00";
                         const amountMatch = text.match(/Amount:\s*([\d.]+)\s*USD/i) || text.match(/Amount:\s*([\d.]+)/i);
@@ -2421,11 +2416,9 @@ async function processWsotpQueue(chatId) {
                             }
                         }
 
-                        trackData.msgIdsToClean.push(msg.id);
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
                         try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
 
-                        // 🧹 NUKE MANUAL TG MESSAGES
                         if (telegramCleanupMap[botNum]) {
                             for (const tgId of telegramCleanupMap[botNum]) {
                                 try { await bot.deleteMessage(chatId, tgId); } catch(e){}
@@ -2442,8 +2435,13 @@ async function processWsotpQueue(chatId) {
                         if (isBackground) delete backgroundTracker[botNum];
                         else delete activeTracker[botNum];
                         
-                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
+                        await addLog(`[PAID] \`${botNum}\`: +$${amountStr}`);
                         await updateStats();
+                    }
+
+                    // 🟢 SILENT SUCCESS: Just waits for the payout receipt
+                    else if (text.includes("🟢") || textLower.includes("success")) {
+                        // DO NOTHING. Wait for payout.
                     }
 
                     // 🔵 OR 🔴: DOUBLE "IN PROGRESS" OR "ERROR CODE" RETRY
@@ -2466,19 +2464,24 @@ async function processWsotpQueue(chatId) {
                                 }
                             }
 
-                            // 🔔 SEND MANUAL PROMPT TO CHAT
+                            const isAutoFile = (currentMode === 'WSOTP_FILE_AUTO');
+                            const isManualFile = (currentMode === 'WSOTP_FILE_MANUAL');
+                            const isTypingMode = (currentMode === 'WSOTP_MANUAL_MODE');
+
+                            // 🔔 SEND MANUAL PROMPT (Sent on ALL modes when 2x or Error hits)
                             if (!trackData.manualPromptSent || isErrorCode) {
                                 if (!telegramCleanupMap[botNum]) telegramCleanupMap[botNum] = [];
                                 
-                                let promptText = `🔔 **MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
-                                if (isErrorCode) promptText = `🔴 **WRONG CODE ENTERED**\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
+                                let promptText = `**MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
+                                if (isErrorCode) promptText = `**WRONG CODE ENTERED**\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
 
-                                // 🛑 TELEGRAM ANTI-SPAM PROTECTOR
                                 await delay(1200);
                                 
                                 try {
                                     const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
                                     telegramCleanupMap[botNum].push(promptMsg.message_id);
+                                    
+                                    // 🚀 LOCKS THE REPLY EXACTLY TO THE TARGET BOT'S 2X MESSAGE
                                     manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
                                     trackData.manualPromptSent = true;
                                 } catch (spamErr) {}
@@ -2486,20 +2489,22 @@ async function processWsotpQueue(chatId) {
 
                             const isPoland = botNum.startsWith('48');
 
-                            if (currentMode === 'WSOTP_FILE_MODE' || (currentMode === 'WSOTP_MANUAL_MODE' && !isPoland)) {
-                                
+                            // ⚡ AUTO-HUNTER: Only fires if in Auto Mode, or Typing Mode (non-Poland)
+                            if (isAutoFile || (isTypingMode && !isPoland)) {
                                 if (isErrorCode) {
-                                    await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
+                                    await addLog(`[RETRY] \`${botNum}\`: Wrong code. Hunting next...`);
                                     huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 } else if (!trackData.hunterSpawned) {
                                     trackData.hunterSpawned = true;
-                                    await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
+                                    await addLog(`[AUTO-HUNT] \`${botNum}\`: Scanning...`);
                                     huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 }
-                                
-                            } else if (!trackData.hunterSpawned) {
-                                trackData.hunterSpawned = true;
-                                await addLog(`✅ \`${botNum}\`: In Progress x2 (Manual Poland)...`);
+                            } else {
+                                // MANUAL MODE ONLY (No background hunting)
+                                if (!trackData.hunterSpawned) {
+                                    trackData.hunterSpawned = true; 
+                                    await addLog(`[MANUAL] \`${botNum}\`: Awaiting your code input...`);
+                                }
                             }
                             
                             await updateStats();
@@ -2521,9 +2526,8 @@ async function processWsotpQueue(chatId) {
             }
         }
 
-        // Group the log into a single clean line
         if (stalledCount > 0) {
-            await addLog(`🕒 ${stalledCount} number(s) stalled 15m. Moved to bg.`);
+            await addLog(`[STALLED] ${stalledCount} number(s) waited 15m. Moved to background.`);
         }
 
         for (const num in backgroundTracker) {
@@ -2547,8 +2551,9 @@ async function processWsotpQueue(chatId) {
     }
 
     wsotpActive[chatId] = false;
-    bot.sendMessage(chatId, `**[WSOTP DAEMON OFFLINE]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `**[WSOTP DAEMON OFFLINE]**\nEngine shut down.`, { parse_mode: 'Markdown' });
 }
+ 
 
 // ==========================================
 // 2. THE EXACT bot.onText OTP HUNTER
@@ -7098,49 +7103,41 @@ bot.onText(/\/pdf/, async (msg) => {
         userState[chatId + '_lastMsgId'] = msg.message_id;
 
 
-                // --- SMART WSOTP QUEUE (Manual & Bulk Forward Support) ---
-        if (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
+                        // --- SMART WSOTP QUEUE (Manual & File Modes) ---
+        if (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_AUTO', 'WSOTP_FILE_MANUAL'].includes(userState[chatId])) {
             
-            // 1. Check for Exit Command
             if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
                 const remaining = wsotpQueue[chatId]?.length || 0;
                 
-                // 🛑 WIPE THE QUEUE FROM MEMORY
                 wsotpQueue[chatId] = [];
+                userState[chatId] = 'WSOTP_MANUAL_MODE'; // Defaults back to typing mode
                 
-                // 🧠 KEEP THE ENGINE AWAKE: Switch to Manual Mode so it stays listening!
-                userState[chatId] = 'WSOTP_MANUAL_MODE';
-                
-                return bot.sendMessage(chatId, `**[QUEUE WIPED]**\n${remaining} numbers discarded from memory.\n\n_The Bot is still awake in Manual Mode listening for 2x and errors!_\n_Type /start to completely exit._`, { parse_mode: 'Markdown' });
+                return bot.sendMessage(chatId, `**[QUEUE WIPED]**\n${remaining} numbers discarded from memory.\n\nThe bot is still awake listening for manual 2x numbers!`, { parse_mode: 'Markdown' });
             }
 
-            // 2. Extract all raw numbers from your message
             const matches = text.match(/\d{9,15}/g);
-            if (!matches || matches.length === 0) return; // Ignore regular chat chatter
+            if (!matches || matches.length === 0) return; 
 
-            // Ensure the queue array exists
             if (!wsotpQueue[chatId]) wsotpQueue[chatId] = [];
             
-            // 3. Smart Deduplication
             const uniqueMatches = [...new Set(matches)];
             const newNumbers = uniqueMatches.filter(num => !wsotpQueue[chatId].includes(num));
             
             if (newNumbers.length === 0) {
-                return bot.sendMessage(chatId, `**Ignored:** All these numbers are already in the queue!`, { parse_mode: 'Markdown' });
+                return bot.sendMessage(chatId, `Ignored: All these numbers are already in the queue!`);
             }
 
-            // 4. Add the fresh batch to the queue
             wsotpQueue[chatId].push(...newNumbers);
             
-            bot.sendMessage(chatId, `**Added ${newNumbers.length} new numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `Added ${newNumbers.length} new numbers to Queue.\nTotal in line: ${wsotpQueue[chatId].length}`);
 
-            // 5. Wake up the background worker if it's asleep
             if (!wsotpActive[chatId]) {
                 processWsotpQueue(chatId);
             }
             
-            return;
+            return; 
         }
+
 
         
         // RATE LIMIT CHECK
@@ -9215,6 +9212,48 @@ const cleanNumbers = matches.map(n => {
         
                                     
 
+                // --- WSOTP FILE MODE SELECTION ---
+        if (data === 'wsotp_mode_auto' || data === 'wsotp_mode_manual') {
+            await bot.answerCallbackQuery(query.id);
+            const fileId = userState[chatId + '_wsotp_file'];
+            if (!fileId) return bot.sendMessage(chatId, "[ERROR] File session expired. Please reply to the file with /wsotp again.");
+            
+            userState[chatId + '_wsotp_file'] = null; // Clear memory
+            
+            let statusMsg = await bot.editMessageText("Downloading file and loading numbers into memory...", { chat_id: chatId, message_id: query.message.message_id });
+            
+            try {
+                const fileLink = await bot.getFileLink(fileId);
+                const response = await fetch(fileLink);
+                const textData = await response.text();
+
+                const matches = textData.match(/\d{7,15}/g) || [];
+                if (matches.length === 0) return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
+
+                const uniqueNumbers = [...new Set(matches)];
+                wsotpQueue[chatId] = wsotpQueue[chatId] || [];
+                wsotpQueue[chatId].push(...uniqueNumbers);
+                
+                const isAuto = (data === 'wsotp_mode_auto');
+                userState[chatId] = isAuto ? 'WSOTP_FILE_AUTO' : 'WSOTP_FILE_MANUAL'; 
+
+                bot.editMessageText(
+                    `**[WSOTP FILE MODE ACTIVE]**\n\n` +
+                    `Loaded ${uniqueNumbers.length} numbers.\n` +
+                    `Mode: ${isAuto ? 'Auto (Grab + Alert)' : 'Manual (Alert Only)'}\n\n` +
+                    `Type \`STOP\` or \`/done\` to abort.`, 
+                    { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                );
+
+                if (!wsotpActive[chatId]) processWsotpQueue(chatId);
+
+            } catch (err) {
+                bot.editMessageText(`[ERROR] Failed to read file: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+            return;
+        }
+
+        
 
         // Handle withdrawal approval
         if (data.startsWith('approve_')) {

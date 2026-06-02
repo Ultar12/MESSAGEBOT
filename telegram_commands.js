@@ -2556,10 +2556,9 @@ async function processWsotpQueue(chatId) {
     wsotpActive[chatId] = false;
     bot.sendMessage(chatId, `**[WSOTP DAEMON OFFLINE]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });
 }
- 
-                            
- 
-// ==========================================
+
+
+    // ==========================================
 // 2. THE EXACT bot.onText OTP HUNTER
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
@@ -2567,36 +2566,36 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 STRICT 3 DIGITS ONLY
-    const searchDigits = formattedNum.slice(-3);
+    // 🧠 STRICT COUNTRY CODE & SUFFIX MATCHER
+    const searchPrefix = formattedNum.slice(0, 2); // Grabs the country code (e.g., '62', '58')
+    const searchSuffix = formattedNum.slice(-3);   // Grabs the last 3 digits
 
     const startTime = Date.now();
-    const MAX_TIME = 300000; // 5 Minutes Max
+    const MAX_TIME = 300000; 
 
     await delay(5000);
 
     let foundCode = null;
     
     while (Date.now() - startTime < MAX_TIME) {
-        if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') return; 
+        if (!['WSOTP_FILE_AUTO', 'WSOTP_MANUAL_MODE'].includes(userState[chatId])) return; 
 
-        // 🛑 THE KILL SWITCH CHECK
+        // THE KILL SWITCH CHECK
         if (manualOverrideMap.has(formattedNum)) {
-            await addLog(`🛑 \`${formattedNum}\`: Manual override detected. Auto-hunter aborted.`);
+            await addLog(`[ABORT] \`${formattedNum}\`: Manual code entered. Hunter stopped.`);
             manualOverrideMap.delete(formattedNum); 
             return; 
         }
 
         try {
-            // ⚡ STRICT 15 MESSAGES ONLY
             const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 15 });
             
             for (const m of otpMsgs) {
                 if (!m.message) continue;
                 if (m.date < Math.floor(Date.now() / 1000) - 300) continue; 
                 
-                // 🧠 YOUR EXACT bot.onText RegExp METHOD
-                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
+                // 🧠 MUST MATCH "Number", THEN THE COUNTRY CODE, THEN THE SUFFIX ON THE SAME LINE
+                const numRegex = new RegExp(`Number[^\\n]*?${searchPrefix}[^\\n]*?${searchSuffix}`, 'i');
                 
                 if (numRegex.test(m.message)) {
                     
@@ -2621,7 +2620,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                         }
                     }
                     
-                    // 🔄 THE RETRY MEMORY BANK
+                    // THE RETRY MEMORY BANK
                     if (tempCode) {
                         if (trackData.usedCodes.has(tempCode)) {
                             tempCode = null; 
@@ -2636,7 +2635,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             }
 
             if (foundCode) {
-                await addLog(`✅ \`${formattedNum}\`: OTP Found (${foundCode}). Replying...`);
+                await addLog(`[FOUND] \`${formattedNum}\`: Code ${foundCode}. Replying...`);
                 
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(Math.floor(Math.random() * 800) + 400); 
@@ -2651,8 +2650,12 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         await delay(2500);
     }
 
-    await addLog(`❌ \`${formattedNum}\`: Gave up after 5 minutes.`);
+    await addLog(`[FAILED] \`${formattedNum}\`: Gave up after 5 minutes.`);
 }
+
+                            
+ 
+
                       
            
     

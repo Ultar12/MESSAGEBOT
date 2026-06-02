@@ -2188,7 +2188,7 @@ async function processWsotpQueue(chatId) {
         const logsText = stats.logs.join('\n');
         
         const txt = 
-            `*[WSOTP LIVE DASHBOARD]*\n\n` +
+            `[WSOTP LIVE DASHBOARD]\n\n` +
             `Queue Remaining: ${left}\n` +
             `Active Window: ${activeCount} / 25\n` +
             `Background Waiting: ${bgCount}\n` +
@@ -2197,10 +2197,10 @@ async function processWsotpQueue(chatId) {
             `Completed/Paid: ${stats.completed}\n` +
             `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
             `Trash (Deleted): ${stats.trash}\n\n` +
-            `*Live Activity Feed:*\n${logsText || "Waiting for activity..."}\n\n` +
-            `_Smart Retry Engine active..._`;
+            `Live Activity Feed:\n${logsText || "Waiting for activity..."}\n\n` +
+            `Smart Retry Engine active...`;
         try {
-            await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
+            await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id });
         } catch(e) {} 
     };
 
@@ -2250,7 +2250,7 @@ async function processWsotpQueue(chatId) {
                     if (!waCheck?.exists) isWaActive = false; 
                 } catch (e) {
                     if (!wsotpWarnedNoWa) {
-                        bot.sendMessage(chatId, `[ALERT] WA Checker Bot Offline! Continuing blindly.`, { parse_mode: 'Markdown' });
+                        bot.sendMessage(chatId, `[ALERT] WA Checker Bot Offline! Continuing blindly.`);
                         wsotpWarnedNoWa = true;
                     }
                 }
@@ -2272,7 +2272,6 @@ async function processWsotpQueue(chatId) {
                     seenUpdates: new Set(), 
                     usedCodes: new Set(), 
                     msgIdsToClean: [sentMsg.id], 
-                    sentMsgId: sentMsg.id, // 🧠 Tracks the exact ID of the message we sent!
                     addedAt: Date.now(),
                     inProgressCounted: false,
                     hunterSpawned: false,
@@ -2297,6 +2296,7 @@ async function processWsotpQueue(chatId) {
 
                 const textLower = text.toLowerCase();
                 
+                // 🛡️ THE WITHDRAWAL SHIELD
                 if (text.includes("💲") || textLower.includes("withdrawal") || textLower.includes("usdc") || textLower.includes("transfer fees") || textLower.includes("rid:")) {
                     continue; 
                 }
@@ -2305,67 +2305,35 @@ async function processWsotpQueue(chatId) {
                 let isBackground = false;
                 let botNum = null;
 
-                // 🧠 ID-LEVEL MATCHER: Links target bot's reply directly to our message ID
-                const replyId = msg.replyToMsgId || (msg.replyTo && msg.replyTo.replyToMsgId);
-                const rawTextDigits = text.replace(/\D/g, '');
-                
-                if (replyId) {
-                    for (const num in activeTracker) {
-                        if (activeTracker[num].sentMsgId === replyId) {
-                            botNum = num; trackData = activeTracker[num]; break;
+                // 🧠 REVERTED TO YOUR EXACT TRACKING METHOD
+                const potentialNums = text.match(/\d{9,15}/g); 
+                if (potentialNums) {
+                    for (const n of potentialNums) {
+                        if (activeTracker[n]) {
+                            botNum = n; trackData = activeTracker[n]; break;
+                        }
+                        if (backgroundTracker[n]) {
+                            botNum = n; trackData = backgroundTracker[n]; isBackground = true; break;
                         }
                     }
-                    if (!trackData) {
-                        for (const num in backgroundTracker) {
-                            if (backgroundTracker[num].sentMsgId === replyId) {
-                                botNum = num; trackData = backgroundTracker[num]; isBackground = true; break;
-                            }
-                        }
-                    }
-                }
 
-                // FALLBACK: Text-Level Matcher
-                if (!trackData) {
-                    for (const num in activeTracker) {
-                        if (rawTextDigits.includes(num)) {
-                            botNum = num; trackData = activeTracker[num]; break;
-                        }
-                    }
-                }
-                if (!trackData) {
-                    for (const num in backgroundTracker) {
-                        if (rawTextDigits.includes(num)) {
-                            botNum = num; trackData = backgroundTracker[num]; isBackground = true; break;
-                        }
-                    }
-                }
-
-                if (!trackData) {
-                    const alienMatches = text.match(/(?:\+?\d[\d\s\-]{8,15}\d)/g);
-                    if (alienMatches) {
-                        for (let n of alienMatches) {
-                            n = n.replace(/\D/g, ''); 
-                            if (n.length >= 9 && n.length <= 15) {
-                                if (text.includes("🔵") || text.includes("🟡") || text.includes("⚫️") || text.includes("🔴") || textLower.includes("error") || textLower.includes("incorrect")) {
-                                    
-                                    botNum = n; 
-                                    activeTracker[botNum] = {
-                                        count: 0,
-                                        seenUpdates: new Set(), 
-                                        usedCodes: new Set(), 
-                                        msgIdsToClean: [], 
-                                        sentMsgId: replyId || null, 
-                                        addedAt: Date.now(),
-                                        inProgressCounted: false,
-                                        hunterSpawned: false,
-                                        manualPromptSent: false
-                                    };
-                                    trackData = activeTracker[botNum];
-                                    isBackground = false;
-                                    stats.sent++;
-                                    break; 
-                                }
-                            }
+                    if (!trackData && potentialNums.length > 0) {
+                        if (text.includes("🔵") || text.includes("🟡") || text.includes("⚫️") || text.includes("🟢") || text.includes("🔴") || textLower.includes("error") || textLower.includes("incorrect") || textLower.includes("reward") || textLower.includes("success")) {
+                            
+                            botNum = potentialNums[0]; 
+                            activeTracker[botNum] = {
+                                count: 0,
+                                seenUpdates: new Set(), 
+                                usedCodes: new Set(), 
+                                msgIdsToClean: [], 
+                                addedAt: Date.now(),
+                                inProgressCounted: false,
+                                hunterSpawned: false,
+                                manualPromptSent: false
+                            };
+                            trackData = activeTracker[botNum];
+                            isBackground = false;
+                            stats.sent++;
                         }
                     }
                 }
@@ -2380,13 +2348,14 @@ async function processWsotpQueue(chatId) {
                     trackData.seenUpdates.add(updateKey);
                     
                     const isErrorCode = text.includes("🔴") || textLower.includes("error code") || textLower.includes("incorrect") || textLower.includes("wrong");
-                    const isRewardMsg = text.includes("💰") || textLower.includes("new reward") || textLower.includes("reward notification");
+                    const isRewardMsg = text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success");
 
-                    // 🛡️ SHIELD: Never add Red Errors or Reward Notifications to the Trash Bag
+                    // Only put standard/trash messages in the garbage bag
                     if (!isErrorCode && !isRewardMsg) {
                         trackData.msgIdsToClean.push(msg.id); 
                     }
 
+                    // 🛑 AUTO-DELETE TRASH REJECTIONS
                     if (
                         textLower.includes("already registered") || 
                         textLower.includes("please submit this number again") ||
@@ -2419,6 +2388,7 @@ async function processWsotpQueue(chatId) {
                         await updateStats();
                     } 
                     
+                    // 💰 SUCCESS / PAID (Never deletes from target bot!)
                     else if (isRewardMsg) {
                         let amountStr = "0.00";
                         const amountMatch = text.match(/Amount:\s*([\d.]+)\s*USD/i) || text.match(/Amount:\s*([\d.]+)/i);
@@ -2430,9 +2400,7 @@ async function processWsotpQueue(chatId) {
                             }
                         }
 
-                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
-                        try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
-
+                        // 🧹 NUKE MANUAL TG MESSAGES ONLY
                         if (telegramCleanupMap[botNum]) {
                             for (const tgId of telegramCleanupMap[botNum]) {
                                 try { await bot.deleteMessage(chatId, tgId); } catch(e){}
@@ -2449,14 +2417,11 @@ async function processWsotpQueue(chatId) {
                         if (isBackground) delete backgroundTracker[botNum];
                         else delete activeTracker[botNum];
                         
-                        await addLog(`[PAID] \`${botNum}\`: +$${amountStr}`);
+                        await addLog(`🎉 ${botNum}: Paid (+$${amountStr})!`);
                         await updateStats();
                     }
 
-                    else if (text.includes("🟢") || textLower.includes("success")) {
-                        // Wait for payout
-                    }
-
+                    // 🔵 OR 🔴: DOUBLE "IN PROGRESS" OR "ERROR CODE" RETRY
                     else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
                         
                         if (!isErrorCode && (text.includes("🔵") || textLower.includes("in progress"))) {
@@ -2476,14 +2441,12 @@ async function processWsotpQueue(chatId) {
                                 }
                             }
 
-                            const isAutoFile = (currentMode === 'WSOTP_FILE_AUTO');
-                            const isTypingMode = (currentMode === 'WSOTP_MANUAL_MODE');
-
+                            // 🔔 SEND MANUAL PROMPT
                             if (!trackData.manualPromptSent || isErrorCode) {
                                 if (!telegramCleanupMap[botNum]) telegramCleanupMap[botNum] = [];
                                 
-                                let promptText = `*MANUAL OTP ENTRY*\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
-                                if (isErrorCode) promptText = `*WRONG CODE ENTERED*\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
+                                let promptText = `🔔 MANUAL OTP ENTRY\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
+                                if (isErrorCode) promptText = `🔴 WRONG CODE ENTERED\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
 
                                 await delay(1200);
                                 
@@ -2491,26 +2454,29 @@ async function processWsotpQueue(chatId) {
                                     const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
                                     telegramCleanupMap[botNum].push(promptMsg.message_id);
                                     
+                                    // Memory link for the manual reply listener
                                     manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
                                     trackData.manualPromptSent = true;
                                 } catch (spamErr) {}
                             }
 
+                            const isAuto = (currentMode === 'WSOTP_FILE_AUTO');
+                            const isTypingMode = (currentMode === 'WSOTP_MANUAL_MODE');
                             const isPoland = botNum.startsWith('48');
 
-                            if (isAutoFile || (isTypingMode && !isPoland)) {
+                            // ⚡ AUTO-HUNTER: Only fires if in Auto Mode, or Typing Mode (non-Poland)
+                            if (isAuto || (isTypingMode && !isPoland)) {
                                 if (isErrorCode) {
-                                    await addLog(`[RETRY] \`${botNum}\`: Wrong code. Hunting next...`);
+                                    await addLog(`🔄 ${botNum}: Wrong code. Trying next OTP...`);
                                     huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 } else if (!trackData.hunterSpawned) {
                                     trackData.hunterSpawned = true;
-                                    await addLog(`[AUTO-HUNT] \`${botNum}\`: Scanning...`);
+                                    await addLog(`⚡ ${botNum}: Background Hunt Started...`);
                                     huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 }
                             } else {
                                 if (!trackData.hunterSpawned) {
                                     trackData.hunterSpawned = true; 
-                                    await addLog(`[MANUAL] \`${botNum}\`: Awaiting your code input...`);
                                 }
                             }
                             
@@ -2521,13 +2487,12 @@ async function processWsotpQueue(chatId) {
             }
         } catch (readErr) {}
 
-        // --- 3. BACKGROUND MEMORY MANAGEMENT ---
+        // --- 3. BACKGROUND MEMORY MANAGEMENT (Reverted to 15m/30m) ---
         const nowTime = Date.now();
         let stalledCount = 0;
         
         for (const num in activeTracker) {
-            // 🚀 FAST TIMEOUT: 4 Minutes instead of 15 Minutes
-            if (nowTime - activeTracker[num].addedAt > 240000) { 
+            if (nowTime - activeTracker[num].addedAt > 900000) { // 15 mins
                 backgroundTracker[num] = activeTracker[num];
                 delete activeTracker[num]; 
                 stalledCount++; 
@@ -2535,12 +2500,11 @@ async function processWsotpQueue(chatId) {
         }
 
         if (stalledCount > 0) {
-            await addLog(`[STALLED] ${stalledCount} number(s) waited 4m. Moved to background.`);
+            await addLog(`🕒 ${stalledCount} number(s) stalled 15m. Moved to bg.`);
         }
 
         for (const num in backgroundTracker) {
-            // 🚀 FAST TIMEOUT: Delete completely after 8 Minutes
-            if (nowTime - backgroundTracker[num].addedAt > 480000) { 
+            if (nowTime - backgroundTracker[num].addedAt > 1800000) { // 30 mins
                 
                 if (telegramCleanupMap[num]) {
                     for (const tgId of telegramCleanupMap[num]) {
@@ -2560,9 +2524,8 @@ async function processWsotpQueue(chatId) {
     }
 
     wsotpActive[chatId] = false;
-    bot.sendMessage(chatId, `*[WSOTP DAEMON OFFLINE]*\nEngine shut down.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `[WSOTP DAEMON OFFLINE]\nEngine shut down successfully.`);
 }
-
 
 // ==========================================
 // 2. THE EXACT bot.onText OTP HUNTER
@@ -2583,11 +2546,11 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     let foundCode = null;
     
     while (Date.now() - startTime < MAX_TIME) {
-        if (!['WSOTP_FILE_AUTO'].includes(userState[chatId])) return; 
+        if (!['WSOTP_FILE_AUTO', 'WSOTP_MANUAL_MODE'].includes(userState[chatId])) return; 
 
         // THE KILL SWITCH CHECK
         if (manualOverrideMap.has(formattedNum)) {
-            await addLog(`[ABORT] \`${formattedNum}\`: Manual code entered. Hunter stopped.`);
+            await addLog(`🛑 ${formattedNum}: Manual override detected. Auto-hunter aborted.`);
             manualOverrideMap.delete(formattedNum); 
             return; 
         }
@@ -2639,7 +2602,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             }
 
             if (foundCode) {
-                await addLog(`[FOUND] \`${formattedNum}\`: Code ${foundCode}. Replying...`);
+                await addLog(`✅ ${formattedNum}: OTP Found (${foundCode}). Replying...`);
                 
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(Math.floor(Math.random() * 800) + 400); 
@@ -2654,109 +2617,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         await delay(2500);
     }
 
-    await addLog(`[FAILED] \`${formattedNum}\`: Gave up after 5 minutes.`);
+    await addLog(`❌ ${formattedNum}: Gave up after 5 minutes.`);
 }
-
-           
-    
-
-        // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---
-    bot.onText(/\/validate/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
-
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /validate");
-        }
-
-        const doc = msg.reply_to_message.document;
-        if (!doc.file_name.endsWith('.txt')) {
-            return bot.sendMessage(chatId, "[ERROR] I can only validate .txt files.");
-        }
-
-        let statusMsg = await bot.sendMessage(chatId, "[SYSTEM] Downloading file and checking telecom rules locally...");
-
-        try {
-            const fileLink = await bot.getFileLink(doc.file_id);
-            const response = await fetch(fileLink);
-            const textData = await response.text();
-
-            // Extract all digit strings
-            const matches = textData.match(/\d{7,15}/g) || [];
-            if (matches.length === 0) {
-                return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
-            }
-
-            const uniqueNumbers = [...new Set(matches)];
-            
-            const validNumbers = [];
-            const invalidNumbers = [];
-
-            // Run the local validation loop
-            for (const rawNum of uniqueNumbers) {
-                try {
-                    // Prepend '+' so the library auto-detects the country code
-                    const parsedNumber = phoneUtil.parseAndKeepRawInput('+' + rawNum);
-                    
-                    // isPossibleNumber checks length, isValidNumber checks strict carrier routing rules
-                    if (phoneUtil.isPossibleNumber(parsedNumber) && phoneUtil.isValidNumber(parsedNumber)) {
-                        validNumbers.push(rawNum);
-                    } else {
-                        invalidNumbers.push(rawNum);
-                    }
-                } catch (err) {
-                    // If the library throws a parsing error, the number format is completely broken
-                    invalidNumbers.push(rawNum);
-                }
-            }
-
-            // Build the final report
-            const finalStats = 
-                `[VALIDATION COMPLETE]\n\n` +
-                `Total Checked: ${uniqueNumbers.length}\n` +
-                `Valid (Safe to Scan): ${validNumbers.length}\n` +
-                `Invalid (Junk/Fake): ${invalidNumbers.length}\n\n` +
-                `The results have been categorized and attached.`;
-
-            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
-
-            if (validNumbers.length === 0 && invalidNumbers.length === 0) {
-                return bot.sendMessage(chatId, "[RESULT] File contained no readable digits.");
-            }
-
-            // 1. Send the Valid file if it has data
-            if (validNumbers.length > 0) {
-                const validBuffer = Buffer.from(validNumbers.join('\n'));
-                await bot.sendDocument(
-                    chatId, 
-                    validBuffer, 
-                    { caption: finalStats, parse_mode: 'Markdown' }, 
-                    { filename: `Valid_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
-                );
-            }
-
-            // 2. Send the Invalid file if it has data
-            if (invalidNumbers.length > 0) {
-                const invalidBuffer = Buffer.from(invalidNumbers.join('\n'));
-                // Only attach the full stats to the caption if we didn't already send it with the Valid file
-                const invalidCaption = validNumbers.length > 0 ? `[INVALID NUMBERS FILTERED]` : finalStats;
-                
-                await bot.sendDocument(
-                    chatId, 
-                    invalidBuffer, 
-                    { caption: invalidCaption, parse_mode: 'Markdown' }, 
-                    { filename: `Invalid_Numbers_${Date.now()}.txt`, contentType: 'text/plain' }
-                );
-            }
-
-        } catch (error) {
-            console.error(error);
-            bot.sendMessage(chatId, "[ERROR] Validation failed: " + error.message);
-        }
-    });
 
 
 

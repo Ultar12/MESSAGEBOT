@@ -20,7 +20,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit-table';
 import PDFPlain from 'pdfkit';
 import axios from 'axios';
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import fs from 'fs';
 import TelegramBot from 'node-telegram-bot-api';
@@ -280,9 +280,10 @@ async function loginNumberPanel(username, password, force = false) {
     let browser = null;
     try {
         browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
+        headless: true,
+        executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
         const page = await browser.newPage();
         await page.goto(`${NP_BASE_URL}/login`, { waitUntil: 'networkidle2' });
 

@@ -230,135 +230,168 @@ const manualOverrideMap = new Set(); // 🧠 Kill Switch
 
 
 // =========================================================
-// --- TIMESMS AUTOMATION ENGINE (HYBRID WORKER) ---
+// --- TIMESMS AUTOMATION ENGINE (NATIVE HTTP WORKER) ---
 // =========================================================
 
 const NP_BASE_URL = "https://timesms.org";
 const NP_POLL_SEC = 16 * 1000;
-
-// Config
 const NP_TARGET_CHAT_ID = '-1003645249777';
+
 const NP_ACCOUNTS = [
     { name: "Suzume", username: "Suzume", password: "Suzume", topic_id: null },
 ];
 
-// Tracking Memory (If you don't have a DB for this, use a Set)
-const seenNpMessages = new Set();
-async function isNpSeen(key) { return seenNpMessages.has(key); }
-async function markNpSeen(key) { seenNpMessages.add(key); }
+// --- DATABASE INITIALIZATION ---
+pool.query(`CREATE TABLE IF NOT EXISTS numberpanel_sent (id VARCHAR(255) PRIMARY KEY);`)
+    .then(() => console.log('[SYSTEM] TimeSMS Tracking DB Ready.'))
+    .catch(console.error);
 
-// --- UTILITY ---
-function getNpFlag(numberStr, countryName) {
-    if (numberStr) {
-        try {
-            const parsed = parsePhoneNumberFromString("+" + numberStr.replace(/^\+/, ''));
-            if (parsed && parsed.country) {
-                return parsed.country.toUpperCase().replace(/./g, char => String.fromCodePoint(char.charCodeAt(0) + 127397));
-            }
-        } catch (e) {}
-    }
-    return "🌍";
+async function isNpSeen(key) {
+    try {
+        const res = await pool.query('SELECT 1 FROM numberpanel_sent WHERE id = $1', [key]);
+        return res.rows.length > 0;
+    } catch (err) { return false; }
 }
 
-function extractOTP(msg) {
-    const patterns = [/\b(\d{3}-\d{3})\b/i, /\b(\d{6})\b/i, /\b(\d{4})\b/i, /\b(\d{5})\b/i, /OTP[:\s]*(\d+)/i, /code[:\s]*(\d+)/i];
+async function markNpSeen(key) {
+    try {
+        await pool.query('INSERT INTO numberpanel_sent (id) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
+    } catch (err) {}
+}
+
+// --- UTILITY FUNCTIONS ---
+function solveNpCaptcha(html) {
+    const patterns = [
+        /What is\s*(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*\?/i,
+        /(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*\?/i,
+        /(\d+)\s*([\+\-\*\/])\s*(\d+)/i
+    ];
     for (let pat of patterns) {
-        const match = msg.match(pat);
-        if (match && match[1]) return match[1];
+        const m = html.match(pat);
+        if (m) {
+            const a = parseInt(m[1]), op = m[2], b = parseInt(m[3]);
+            if (op === '+') return (a + b).toString();
+            if (op === '-') return (a - b).toString();
+            if (op === '*') return (a * b).toString();
+            if (op === '/' && b !== 0) return Math.floor(a / b).toString();
+        }
     }
     return null;
 }
 
-// --- LOGIN ENGINE ---
-async function loginNumberPanel(username, password, force = false) {
-    if (npSessions[username] && !force) return npSessions[username];
-
-    console.log(`[SYSTEM] Booting Engine for ${username}...`);
-    let browser = null;
-    // Replace your puppeteer.launch in the TimeSMS engine with this:
-try {
-    browser = await puppeteer.launch({
-        headless: true,
-        executablePath: getChromePath() || undefined, // Fallback if path is null
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-} catch (e) {
-    console.error("[CRITICAL] Chrome failed to launch:", e.message);
-    return null; // Don't throw, just return null so the app stays ALIVE
+function extractOTP(msg) {
+    const patterns = [
+        /\b(\d{3}-\d{3})\b/, /\b(\d{6})\b/, /\b(\d{4})\b/, 
+        /\b(\d{5})\b/, /\b(\d{8})\b/, /OTP[:\s]*(\d+)/i, 
+        /code[:\s]*(\d+)/i, /verification[:\s]*(\d+)/i, /pin[:\s]*(\d+)/i
+    ];
+    for (let pat of patterns) {
+        const match = msg.match(pat);
+        if (match) return match[1];
+    }
+    return null;
 }
 
-        const page = await browser.newPage();
-        await page.goto(`${NP_BASE_URL}/login`, { waitUntil: 'networkidle2' });
-
-        // Math Captcha Solver
-        const captchaAnswer = await page.evaluate(() => {
-            const match = document.body.innerText.match(/What is\s*(\d+)\s*([\+\-\*])\s*(\d+)/i);
-            if (match) {
-                const n1 = parseInt(match[1]), op = match[2], n2 = parseInt(match[3]);
-                return op === '+' ? (n1+n2).toString() : (n1-n2).toString();
-            }
-            return null;
+function updateCookies(headers, currentCookies) {
+    if (headers['set-cookie']) {
+        headers['set-cookie'].forEach(cookieStr => {
+            const parts = cookieStr.split(';')[0].split('=');
+            currentCookies[parts[0]] = parts.slice(1).join('=');
         });
+    }
+    return currentCookies;
+}
 
-        await page.type('input[placeholder*="sername"]', username);
-        await page.type('input[placeholder*="assword"]', password);
-        if (captchaAnswer) await page.type('input[placeholder*="nswer"]', captchaAnswer);
-        await page.keyboard.press('Enter');
-        await page.waitForNavigation({ timeout: 10000 }).catch(() => {});
-
-        const cookies = await page.cookies();
-        const cookieObj = {};
-        cookies.forEach(c => cookieObj[c.name] = c.value);
-        
-        const role = page.url().includes("client") ? "client" : "agent";
-        await page.goto(`${NP_BASE_URL}/${role}/SMSCDRStats`);
-        const html = await page.content();
-        const sessMatch = html.match(/sesskey=([^&"\s']+)/);
-        
-        return { cookies: cookieObj, role, sesskey: sessMatch ? sessMatch[1] : null, headers: { 'User-Agent': 'Mozilla/5.0' } };
-    } catch (e) { return null; } finally { if (browser) await browser.close(); }
+function getCookieString(cookies) {
+    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
 }
 
 const npSessions = {};
 
-// --- SENDER & RAM INJECTION ---
-async function sendNpMessage(sms, name, topicId) {
-    const code = (extractOTP(sms.msg) || "FAILED").replace(/-/g, '');
-    const cleanNum = sms.num.replace(/[^0-9]/g, '');
-    const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
-    
-    // 🧠 INJECT INTO RAM MEMORY
-    if (code !== "FAILED") {
-        liveOtpMemory.push({ maskedNumber, code, timestamp: Date.now() });
-        if (liveOtpMemory.length > 100) liveOtpMemory.shift();
-    }
+// --- LOGIN ROUTINE ---
+async function loginNumberPanel(username, password, force = false) {
+    if (npSessions[username] && !force) return npSessions[username];
 
-    const design = `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n┃❃│ Number : ${maskedNumber}\n┃❃│ Code   : \`${code}\`\n╰═════════════════⊷`;
+    const cookies = {};
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    };
 
     try {
-        await bot.sendMessage(NP_TARGET_CHAT_ID, design, { parse_mode: 'Markdown' });
-        return true;
-    } catch (e) { return false; }
+        let res1 = await axios.get(`${NP_BASE_URL}/login`, { headers, validateStatus: () => true });
+        updateCookies(res1.headers, cookies);
+        
+        const cap = solveNpCaptcha(res1.data);
+        if (!cap) throw new Error("Captcha solve failed.");
+
+        headers['Cookie'] = getCookieString(cookies);
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        headers['Origin'] = NP_BASE_URL;
+        headers['Referer'] = `${NP_BASE_URL}/login`;
+
+        const loginData = new URLSearchParams({ username, password, capt: cap }).toString();
+
+        let res2 = await axios.post(`${NP_BASE_URL}/signin`, loginData, { 
+            headers, 
+            maxRedirects: 0, 
+            validateStatus: status => status >= 200 && status < 400 
+        });
+
+        updateCookies(res2.headers, cookies);
+
+        const loc = res2.headers.location || "";
+        if (loc.toLowerCase().includes("login")) throw new Error("Login failed.");
+
+        const role = loc.includes("client") ? "client" : "agent";
+        headers['Cookie'] = getCookieString(cookies);
+        let res3 = await axios.get(`${NP_BASE_URL}/${role}/SMSCDRStats`, { headers, validateStatus: () => true });
+        
+        const sessMatch = res3.data.match(/sesskey=([^&"\s']+)/);
+        
+        console.log(`[SYSTEM] TimeSMS Logged In: ${username}`);
+        return npSessions[username] = { cookies, role, sesskey: sessMatch ? sessMatch[1] : null, headers };
+    } catch (err) {
+        console.error(`[ERROR] TimeSMS Login: ${err.message}`);
+        return null;
+    }
 }
 
-// --- MAIN LOOP ---
+// --- DATA FETCHING & RAM INJECTION ---
 async function pollNumberPanel(acc) {
     const sess = await loginNumberPanel(acc.username, acc.password);
     if (sess) {
         try {
-            const params = new URLSearchParams({"iDisplayLength": "50", "sesskey": sess.sesskey});
-            const res = await axios.get(`${NP_BASE_URL}/${sess.role}/res/data_smscdr.php?${params}`, {
-                headers: { ...sess.headers, 'Cookie': Object.entries(sess.cookies).map(([k,v]) => `${k}=${v}`).join('; ') }
+            const params = new URLSearchParams({ "iDisplayLength": "50", "sesskey": sess.sesskey });
+            const response = await axios.get(`${NP_BASE_URL}/${sess.role}/res/data_smscdr.php?${params}`, {
+                headers: { ...sess.headers, 'Cookie': getCookieString(sess.cookies) }
             });
 
-            for (let rec of res.data.aaData) {
-                const sms = { num: rec[2], svc: rec[3], country: rec[1], msg: rec[5] };
-                const key = `${sms.num}|${sms.msg}`;
+            for (let rec of response.data.aaData) {
+                const sms = { num: rec[2], svc: rec[3], msg: rec[5] };
+                const key = `${sms.num}|${sms.msg.substring(0, 50)}`;
+                
                 if (!(await isNpSeen(key))) {
-                    if (await sendNpMessage(sms, acc.name, acc.topic_id)) await markNpSeen(key);
+                    const code = (extractOTP(sms.msg) || "FAILED").replace(/-/g, '');
+                    if (code !== "FAILED") {
+                        // 🧠 INJECT INTO RAM MEMORY
+                        const cleanNum = sms.num.replace(/[^0-9]/g, '');
+                        const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
+                        
+                        liveOtpMemory.push({ maskedNumber, code, timestamp: Date.now() });
+                        if (liveOtpMemory.length > 100) liveOtpMemory.shift();
+
+                        // Telegram Alert using your main 'bot' instance
+                        const design = `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n┃❃│ Number : ${maskedNumber}\n┃❃│ Code   : \`${code}\`\n╰═════════════════⊷`;
+                        await bot.sendMessage(NP_TARGET_CHAT_ID, design, { parse_mode: 'Markdown' });
+                        
+                        await markNpSeen(key);
+                    }
                 }
             }
-        } catch (e) {}
+        } catch (e) { /* silent catch */ }
     }
     setTimeout(() => pollNumberPanel(acc), NP_POLL_SEC);
 }

@@ -778,14 +778,6 @@ export async function initUserBot(activeClients) {
 
 
 
-
-// ==========================================
-// LIVE OTP RAM MEMORY (Limit: 100)
-// ==========================================
-export const liveOtpMemory = []; 
-
-
-
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
@@ -983,22 +975,9 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
                         maskedNumber = maskedNumber.replace(/[xX]+/g, '•••');
 
-                        // 🧠 --- NEW: ADD TO RAM MEMORY ---
-                        liveOtpMemory.push({
-                            maskedNumber: maskedNumber,
-                            code: code,
-                            timestamp: Date.now()
-                        });
-                        
-                        // Enforce the 100 limit
-                        if (liveOtpMemory.length > 100) {
-                            liveOtpMemory.shift(); // Removes the oldest entry
-                        }
-                        // ---------------------------------
 
                         // --- INJECTED STRICT SPY LOGIC ---
                         try {
-
                             const ccToPrefix = {
                                 "VE": "58", "ZW": "263", "NG": "234", "GN": "224", "CI": "225",
                                 "ID": "62", "BR": "55", "RU": "7", "PK": "92", "ZA": "27",
@@ -2527,19 +2506,16 @@ async function processWsotpQueue(chatId) {
                             // ⚡ TRIGGER LOGIC: Auto scrapes group. Manual waits for user.
                             if (isErrorCode) {
                                 await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
-                                // Add await here:
-                                if (isAuto) await huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                             } else if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
                                 if (isAuto) {
-                                    await addLog(`⚡ \`${botNum}\`: Sequential Hunt Started...`);
-                                    // Add await here:
-                                    await huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                    await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 } else {
                                     await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for your reply)...`);
                                 }
                             }
-
                             
                             await updateStats();
                         }
@@ -2590,20 +2566,22 @@ async function processWsotpQueue(chatId) {
 
 
 // ==========================================
-// 2. THE NEW RAM-BASED OTP HUNTER
+// 2. THE EXACT bot.onText OTP HUNTER
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
+    const OTP_GROUP = -1003645249777; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
+    // 🧠 DYNAMIC 3 OR 4 DIGIT EXTRACTOR
     const cleanNum = formattedNum.replace(/\D/g, '');
     const search4 = cleanNum.slice(-4);
     const search3 = cleanNum.slice(-3);
 
     const startTime = Date.now();
-    const MAX_TIME = 180000; // 3 Minutes Max
+    const MAX_TIME = 180000; // 5 Minutes Max
 
-    // ⚡ Wait exactly 3 seconds to let the forwarder catch it
+    // ⚡ Wait exactly 3 seconds
     await delay(3000);
 
     let foundCode = null;
@@ -2612,7 +2590,6 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     // ✅ FIXED: include all valid active modes
     const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
     if (!validModes.includes(userState[chatId])) return;
-        
         // THE KILL SWITCH CHECK
         if (typeof manualOverrideMap !== 'undefined' && manualOverrideMap.has(cleanNum)) {
             await addLog(`[ABORT] \`${cleanNum}\`: Manual code entered. Hunter stopped.`);
@@ -2621,32 +2598,53 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // 🧠 SEARCH MEMORY (RAM) INSTEAD OF TELEGRAM API
-            // Loop backwards to check the newest OTPs first
-
-            console.log(`[HUNTER] Searching memory (${liveOtpMemory.length} entries) for suffix: ${search4}`);
-            for (let i = liveOtpMemory.length - 1; i >= 0; i--) {
-                const mem = liveOtpMemory[i];
+            // ⚡ STRICT 25 MESSAGES ONLY
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
+            
+            // GramJS dates are in seconds. 10 minutes = 600 seconds.
+            const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
+            
+            for (const m of otpMsgs) {
+                if (!m.message) continue;
+                if (m.date < tenMinsAgo) continue; 
                 
-                // Strip bullets/formatting from the masked number to compare just the digits
-                const safeMaskedDigits = mem.maskedNumber.replace(/\D/g, '');
+                // 🧠 DYNAMIC REGEX: Matches exactly the 4-digit OR 3-digit suffix. 
+                // \b ensures it doesn't accidentally match 029 inside 2029.
+                const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
                 
-                if (safeMaskedDigits.endsWith(search4) || safeMaskedDigits.endsWith(search3)) {
-                    let tempCode = mem.code;
+                if (numRegex.test(m.message)) {
                     
-                    // 🔄 Check if we already tried this code and it failed
-                    if (trackData.usedCodes.has(tempCode)) {
-                        continue; 
-                    } else {
-                        foundCode = tempCode;
-                        trackData.usedCodes.add(foundCode); 
-                        break;
+                    let tempCode = null;
+
+                    // 🛑 Extracts Code strictly from inline buttons ONLY
+                    if (m.replyMarkup && m.replyMarkup.rows) {
+                        for (const row of m.replyMarkup.rows) {
+                            // Safely handle GramJS button array structure
+                            const btnArray = row.buttons || row; 
+                            for (const btn of btnArray) {
+                                const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
+                                if (btnMatch) tempCode = btnMatch[1];
+                            }
+                            if (tempCode) break;
+                        }
+                    }
+                    
+                    // 🔄 THE RETRY MEMORY BANK
+                    if (tempCode) {
+                        if (trackData.usedCodes.has(tempCode)) {
+                            tempCode = null; 
+                            continue; // This code already failed (🔴), keep looking for the next one
+                        } else {
+                            foundCode = tempCode;
+                            trackData.usedCodes.add(foundCode); 
+                            break;
+                        }
                     }
                 }
             }
 
             if (foundCode) {
-                await addLog(`✅ \`${cleanNum}\`: OTP Found in Memory (${foundCode}). Replying...`);
+                await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 try {
                     await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
@@ -2670,9 +2668,11 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         await delay(2500); // Loop every 2.5 seconds
     }
 
-    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
+    await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
 }
-                        
+
+
+                             
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---
@@ -2777,7 +2777,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     
         // --- /st : Extract "Recently used numbers" and filter against DB ---
-    bot.onText(/^\/run/i, async (msg) => {
+    bot.onText(/^\/st/i, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();
@@ -8505,19 +8505,37 @@ const cleanNumbers = matches.map(n => {
             const fastConnectedSet = new Set(job.connectedSet);
             const fastDbSet = new Set(job.dbSet);
 
-                        // 3. PROCESSING LOOP (UPGRADED FOR CONCURRENCY)
-            const CHUNK_SIZE = 5; // Processes 5 numbers at the exact same time
-
-            for (let i = job.currentIndex; i < job.lines.length; i += CHUNK_SIZE) {
+            // 3. PROCESSING LOOP
+            for (let i = job.currentIndex; i < job.lines.length; i++) {
                 if (userState[chatId + '_stopFlag']) {
                     job.currentIndex = i; 
                     break;
                 }
 
                 job.currentIndex = i;
+                const line = job.lines[i];
+                const res = normalizeWithCountry(line);
+                
+                if (!res || !res.num) continue; 
+
+                if (job.detectedCountry === "Unknown" && res.name !== "Local/Unknown") {
+                    job.detectedCountry = res.name;
+                    job.detectedCode = res.code;
+                }
+
+                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                const numberToOutput = job.cmdType === 'txt' ? res.num : fullPhone;
+
+                if (fastConnectedSet.has(fullPhone) || fastDbSet.has(fullPhone)) {
+                    job.skippedCount++;
+                    continue;
+                }
+
+                job.totalChecked++;
 
                 if (job.isStreaming) {
                     // FAILOVER SYSTEM: Check if current bot died or was banned mid-way
+                                        // FAILOVER SYSTEM: Check if current bot died or was banned mid-way
                     if (!clients[currentFolder] || !sock || !sock.user) {
                         bot.sendMessage(chatId, `[WARNING] Bot +${checkerNum} disconnected or was BANNED!\n[SYSTEM] Finding a new bot...`);
                         
@@ -8531,95 +8549,60 @@ const cleanNumbers = matches.map(n => {
                             });
                         }
                         bot.sendMessage(chatId, `[SUCCESS] Successfully switched to Bot: +${checkerNum}`);
-                        i -= CHUNK_SIZE; // Step back to retry this chunk
-                        continue;
-                    }
-                }
-
-                const currentChunk = job.lines.slice(i, i + CHUNK_SIZE);
-                const checkPromises = [];
-
-                for (const line of currentChunk) {
-                    const res = normalizeWithCountry(line);
-                    if (!res || !res.num) continue; 
-
-                    if (job.detectedCountry === "Unknown" && res.name !== "Local/Unknown") {
-                        job.detectedCountry = res.name;
-                        job.detectedCode = res.code;
-                    }
-
-                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                    const numberToOutput = job.cmdType === 'txt' ? res.num : fullPhone;
-
-                    if (fastConnectedSet.has(fullPhone) || fastDbSet.has(fullPhone)) {
-                        job.skippedCount++;
+                        i--; 
                         continue;
                     }
 
-                    job.totalChecked++;
 
-                    if (job.isStreaming) {
+                    try {
                         const jid = `${fullPhone}@s.whatsapp.net`;
+                        const checkPromise = sock.onWhatsApp(jid);
+                        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
                         
-                        // Push into concurrency array instead of awaiting immediately
-                        const p = new Promise(async (resolve) => {
-                            try {
-                                const checkPromise = sock.onWhatsApp(jid);
-                                const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("WA_TIMEOUT")), 5000));
-                                const [check] = await Promise.race([checkPromise, timeoutPromise]);
-                                resolve({ success: true, check, numberToOutput });
-                            } catch (err) {
-                                resolve({ success: false, err, numberToOutput });
-                            }
-                        });
-                        checkPromises.push(p);
-
-                    } else {
-                        // Normal mode (No WA check)
-                        job.validCount++;
-                        if (job.outputAsFile) {
-                            job.activeFileArray.push(numberToOutput); 
-                        } else {
-                            job.activeBatch.push(numberToOutput); 
-                        }
-                    }
-                }
-
-                // Execute all WA checks in this chunk SIMULTANEOUSLY
-                if (job.isStreaming && checkPromises.length > 0) {
-                    const results = await Promise.all(checkPromises);
-
-                    for (const r of results) {
-                        if (r.success && r.check && r.check.exists) {
+                        const [check] = await Promise.race([checkPromise, timeoutPromise]);
+                        
+                        if (check && check.exists) {
                             job.validCount++;
                             if (job.outputAsFile) {
-                                job.activeFileArray.push(r.numberToOutput);
+                                job.activeFileArray.push(numberToOutput);
                             } else {
-                                job.activeBatch.push(r.numberToOutput);
+                                job.activeBatch.push(numberToOutput);
+                                if (job.activeBatch.length === 5) {
+                                    await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                    job.activeBatch = []; 
+                                    await delay(1000); 
+                                }
                             }
                         } else {
-                            job.bannedNumbers.push(r.numberToOutput);
+                            job.bannedNumbers.push(numberToOutput);
+                        }
+                         } catch (err) {
+                        // If the bot died exactly during this request, step back and trigger failover
+                        if (err.message !== "WA_TIMEOUT" && (!clients[currentFolder] || !sock || !sock.user)) {
+                            i--; 
+                            continue;
+                        }
+                        job.bannedNumbers.push(numberToOutput); 
+                    }
+
+
+                    await delay(500); // Anti-ban delay
+
+                } else {
+                    job.validCount++;
+                    if (job.outputAsFile) {
+                        job.activeFileArray.push(numberToOutput); 
+                    } else {
+                        job.activeBatch.push(numberToOutput); 
+                        if (job.activeBatch.length === 5) {
+                            await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                            job.activeBatch = [];
+                            await delay(800);
                         }
                     }
-
-                    // Flush active batch if sending in chat
-                    if (!job.outputAsFile && job.activeBatch.length >= 5) {
-                        await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                        job.activeBatch = []; 
-                        await delay(800); 
-                    }
-
-                    // Single Anti-Ban delay for the entire chunk (Speeds up processing massively)
-                    await delay(1200); 
-
-                } else if (!job.isStreaming && !job.outputAsFile && job.activeBatch.length >= 5) {
-                    await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                    job.activeBatch = [];
-                    await delay(800);
                 }
 
                 // 4. LIVE PROGRESS DASHBOARD
-                // Update every 10 numbers to prevent Telegram from rate-limiting the edits
                 if (i > 0 && i % 10 === 0) {
                     const percent = Math.floor((i / job.lines.length) * 100);
                     const left = job.lines.length - i;
@@ -8634,10 +8617,9 @@ const cleanNumbers = matches.map(n => {
                     
                     try {
                         await bot.editMessageText(progressMsg, {chat_id: chatId, message_id: job.statusMsgId, parse_mode: 'Markdown'});
-                    } catch(e){} 
+                    } catch(e){} // Ignore 'message is not modified' errors
                 }
             }
-
 
             // 5. END OF PROCESSING / SUMMARY
             const isAborted = userState[chatId + '_stopFlag'];

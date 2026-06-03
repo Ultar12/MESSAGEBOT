@@ -2562,19 +2562,19 @@ async function processWsotpQueue(chatId) {
 // 2. THE EXACT bot.onText OTP HUNTER
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
-    const OTP_GROUP = "-1003645249777"; 
+    // 🛑 FIX 1: Exact integer format, no quotes. Exactly matches `msg.chat.id`!
+    const OTP_GROUP = -1003645249777; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 STRICTLY LAST 3 DIGITS
+    // 🛑 FIX 2: Exact same extraction as your manual listener (Last 4 digits)
     const cleanNum = formattedNum.replace(/\D/g, '');
-    const searchDigits = cleanNum.slice(-3);
+    const searchDigits = cleanNum.length >= 4 ? cleanNum.slice(-4) : cleanNum;
 
     const startTime = Date.now();
     const MAX_TIME = 300000; // 5 minutes
 
-    // 🛑 EXACT DELAY: Wait exactly 3 seconds before starting the scan
-    await delay(3000);
+    await delay(3000); // Wait 3s before starting scan
 
     let foundCode = null;
     
@@ -2589,11 +2589,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // 🛑 FIX: Safely wrap the ID in BigInt to prevent silent GramJS peer crashes
-            const safePeer = BigInt(OTP_GROUP);
-            
-            // EXACT LIMIT: Grab exactly the last 25 messages
-            const otpMsgs = await userBot.getMessages(safePeer, { limit: 25 });
+            // 🛑 FIX 3: Increased limit to 100, exactly like your manual listener!
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
             
             // GramJS dates are in seconds. 10 minutes = 600 seconds.
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
@@ -2602,22 +2599,24 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 // Ignore empty messages or messages older than 10 minutes
                 if (!m.message || m.date < tenMinsAgo) continue; 
                 
-                // Check if the "Number" line contains the extracted 3 digits
+                // Check if the "Number" line contains the extracted digits
                 const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
                 
                 if (numRegex.test(m.message)) {
                     
                     let tempCode = null;
 
-                    // 🛑 EXACT LOGIC: Checking ONLY the Inline Buttons for "Copy: XXXXX"
-                    if (m.replyMarkup && m.replyMarkup.rows) {
+                    // 🧠 EXACT METHOD A: Check the text body
+                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
+                    if (codeMatchText) {
+                        tempCode = codeMatchText[1];
+                    }
+                    
+                    // 🧠 EXACT METHOD B: Check the Inline Buttons
+                    if (!tempCode && m.replyMarkup && m.replyMarkup.rows) {
                         for (const row of m.replyMarkup.rows) {
-                            // Safely handle GramJS button array structure
-                            const btnArray = row.buttons || row; 
-                            for (const btn of btnArray) {
+                            for (const btn of row.buttons) {
                                 const btnText = btn.text || "";
-                                
-                                // Your exact Regex
                                 const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
                                 if (btnMatch) {
                                     tempCode = btnMatch[1];
@@ -2655,7 +2654,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 return; 
             }
         } catch (e) {
-            // 🛑 FIX: Actually log the error to your console so you know if GramJS crashes
+            // Log to console if GramJS crashes so you can see it
             console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message);
         }
 
@@ -2664,6 +2663,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
 }
+
 
                              
     

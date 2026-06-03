@@ -1,5 +1,3 @@
-process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-
 import { TelegramClient, Api } from "telegram";
 import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";
@@ -19,10 +17,7 @@ import ExcelJS from 'exceljs';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit-table';
 import PDFPlain from 'pdfkit';
-import axios from 'axios';
-import puppeteer from 'puppeteer-core';
-import { parsePhoneNumberFromString } from 'libphonenumber-js';
-import fs from 'fs';
+import fs from 'fs'; 
 import TelegramBot from 'node-telegram-bot-api';
 import { pipeline } from 'node:stream/promises';
 import * as XLSX from 'xlsx';
@@ -227,177 +222,6 @@ let isProcessingWsQueue = false;
 const telegramCleanupMap = {}; 
 const manualOtpPrompts = {};   
 const manualOverrideMap = new Set(); // 🧠 Kill Switch
-
-
-// =========================================================
-// --- TIMESMS AUTOMATION ENGINE (NATIVE HTTP WORKER) ---
-// =========================================================
-
-const NP_BASE_URL = "https://timesms.org";
-const NP_POLL_SEC = 16 * 1000;
-const NP_TARGET_CHAT_ID = '-1003645249777';
-
-const NP_ACCOUNTS = [
-    { name: "Suzume", username: "Suzume", password: "Suzume", topic_id: null },
-];
-
-// --- DATABASE INITIALIZATION ---
-pool.query(`CREATE TABLE IF NOT EXISTS numberpanel_sent (id VARCHAR(255) PRIMARY KEY);`)
-    .then(() => console.log('[SYSTEM] TimeSMS Tracking DB Ready.'))
-    .catch(console.error);
-
-async function isNpSeen(key) {
-    try {
-        const res = await pool.query('SELECT 1 FROM numberpanel_sent WHERE id = $1', [key]);
-        return res.rows.length > 0;
-    } catch (err) { return false; }
-}
-
-async function markNpSeen(key) {
-    try {
-        await pool.query('INSERT INTO numberpanel_sent (id) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
-    } catch (err) {}
-}
-
-// --- UTILITY FUNCTIONS ---
-function solveNpCaptcha(html) {
-    const patterns = [
-        /What is\s*(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*\?/i,
-        /(\d+)\s*([\+\-\*\/])\s*(\d+)\s*=\s*\?/i,
-        /(\d+)\s*([\+\-\*\/])\s*(\d+)/i
-    ];
-    for (let pat of patterns) {
-        const m = html.match(pat);
-        if (m) {
-            const a = parseInt(m[1]), op = m[2], b = parseInt(m[3]);
-            if (op === '+') return (a + b).toString();
-            if (op === '-') return (a - b).toString();
-            if (op === '*') return (a * b).toString();
-            if (op === '/' && b !== 0) return Math.floor(a / b).toString();
-        }
-    }
-    return null;
-}
-
-function extractOTP(msg) {
-    const patterns = [
-        /\b(\d{3}-\d{3})\b/, /\b(\d{6})\b/, /\b(\d{4})\b/, 
-        /\b(\d{5})\b/, /\b(\d{8})\b/, /OTP[:\s]*(\d+)/i, 
-        /code[:\s]*(\d+)/i, /verification[:\s]*(\d+)/i, /pin[:\s]*(\d+)/i
-    ];
-    for (let pat of patterns) {
-        const match = msg.match(pat);
-        if (match) return match[1];
-    }
-    return null;
-}
-
-function updateCookies(headers, currentCookies) {
-    if (headers['set-cookie']) {
-        headers['set-cookie'].forEach(cookieStr => {
-            const parts = cookieStr.split(';')[0].split('=');
-            currentCookies[parts[0]] = parts.slice(1).join('=');
-        });
-    }
-    return currentCookies;
-}
-
-function getCookieString(cookies) {
-    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
-}
-
-const npSessions = {};
-
-// --- LOGIN ROUTINE ---
-async function loginNumberPanel(username, password, force = false) {
-    if (npSessions[username] && !force) return npSessions[username];
-
-    const cookies = {};
-    const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
-    };
-
-    try {
-        let res1 = await axios.get(`${NP_BASE_URL}/login`, { headers, validateStatus: () => true });
-        updateCookies(res1.headers, cookies);
-        
-        const cap = solveNpCaptcha(res1.data);
-        if (!cap) throw new Error("Captcha solve failed.");
-
-        headers['Cookie'] = getCookieString(cookies);
-        headers['Content-Type'] = 'application/x-www-form-urlencoded';
-        headers['Origin'] = NP_BASE_URL;
-        headers['Referer'] = `${NP_BASE_URL}/login`;
-
-        const loginData = new URLSearchParams({ username, password, capt: cap }).toString();
-
-        let res2 = await axios.post(`${NP_BASE_URL}/signin`, loginData, { 
-            headers, 
-            maxRedirects: 0, 
-            validateStatus: status => status >= 200 && status < 400 
-        });
-
-        updateCookies(res2.headers, cookies);
-
-        const loc = res2.headers.location || "";
-        if (loc.toLowerCase().includes("login")) throw new Error("Login failed.");
-
-        const role = loc.includes("client") ? "client" : "agent";
-        headers['Cookie'] = getCookieString(cookies);
-        let res3 = await axios.get(`${NP_BASE_URL}/${role}/SMSCDRStats`, { headers, validateStatus: () => true });
-        
-        const sessMatch = res3.data.match(/sesskey=([^&"\s']+)/);
-        
-        console.log(`[SYSTEM] TimeSMS Logged In: ${username}`);
-        return npSessions[username] = { cookies, role, sesskey: sessMatch ? sessMatch[1] : null, headers };
-    } catch (err) {
-        console.error(`[ERROR] TimeSMS Login: ${err.message}`);
-        return null;
-    }
-}
-
-// --- DATA FETCHING & RAM INJECTION ---
-async function pollNumberPanel(acc) {
-    const sess = await loginNumberPanel(acc.username, acc.password);
-    if (sess) {
-        try {
-            const params = new URLSearchParams({ "iDisplayLength": "50", "sesskey": sess.sesskey });
-            const response = await axios.get(`${NP_BASE_URL}/${sess.role}/res/data_smscdr.php?${params}`, {
-                headers: { ...sess.headers, 'Cookie': getCookieString(sess.cookies) }
-            });
-
-            for (let rec of response.data.aaData) {
-                const sms = { num: rec[2], svc: rec[3], msg: rec[5] };
-                const key = `${sms.num}|${sms.msg.substring(0, 50)}`;
-                
-                if (!(await isNpSeen(key))) {
-                    const code = (extractOTP(sms.msg) || "FAILED").replace(/-/g, '');
-                    if (code !== "FAILED") {
-                        // 🧠 INJECT INTO RAM MEMORY
-                        const cleanNum = sms.num.replace(/[^0-9]/g, '');
-                        const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
-                        
-                        liveOtpMemory.push({ maskedNumber, code, timestamp: Date.now() });
-                        if (liveOtpMemory.length > 100) liveOtpMemory.shift();
-
-                        // Telegram Alert using your main 'bot' instance
-                        const design = `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n┃❃│ Number : ${maskedNumber}\n┃❃│ Code   : \`${code}\`\n╰═════════════════⊷`;
-                        await bot.sendMessage(NP_TARGET_CHAT_ID, design, { parse_mode: 'Markdown' });
-                        
-                        await markNpSeen(key);
-                    }
-                }
-            }
-        } catch (e) { /* silent catch */ }
-    }
-    setTimeout(() => pollNumberPanel(acc), NP_POLL_SEC);
-}
-
-NP_ACCOUNTS.forEach(acc => pollNumberPanel(acc));
-
 
 
 // 1. This is the main function your Express server calls
@@ -8677,7 +8501,6 @@ const cleanNumbers = matches.map(n => {
             const fastConnectedSet = new Set(job.connectedSet);
             const fastDbSet = new Set(job.dbSet);
 
-            
                         // 3. PROCESSING LOOP (UPGRADED FOR CONCURRENCY)
             const CHUNK_SIZE = 5; // Processes 5 numbers at the exact same time
 
@@ -9813,4 +9636,3 @@ export function setupLiveOtpStats(userBot, senderBot) {
         }
     }, UPDATE_INTERVAL);
 }
-

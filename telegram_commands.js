@@ -237,10 +237,7 @@ const NP_BASE_URL = "https://timesms.org";
 const NP_POLL_SEC = 16 * 1000;
 
 // Config
-const NP_BOT_TOKEN = '8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY';
 const NP_TARGET_CHAT_ID = '-1003645249777';
-const npBot = new TelegramBot(NP_BOT_TOKEN, { polling: false }); 
-
 const NP_ACCOUNTS = [
     { name: "Suzume", username: "Suzume", password: "Suzume", topic_id: null },
 ];
@@ -278,12 +275,18 @@ async function loginNumberPanel(username, password, force = false) {
 
     console.log(`[SYSTEM] Booting Engine for ${username}...`);
     let browser = null;
-    try {
-        browser = await puppeteer.launch({
+    // Replace your puppeteer.launch in the TimeSMS engine with this:
+try {
+    browser = await puppeteer.launch({
         headless: true,
-        executablePath: '/app/.chrome-for-testing/chrome-linux64/chrome',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        executablePath: getChromePath() || undefined, // Fallback if path is null
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
+} catch (e) {
+    console.error("[CRITICAL] Chrome failed to launch:", e.message);
+    return null; // Don't throw, just return null so the app stays ALIVE
+}
+
         const page = await browser.newPage();
         await page.goto(`${NP_BASE_URL}/login`, { waitUntil: 'networkidle2' });
 
@@ -333,7 +336,7 @@ async function sendNpMessage(sms, name, topicId) {
     const design = `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n┃❃│ Number : ${maskedNumber}\n┃❃│ Code   : \`${code}\`\n╰═════════════════⊷`;
 
     try {
-        await npBot.sendMessage(NP_TARGET_CHAT_ID, design, { parse_mode: 'Markdown' });
+        await bot.sendMessage(NP_TARGET_CHAT_ID, design, { parse_mode: 'Markdown' });
         return true;
     } catch (e) { return false; }
 }

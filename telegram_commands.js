@@ -1682,110 +1682,6 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
 
 
 
-   // ==========================================
-// 3. LIVE OTP STATS BOARD (PLAIN TEXT)
-// ==========================================
-let liveStatsMsgId = null;
-let liveStatsTimestamp = null; // Tracks the exact age of the pinned message
-
-export function setupLiveOtpStats(userBot, senderBot) {
-    const TARGET_GROUP = "-1003645249777"; // Your ULTAR OTP Group
-    const UPDATE_INTERVAL = 30 * 60 * 1000; // 30 minutes
-    const LOOKBACK_SECONDS = 30 * 60; // 30 minutes lookback
-    const REFRESH_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-
-    console.log("[STATS ENGINE] Live Board Initialized. Next update in 30 mins.");
-
-    setInterval(async () => {
-        try {
-            if (!userBot || !userBot.connected) return;
-
-            // Fetch recent messages to cover the 30-minute window
-            const msgs = await userBot.getMessages(TARGET_GROUP, { limit: 800 });
-            const thirtyMinsAgo = Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS;
-
-            const countryTally = {};
-            let totalOtps = 0;
-
-            for (const m of msgs) {
-                if (!m.message || m.date < thirtyMinsAgo) continue;
-                
-                // Extract the Country name and flag from your exact design
-                const match = m.message.match(/Country\s*:\s*([^\n]+)/i);
-                if (match) {
-                    const country = match[1].trim();
-                    countryTally[country] = (countryTally[country] || 0) + 1;
-                    totalOtps++;
-                }
-            }
-
-            // Sort top performing countries
-            const sortedCountries = Object.entries(countryTally)
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 10); // Top 10 leaderboard
-
-            let statsText = `*ULTAR OTP LIVE LEADERBOARD*\n\n`;
-            statsText += `_Analyzing the last 30 minutes of activity..._\n\n`;
-            
-            if (sortedCountries.length === 0) {
-                statsText += `_No OTPs captured recently._\n`;
-            } else {
-                statsText += `*TOP COUNTRIES:*\n`;
-                for (let i = 0; i < sortedCountries.length; i++) {
-                    const [country, count] = sortedCountries[i];
-                    statsText += `${i + 1}. *${country}*: ${count} OTPs\n`;
-                }
-            }
-            
-            statsText += `\n*Total OTPs (30m):* ${totalOtps}\n`;
-            statsText += `_Auto-updates every 30 mins_`;
-
-            const now = Date.now();
-
-            // 24-HOUR RESET LOGIC: Delete the old message if it's been a full day
-            if (liveStatsMsgId && liveStatsTimestamp && (now - liveStatsTimestamp >= REFRESH_INTERVAL)) {
-                try {
-                    await senderBot.deleteMessage(TARGET_GROUP, liveStatsMsgId);
-                } catch (e) {
-                    console.error("[STATS ENGINE] Failed to delete 24h old message:", e.message);
-                }
-                liveStatsMsgId = null; // Forces a brand new message to be sent below
-            }
-
-            // Send and Pin! (Triggers on boot, or when the 24-hour reset clears the ID)
-            if (!liveStatsMsgId) {
-                const sentMsg = await senderBot.sendMessage(TARGET_GROUP, statsText, { parse_mode: 'Markdown' });
-                
-                liveStatsMsgId = sentMsg.message_id;
-                liveStatsTimestamp = now; // Save the exact creation time
-                
-                try {
-                    await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true });
-                } catch(e) {
-                    console.error("[STATS ENGINE] Failed to pin message:", e.message);
-                }
-            } else {
-                // If we already sent it, and it's under 24 hours old, just edit it cleanly
-                try {
-                    await senderBot.editMessageText(statsText, {
-                        chat_id: TARGET_GROUP,
-                        message_id: liveStatsMsgId,
-                        parse_mode: 'Markdown'
-                    });
-                } catch (e) {
-                    if (e.message.includes('message to edit not found')) {
-                        liveStatsMsgId = null;
-                    }
-                }
-            }
-
-        } catch (e) {
-            console.error("[STATS ENGINE ERROR]", e.message);
-        }
-    }, UPDATE_INTERVAL);
-}
- 
-    
     
 
     // --- BURST FORWARD BROADCAST ---
@@ -9621,3 +9517,108 @@ export async function processApiNumbers(rawText) {
 
 
 export { userMessageCache, userState, reactionConfigs };
+
+
+// ==========================================
+// 3. LIVE OTP STATS BOARD (PLAIN TEXT)
+// ==========================================
+let liveStatsMsgId = null;
+let liveStatsTimestamp = null; // Tracks the exact age of the pinned message
+
+export function setupLiveOtpStats(userBot, senderBot) {
+    const TARGET_GROUP = "-1003645249777"; // Your ULTAR OTP Group
+    const UPDATE_INTERVAL = 30 * 60 * 1000; // 30 minutes
+    const LOOKBACK_SECONDS = 30 * 60; // 30 minutes lookback
+    const REFRESH_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+
+    console.log("[STATS ENGINE] Live Board Initialized. Next update in 30 mins.");
+
+    setInterval(async () => {
+        try {
+            if (!userBot || !userBot.connected) return;
+
+            // Fetch recent messages to cover the 30-minute window
+            const msgs = await userBot.getMessages(TARGET_GROUP, { limit: 800 });
+            const thirtyMinsAgo = Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS;
+
+            const countryTally = {};
+            let totalOtps = 0;
+
+            for (const m of msgs) {
+                if (!m.message || m.date < thirtyMinsAgo) continue;
+                
+                // Extract the Country name from your exact design
+                const match = m.message.match(/Country\s*:\s*([^\n]+)/i);
+                if (match) {
+                    const country = match[1].trim();
+                    countryTally[country] = (countryTally[country] || 0) + 1;
+                    totalOtps++;
+                }
+            }
+
+            // Sort top performing countries
+            const sortedCountries = Object.entries(countryTally)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 10); // Top 10 leaderboard
+
+            let statsText = `*ULTAR OTP LIVE LEADERBOARD*\n\n`;
+            statsText += `_Analyzing the last 30 minutes of activity..._\n\n`;
+            
+            if (sortedCountries.length === 0) {
+                statsText += `_No OTPs captured recently._\n`;
+            } else {
+                statsText += `*TOP COUNTRIES:*\n`;
+                for (let i = 0; i < sortedCountries.length; i++) {
+                    const [country, count] = sortedCountries[i];
+                    statsText += `${i + 1}. *${country}*: ${count} OTPs\n`;
+                }
+            }
+            
+            statsText += `\n*Total OTPs (30m):* ${totalOtps}\n`;
+            statsText += `_Auto-updates every 30 mins_`;
+
+            const now = Date.now();
+
+            // 24-HOUR RESET LOGIC: Delete the old message if it's been a full day
+            if (liveStatsMsgId && liveStatsTimestamp && (now - liveStatsTimestamp >= REFRESH_INTERVAL)) {
+                try {
+                    await senderBot.deleteMessage(TARGET_GROUP, liveStatsMsgId);
+                } catch (e) {
+                    console.error("[STATS ENGINE] Failed to delete 24h old message:", e.message);
+                }
+                liveStatsMsgId = null; // Forces a brand new message to be sent below
+            }
+
+            // Send and Pin! (Triggers on boot, or when the 24-hour reset clears the ID)
+            if (!liveStatsMsgId) {
+                const sentMsg = await senderBot.sendMessage(TARGET_GROUP, statsText, { parse_mode: 'Markdown' });
+                
+                liveStatsMsgId = sentMsg.message_id;
+                liveStatsTimestamp = now; // Save the exact creation time
+                
+                try {
+                    await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true });
+                } catch(e) {
+                    console.error("[STATS ENGINE] Failed to pin message:", e.message);
+                }
+            } else {
+                // If we already sent it, and it's under 24 hours old, just edit it cleanly
+                try {
+                    await senderBot.editMessageText(statsText, {
+                        chat_id: TARGET_GROUP,
+                        message_id: liveStatsMsgId,
+                        parse_mode: 'Markdown'
+                    });
+                } catch (e) {
+                    if (e.message.includes('message to edit not found')) {
+                        liveStatsMsgId = null;
+                    }
+                }
+            }
+
+        } catch (e) {
+            console.error("[STATS ENGINE ERROR]", e.message);
+        }
+    }, UPDATE_INTERVAL);
+}
+

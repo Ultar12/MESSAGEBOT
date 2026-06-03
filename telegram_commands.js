@@ -2766,7 +2766,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     
         // --- /st : Extract "Recently used numbers" and filter against DB ---
-    bot.onText(/^\/st/i, async (msg) => {
+    bot.onText(/^\/run/i, async (msg) => {
         deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
         const userId = chatId.toString();

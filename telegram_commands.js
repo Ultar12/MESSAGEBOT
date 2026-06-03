@@ -2609,7 +2609,9 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     let foundCode = null;
     
     while (Date.now() - startTime < MAX_TIME) {
-        if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') return; 
+    // ✅ FIXED: include all valid active modes
+    const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
+    if (!validModes.includes(userState[chatId])) return;
         
         // THE KILL SWITCH CHECK
         if (typeof manualOverrideMap !== 'undefined' && manualOverrideMap.has(cleanNum)) {
@@ -2621,6 +2623,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         try {
             // 🧠 SEARCH MEMORY (RAM) INSTEAD OF TELEGRAM API
             // Loop backwards to check the newest OTPs first
+
+            console.log(`[HUNTER] Searching memory (${liveOtpMemory.length} entries) for suffix: ${search4}`);
             for (let i = liveOtpMemory.length - 1; i >= 0; i--) {
                 const mem = liveOtpMemory[i];
                 

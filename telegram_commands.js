@@ -2657,12 +2657,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     }
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
-}tes.`);
 }
 
-
-                             
-    
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---
     bot.onText(/\/validate/, async (msg) => {

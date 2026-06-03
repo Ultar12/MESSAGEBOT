@@ -778,6 +778,14 @@ export async function initUserBot(activeClients) {
 
 
 
+
+// ==========================================
+// LIVE OTP RAM MEMORY (Limit: 100)
+// ==========================================
+export const liveOtpMemory = []; 
+
+
+
 export function setupLiveOtpForwarder(userBot, activeClients) {
     console.log("[MONITOR] Starting active OTP Polling (Telegram + WhatsApp)...");
 
@@ -975,9 +983,22 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                         maskedNumber = maskedNumber.replace(/VIP/gi, '•••');
                         maskedNumber = maskedNumber.replace(/[xX]+/g, '•••');
 
+                        // 🧠 --- NEW: ADD TO RAM MEMORY ---
+                        liveOtpMemory.push({
+                            maskedNumber: maskedNumber,
+                            code: code,
+                            timestamp: Date.now()
+                        });
+                        
+                        // Enforce the 100 limit
+                        if (liveOtpMemory.length > 100) {
+                            liveOtpMemory.shift(); // Removes the oldest entry
+                        }
+                        // ---------------------------------
 
                         // --- INJECTED STRICT SPY LOGIC ---
                         try {
+
                             const ccToPrefix = {
                                 "VE": "58", "ZW": "263", "NG": "234", "GN": "224", "CI": "225",
                                 "ID": "62", "BR": "55", "RU": "7", "PK": "92", "ZA": "27",
@@ -2569,21 +2590,20 @@ async function processWsotpQueue(chatId) {
 
 
 // ==========================================
-// 2. THE EXACT bot.onText OTP HUNTER
+// 2. THE NEW RAM-BASED OTP HUNTER
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
-    const OTP_GROUP = -1003645249777; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 EXACT MANUAL GRABBER LOGIC
     const cleanNum = formattedNum.replace(/\D/g, '');
-    const searchDigits = cleanNum.length >= 4 ? cleanNum.slice(-4) : cleanNum;
+    const search4 = cleanNum.slice(-4);
+    const search3 = cleanNum.slice(-3);
 
     const startTime = Date.now();
     const MAX_TIME = 180000; // 3 Minutes Max
 
-    // ⚡ Wait exactly 3 seconds
+    // ⚡ Wait exactly 3 seconds to let the forwarder catch it
     await delay(3000);
 
     let foundCode = null;
@@ -2599,61 +2619,30 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // ⚡ EXACT MANUAL GRABBER LIMIT
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
-            
-            // GramJS dates are in seconds. 10 minutes = 600 seconds.
-            const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
-            
-            for (const m of otpMsgs) {
-                if (!m.message) continue;
-                if (m.date < tenMinsAgo) continue; 
+            // 🧠 SEARCH MEMORY (RAM) INSTEAD OF TELEGRAM API
+            // Loop backwards to check the newest OTPs first
+            for (let i = liveOtpMemory.length - 1; i >= 0; i--) {
+                const mem = liveOtpMemory[i];
                 
-                // 🧠 DYNAMIC REGEX: Matches manual grabber perfectly (No strict \b boundary)
-                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
+                // Strip bullets/formatting from the masked number to compare just the digits
+                const safeMaskedDigits = mem.maskedNumber.replace(/\D/g, '');
                 
-                if (numRegex.test(m.message)) {
+                if (safeMaskedDigits.endsWith(search4) || safeMaskedDigits.endsWith(search3)) {
+                    let tempCode = mem.code;
                     
-                    let tempCode = null;
-
-                    // Method A: Check the text body (Fallback)
-                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
-                    if (codeMatchText) {
-                        tempCode = codeMatchText[1];
-                    }
-
-                    // Method B: Check the Inline Buttons
-                    if (!tempCode && m.replyMarkup && m.replyMarkup.rows) {
-                        for (const row of m.replyMarkup.rows) {
-                            const btnArray = row.buttons || row; 
-                            for (const btn of btnArray) {
-                                const btnText = btn.text || "";
-                                const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
-                                if (btnMatch) {
-                                    tempCode = btnMatch[1];
-                                    break;
-                                }
-                            }
-                            if (tempCode) break;
-                        }
-                    }
-                    
-                    // 🔄 THE RETRY MEMORY BANK
-                    if (tempCode) {
-                        if (trackData.usedCodes.has(tempCode)) {
-                            tempCode = null; 
-                            continue; // This code already failed (🔴), keep looking for the next one
-                        } else {
-                            foundCode = tempCode;
-                            trackData.usedCodes.add(foundCode); 
-                            break;
-                        }
+                    // 🔄 Check if we already tried this code and it failed
+                    if (trackData.usedCodes.has(tempCode)) {
+                        continue; 
+                    } else {
+                        foundCode = tempCode;
+                        trackData.usedCodes.add(foundCode); 
+                        break;
                     }
                 }
             }
 
             if (foundCode) {
-                await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
+                await addLog(`✅ \`${cleanNum}\`: OTP Found in Memory (${foundCode}). Replying...`);
                 
                 try {
                     await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
@@ -2679,10 +2668,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
-
-
-
-                             
+                        
     
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

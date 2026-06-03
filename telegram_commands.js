@@ -2506,16 +2506,19 @@ async function processWsotpQueue(chatId) {
                             // ⚡ TRIGGER LOGIC: Auto scrapes group. Manual waits for user.
                             if (isErrorCode) {
                                 await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
-                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                // Add await here:
+                                if (isAuto) await huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                             } else if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
                                 if (isAuto) {
-                                    await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
-                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                    await addLog(`⚡ \`${botNum}\`: Sequential Hunt Started...`);
+                                    // Add await here:
+                                    await huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
                                 } else {
                                     await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for your reply)...`);
                                 }
                             }
+
                             
                             await updateStats();
                         }
@@ -2573,13 +2576,12 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 DYNAMIC 3 OR 4 DIGIT EXTRACTOR
+    // 🧠 EXACT MANUAL GRABBER LOGIC
     const cleanNum = formattedNum.replace(/\D/g, '');
-    const search4 = cleanNum.slice(-4);
-    const search3 = cleanNum.slice(-3);
+    const searchDigits = cleanNum.length >= 4 ? cleanNum.slice(-4) : cleanNum;
 
     const startTime = Date.now();
-    const MAX_TIME = 180000; // 5 Minutes Max
+    const MAX_TIME = 180000; // 3 Minutes Max
 
     // ⚡ Wait exactly 3 seconds
     await delay(3000);
@@ -2597,8 +2599,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // ⚡ STRICT 25 MESSAGES ONLY
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
+            // ⚡ EXACT MANUAL GRABBER LIMIT
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
             
             // GramJS dates are in seconds. 10 minutes = 600 seconds.
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
@@ -2607,22 +2609,30 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 if (!m.message) continue;
                 if (m.date < tenMinsAgo) continue; 
                 
-                // 🧠 DYNAMIC REGEX: Matches exactly the 4-digit OR 3-digit suffix. 
-                // \b ensures it doesn't accidentally match 029 inside 2029.
-                const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
+                // 🧠 DYNAMIC REGEX: Matches manual grabber perfectly (No strict \b boundary)
+                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
                 
                 if (numRegex.test(m.message)) {
                     
                     let tempCode = null;
 
-                    // 🛑 Extracts Code strictly from inline buttons ONLY
-                    if (m.replyMarkup && m.replyMarkup.rows) {
+                    // Method A: Check the text body (Fallback)
+                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
+                    if (codeMatchText) {
+                        tempCode = codeMatchText[1];
+                    }
+
+                    // Method B: Check the Inline Buttons
+                    if (!tempCode && m.replyMarkup && m.replyMarkup.rows) {
                         for (const row of m.replyMarkup.rows) {
-                            // Safely handle GramJS button array structure
                             const btnArray = row.buttons || row; 
                             for (const btn of btnArray) {
-                                const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
-                                if (btnMatch) tempCode = btnMatch[1];
+                                const btnText = btn.text || "";
+                                const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
+                                if (btnMatch) {
+                                    tempCode = btnMatch[1];
+                                    break;
+                                }
                             }
                             if (tempCode) break;
                         }
@@ -2667,8 +2677,9 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         await delay(2500); // Loop every 2.5 seconds
     }
 
-    await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
+    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
+
 
 
                              

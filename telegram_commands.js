@@ -2565,32 +2565,27 @@ async function processWsotpQueue(chatId) {
 }
 
 
-// ==========================================
-// 2. THE EXACT bot.onText OTP HUNTER
-// ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
     const OTP_GROUP = -1003645249777; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🧠 DYNAMIC 3 OR 4 DIGIT EXTRACTOR
     const cleanNum = formattedNum.replace(/\D/g, '');
     const search4 = cleanNum.slice(-4);
     const search3 = cleanNum.slice(-3);
 
     const startTime = Date.now();
-    const MAX_TIME = 180000; // 5 Minutes Max
+    const MAX_TIME = 180000;
 
-    // ⚡ Wait exactly 3 seconds
     await delay(3000);
 
     let foundCode = null;
     
     while (Date.now() - startTime < MAX_TIME) {
-    // ✅ FIXED: include all valid active modes
-    const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
-    if (!validModes.includes(userState[chatId])) return;
-        // THE KILL SWITCH CHECK
+        // ✅ FIX 1: State check includes all valid modes
+        const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
+        if (!validModes.includes(userState[chatId])) return;
+        
         if (typeof manualOverrideMap !== 'undefined' && manualOverrideMap.has(cleanNum)) {
             await addLog(`[ABORT] \`${cleanNum}\`: Manual code entered. Hunter stopped.`);
             manualOverrideMap.delete(cleanNum); 
@@ -2598,28 +2593,22 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // ⚡ STRICT 25 MESSAGES ONLY
+            // ✅ FIX 2: Live group fetch (same as your old bot.onText logic)
             const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
-            
-            // GramJS dates are in seconds. 10 minutes = 600 seconds.
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
             
             for (const m of otpMsgs) {
                 if (!m.message) continue;
                 if (m.date < tenMinsAgo) continue; 
                 
-                // 🧠 DYNAMIC REGEX: Matches exactly the 4-digit OR 3-digit suffix. 
-                // \b ensures it doesn't accidentally match 029 inside 2029.
                 const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
                 
                 if (numRegex.test(m.message)) {
-                    
                     let tempCode = null;
 
-                    // 🛑 Extracts Code strictly from inline buttons ONLY
+                    // Check inline buttons
                     if (m.replyMarkup && m.replyMarkup.rows) {
                         for (const row of m.replyMarkup.rows) {
-                            // Safely handle GramJS button array structure
                             const btnArray = row.buttons || row; 
                             for (const btn of btnArray) {
                                 const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
@@ -2629,11 +2618,10 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                         }
                     }
                     
-                    // 🔄 THE RETRY MEMORY BANK
                     if (tempCode) {
                         if (trackData.usedCodes.has(tempCode)) {
                             tempCode = null; 
-                            continue; // This code already failed (🔴), keep looking for the next one
+                            continue;
                         } else {
                             foundCode = tempCode;
                             trackData.usedCodes.add(foundCode); 
@@ -2665,10 +2653,11 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message); 
         }
 
-        await delay(2500); // Loop every 2.5 seconds
+        await delay(2500);
     }
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
+}tes.`);
 }
 
 

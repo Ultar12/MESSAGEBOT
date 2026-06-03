@@ -901,6 +901,7 @@ export function setupLiveOtpForwarder(userBot, activeClients) {
                             "NG": { name: "Nigeria", flag: "🇳🇬" },
                             "GN": { name: "Guinea", flag: "🇬🇳" },
                             "VE": { name: "Venezuela", flag: "🇻🇪" },
+                            "JO": { name: "Jordan", flag: "🇯🇴" },
                             "CI": { name: "Côte d'Ivoire", flag: "🇨🇮" },
                             "ID": { name: "Indonesia", flag: "🇮🇩" },
                             "BR": { name: "Brazil", flag: "🇧🇷" },

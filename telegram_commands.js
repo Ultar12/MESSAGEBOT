@@ -17,7 +17,10 @@ import ExcelJS from 'exceljs';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit-table';
 import PDFPlain from 'pdfkit';
-import fs from 'fs'; 
+import axios from 'axios';
+import puppeteer from 'puppeteer';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
+import fs from 'fs';
 import TelegramBot from 'node-telegram-bot-api';
 import { pipeline } from 'node:stream/promises';
 import * as XLSX from 'xlsx';
@@ -222,6 +225,140 @@ let isProcessingWsQueue = false;
 const telegramCleanupMap = {}; 
 const manualOtpPrompts = {};   
 const manualOverrideMap = new Set(); // 🧠 Kill Switch
+
+
+// =========================================================
+// --- TIMESMS AUTOMATION ENGINE (HYBRID WORKER) ---
+// =========================================================
+
+const NP_BASE_URL = "https://timesms.org";
+const NP_POLL_SEC = 16 * 1000;
+
+// Config
+const NP_BOT_TOKEN = '8722377131:AAEr1SsPWXKy8m4WbTJBe7vrN03M2hZozhY';
+const NP_TARGET_CHAT_ID = '-1003645249777';
+const npBot = new TelegramBot(NP_BOT_TOKEN, { polling: false }); 
+
+const NP_ACCOUNTS = [
+    { name: "Suzume", username: "Suzume", password: "Suzume", topic_id: null },
+];
+
+// Tracking Memory (If you don't have a DB for this, use a Set)
+const seenNpMessages = new Set();
+async function isNpSeen(key) { return seenNpMessages.has(key); }
+async function markNpSeen(key) { seenNpMessages.add(key); }
+
+// --- UTILITY ---
+function getNpFlag(numberStr, countryName) {
+    if (numberStr) {
+        try {
+            const parsed = parsePhoneNumberFromString("+" + numberStr.replace(/^\+/, ''));
+            if (parsed && parsed.country) {
+                return parsed.country.toUpperCase().replace(/./g, char => String.fromCodePoint(char.charCodeAt(0) + 127397));
+            }
+        } catch (e) {}
+    }
+    return "🌍";
+}
+
+function extractOTP(msg) {
+    const patterns = [/\b(\d{3}-\d{3})\b/i, /\b(\d{6})\b/i, /\b(\d{4})\b/i, /\b(\d{5})\b/i, /OTP[:\s]*(\d+)/i, /code[:\s]*(\d+)/i];
+    for (let pat of patterns) {
+        const match = msg.match(pat);
+        if (match && match[1]) return match[1];
+    }
+    return null;
+}
+
+// --- LOGIN ENGINE ---
+async function loginNumberPanel(username, password, force = false) {
+    if (npSessions[username] && !force) return npSessions[username];
+
+    console.log(`[SYSTEM] Booting Engine for ${username}...`);
+    let browser = null;
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+        const page = await browser.newPage();
+        await page.goto(`${NP_BASE_URL}/login`, { waitUntil: 'networkidle2' });
+
+        // Math Captcha Solver
+        const captchaAnswer = await page.evaluate(() => {
+            const match = document.body.innerText.match(/What is\s*(\d+)\s*([\+\-\*])\s*(\d+)/i);
+            if (match) {
+                const n1 = parseInt(match[1]), op = match[2], n2 = parseInt(match[3]);
+                return op === '+' ? (n1+n2).toString() : (n1-n2).toString();
+            }
+            return null;
+        });
+
+        await page.type('input[placeholder*="sername"]', username);
+        await page.type('input[placeholder*="assword"]', password);
+        if (captchaAnswer) await page.type('input[placeholder*="nswer"]', captchaAnswer);
+        await page.keyboard.press('Enter');
+        await page.waitForNavigation({ timeout: 10000 }).catch(() => {});
+
+        const cookies = await page.cookies();
+        const cookieObj = {};
+        cookies.forEach(c => cookieObj[c.name] = c.value);
+        
+        const role = page.url().includes("client") ? "client" : "agent";
+        await page.goto(`${NP_BASE_URL}/${role}/SMSCDRStats`);
+        const html = await page.content();
+        const sessMatch = html.match(/sesskey=([^&"\s']+)/);
+        
+        return { cookies: cookieObj, role, sesskey: sessMatch ? sessMatch[1] : null, headers: { 'User-Agent': 'Mozilla/5.0' } };
+    } catch (e) { return null; } finally { if (browser) await browser.close(); }
+}
+
+const npSessions = {};
+
+// --- SENDER & RAM INJECTION ---
+async function sendNpMessage(sms, name, topicId) {
+    const code = (extractOTP(sms.msg) || "FAILED").replace(/-/g, '');
+    const cleanNum = sms.num.replace(/[^0-9]/g, '');
+    const maskedNumber = cleanNum.substring(0, 4) + '•••' + cleanNum.slice(-4);
+    
+    // 🧠 INJECT INTO RAM MEMORY
+    if (code !== "FAILED") {
+        liveOtpMemory.push({ maskedNumber, code, timestamp: Date.now() });
+        if (liveOtpMemory.length > 100) liveOtpMemory.shift();
+    }
+
+    const design = `╭═════ 𝚄𝙻𝚃𝙰𝚁 𝙾𝚃𝙿 ═════⊷\n┃❃│ Number : ${maskedNumber}\n┃❃│ Code   : \`${code}\`\n╰═════════════════⊷`;
+
+    try {
+        await npBot.sendMessage(NP_TARGET_CHAT_ID, design, { parse_mode: 'Markdown' });
+        return true;
+    } catch (e) { return false; }
+}
+
+// --- MAIN LOOP ---
+async function pollNumberPanel(acc) {
+    const sess = await loginNumberPanel(acc.username, acc.password);
+    if (sess) {
+        try {
+            const params = new URLSearchParams({"iDisplayLength": "50", "sesskey": sess.sesskey});
+            const res = await axios.get(`${NP_BASE_URL}/${sess.role}/res/data_smscdr.php?${params}`, {
+                headers: { ...sess.headers, 'Cookie': Object.entries(sess.cookies).map(([k,v]) => `${k}=${v}`).join('; ') }
+            });
+
+            for (let rec of res.data.aaData) {
+                const sms = { num: rec[2], svc: rec[3], country: rec[1], msg: rec[5] };
+                const key = `${sms.num}|${sms.msg}`;
+                if (!(await isNpSeen(key))) {
+                    if (await sendNpMessage(sms, acc.name, acc.topic_id)) await markNpSeen(key);
+                }
+            }
+        } catch (e) {}
+    }
+    setTimeout(() => pollNumberPanel(acc), NP_POLL_SEC);
+}
+
+NP_ACCOUNTS.forEach(acc => pollNumberPanel(acc));
+
 
 
 // 1. This is the main function your Express server calls
@@ -8501,37 +8638,20 @@ const cleanNumbers = matches.map(n => {
             const fastConnectedSet = new Set(job.connectedSet);
             const fastDbSet = new Set(job.dbSet);
 
-            // 3. PROCESSING LOOP
-            for (let i = job.currentIndex; i < job.lines.length; i++) {
+            
+                        // 3. PROCESSING LOOP (UPGRADED FOR CONCURRENCY)
+            const CHUNK_SIZE = 5; // Processes 5 numbers at the exact same time
+
+            for (let i = job.currentIndex; i < job.lines.length; i += CHUNK_SIZE) {
                 if (userState[chatId + '_stopFlag']) {
                     job.currentIndex = i; 
                     break;
                 }
 
                 job.currentIndex = i;
-                const line = job.lines[i];
-                const res = normalizeWithCountry(line);
-                
-                if (!res || !res.num) continue; 
-
-                if (job.detectedCountry === "Unknown" && res.name !== "Local/Unknown") {
-                    job.detectedCountry = res.name;
-                    job.detectedCode = res.code;
-                }
-
-                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
-                const numberToOutput = job.cmdType === 'txt' ? res.num : fullPhone;
-
-                if (fastConnectedSet.has(fullPhone) || fastDbSet.has(fullPhone)) {
-                    job.skippedCount++;
-                    continue;
-                }
-
-                job.totalChecked++;
 
                 if (job.isStreaming) {
                     // FAILOVER SYSTEM: Check if current bot died or was banned mid-way
-                                        // FAILOVER SYSTEM: Check if current bot died or was banned mid-way
                     if (!clients[currentFolder] || !sock || !sock.user) {
                         bot.sendMessage(chatId, `[WARNING] Bot +${checkerNum} disconnected or was BANNED!\n[SYSTEM] Finding a new bot...`);
                         
@@ -8545,60 +8665,95 @@ const cleanNumbers = matches.map(n => {
                             });
                         }
                         bot.sendMessage(chatId, `[SUCCESS] Successfully switched to Bot: +${checkerNum}`);
-                        i--; 
+                        i -= CHUNK_SIZE; // Step back to retry this chunk
+                        continue;
+                    }
+                }
+
+                const currentChunk = job.lines.slice(i, i + CHUNK_SIZE);
+                const checkPromises = [];
+
+                for (const line of currentChunk) {
+                    const res = normalizeWithCountry(line);
+                    if (!res || !res.num) continue; 
+
+                    if (job.detectedCountry === "Unknown" && res.name !== "Local/Unknown") {
+                        job.detectedCountry = res.name;
+                        job.detectedCode = res.code;
+                    }
+
+                    const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                    const numberToOutput = job.cmdType === 'txt' ? res.num : fullPhone;
+
+                    if (fastConnectedSet.has(fullPhone) || fastDbSet.has(fullPhone)) {
+                        job.skippedCount++;
                         continue;
                     }
 
+                    job.totalChecked++;
 
-                    try {
+                    if (job.isStreaming) {
                         const jid = `${fullPhone}@s.whatsapp.net`;
-                        const checkPromise = sock.onWhatsApp(jid);
-                        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
                         
-                        const [check] = await Promise.race([checkPromise, timeoutPromise]);
-                        
-                        if (check && check.exists) {
-                            job.validCount++;
-                            if (job.outputAsFile) {
-                                job.activeFileArray.push(numberToOutput);
-                            } else {
-                                job.activeBatch.push(numberToOutput);
-                                if (job.activeBatch.length === 5) {
-                                    await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                                    job.activeBatch = []; 
-                                    await delay(1000); 
-                                }
+                        // Push into concurrency array instead of awaiting immediately
+                        const p = new Promise(async (resolve) => {
+                            try {
+                                const checkPromise = sock.onWhatsApp(jid);
+                                const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("WA_TIMEOUT")), 5000));
+                                const [check] = await Promise.race([checkPromise, timeoutPromise]);
+                                resolve({ success: true, check, numberToOutput });
+                            } catch (err) {
+                                resolve({ success: false, err, numberToOutput });
                             }
-                        } else {
-                            job.bannedNumbers.push(numberToOutput);
-                        }
-                         } catch (err) {
-                        // If the bot died exactly during this request, step back and trigger failover
-                        if (err.message !== "WA_TIMEOUT" && (!clients[currentFolder] || !sock || !sock.user)) {
-                            i--; 
-                            continue;
-                        }
-                        job.bannedNumbers.push(numberToOutput); 
-                    }
+                        });
+                        checkPromises.push(p);
 
-
-                    await delay(500); // Anti-ban delay
-
-                } else {
-                    job.validCount++;
-                    if (job.outputAsFile) {
-                        job.activeFileArray.push(numberToOutput); 
                     } else {
-                        job.activeBatch.push(numberToOutput); 
-                        if (job.activeBatch.length === 5) {
-                            await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
-                            job.activeBatch = [];
-                            await delay(800);
+                        // Normal mode (No WA check)
+                        job.validCount++;
+                        if (job.outputAsFile) {
+                            job.activeFileArray.push(numberToOutput); 
+                        } else {
+                            job.activeBatch.push(numberToOutput); 
                         }
                     }
                 }
 
+                // Execute all WA checks in this chunk SIMULTANEOUSLY
+                if (job.isStreaming && checkPromises.length > 0) {
+                    const results = await Promise.all(checkPromises);
+
+                    for (const r of results) {
+                        if (r.success && r.check && r.check.exists) {
+                            job.validCount++;
+                            if (job.outputAsFile) {
+                                job.activeFileArray.push(r.numberToOutput);
+                            } else {
+                                job.activeBatch.push(r.numberToOutput);
+                            }
+                        } else {
+                            job.bannedNumbers.push(r.numberToOutput);
+                        }
+                    }
+
+                    // Flush active batch if sending in chat
+                    if (!job.outputAsFile && job.activeBatch.length >= 5) {
+                        await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                        job.activeBatch = []; 
+                        await delay(800); 
+                    }
+
+                    // Single Anti-Ban delay for the entire chunk (Speeds up processing massively)
+                    await delay(1200); 
+
+                } else if (!job.isStreaming && !job.outputAsFile && job.activeBatch.length >= 5) {
+                    await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                    job.activeBatch = [];
+                    await delay(800);
+                }
+
                 // 4. LIVE PROGRESS DASHBOARD
+                // Update every 10 numbers to prevent Telegram from rate-limiting the edits
                 if (i > 0 && i % 10 === 0) {
                     const percent = Math.floor((i / job.lines.length) * 100);
                     const left = job.lines.length - i;
@@ -8613,9 +8768,10 @@ const cleanNumbers = matches.map(n => {
                     
                     try {
                         await bot.editMessageText(progressMsg, {chat_id: chatId, message_id: job.statusMsgId, parse_mode: 'Markdown'});
-                    } catch(e){} // Ignore 'message is not modified' errors
+                    } catch(e){} 
                 }
             }
+
 
             // 5. END OF PROCESSING / SUMMARY
             const isAborted = userState[chatId + '_stopFlag'];

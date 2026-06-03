@@ -2569,76 +2569,70 @@ async function processWsotpQueue(chatId) {
 // 2. THE EXACT bot.onText OTP HUNTER
 // ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
-    // 🛑 FIX 1: Exact integer format, no quotes. Exactly matches `msg.chat.id`!
     const OTP_GROUP = -1003645249777; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
-    // 🛑 FIX 2: Exact same extraction as your manual listener (Last 4 digits)
+    // 🧠 DYNAMIC 3 OR 4 DIGIT EXTRACTOR
     const cleanNum = formattedNum.replace(/\D/g, '');
-    const searchDigits = cleanNum.length >= 4 ? cleanNum.slice(-4) : cleanNum;
+    const search4 = cleanNum.slice(-4);
+    const search3 = cleanNum.slice(-3);
 
     const startTime = Date.now();
-    const MAX_TIME = 300000; // 5 minutes
+    const MAX_TIME = 180000; // 5 Minutes Max
 
-    await delay(3000); // Wait 3s before starting scan
+    // ⚡ Wait exactly 3 seconds
+    await delay(3000);
 
     let foundCode = null;
     
     while (Date.now() - startTime < MAX_TIME) {
-        if (!['WSOTP_FILE_AUTO', 'WSOTP_MANUAL_MODE'].includes(userState[chatId])) return; 
-
+        if (userState[chatId] !== 'WSOTP_FILE_MODE' && userState[chatId] !== 'WSOTP_MANUAL_MODE') return; 
+        
         // THE KILL SWITCH CHECK
-        if (manualOverrideMap.has(cleanNum)) {
+        if (typeof manualOverrideMap !== 'undefined' && manualOverrideMap.has(cleanNum)) {
             await addLog(`[ABORT] \`${cleanNum}\`: Manual code entered. Hunter stopped.`);
             manualOverrideMap.delete(cleanNum); 
             return; 
         }
 
         try {
-            // 🛑 FIX 3: Increased limit to 100, exactly like your manual listener!
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
+            // ⚡ STRICT 25 MESSAGES ONLY
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
             
             // GramJS dates are in seconds. 10 minutes = 600 seconds.
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
             
             for (const m of otpMsgs) {
-                // Ignore empty messages or messages older than 10 minutes
-                if (!m.message || m.date < tenMinsAgo) continue; 
+                if (!m.message) continue;
+                if (m.date < tenMinsAgo) continue; 
                 
-                // Check if the "Number" line contains the extracted digits
-                const numRegex = new RegExp(`Number.*?${searchDigits}`, 'i');
+                // 🧠 DYNAMIC REGEX: Matches exactly the 4-digit OR 3-digit suffix. 
+                // \b ensures it doesn't accidentally match 029 inside 2029.
+                const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
                 
                 if (numRegex.test(m.message)) {
                     
                     let tempCode = null;
 
-                    // 🧠 EXACT METHOD A: Check the text body
-                    const codeMatchText = m.message.match(/Code[^\n]*?(\d{3,8})/i);
-                    if (codeMatchText) {
-                        tempCode = codeMatchText[1];
-                    }
-                    
-                    // 🧠 EXACT METHOD B: Check the Inline Buttons
-                    if (!tempCode && m.replyMarkup && m.replyMarkup.rows) {
+                    // 🛑 Extracts Code strictly from inline buttons ONLY
+                    if (m.replyMarkup && m.replyMarkup.rows) {
                         for (const row of m.replyMarkup.rows) {
-                            for (const btn of row.buttons) {
-                                const btnText = btn.text || "";
-                                const btnMatch = btnText.match(/Copy:\s*(\d{4,8})/i);
-                                if (btnMatch) {
-                                    tempCode = btnMatch[1];
-                                    break;
-                                }
+                            // Safely handle GramJS button array structure
+                            const btnArray = row.buttons || row; 
+                            for (const btn of btnArray) {
+                                const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
+                                if (btnMatch) tempCode = btnMatch[1];
                             }
                             if (tempCode) break;
                         }
                     }
                     
-                    // THE RETRY MEMORY BANK
+                    // 🔄 THE RETRY MEMORY BANK
                     if (tempCode) {
                         if (trackData.usedCodes.has(tempCode)) {
-                            tempCode = null; // We already tried this code
-                            continue; 
+                            tempCode = null; 
+                            continue; // This code already failed (🔴), keep looking for the next one
                         } else {
                             foundCode = tempCode;
                             trackData.usedCodes.add(foundCode); 
@@ -2651,18 +2645,23 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             if (foundCode) {
                 await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
                 
-                await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                await delay(Math.floor(Math.random() * 800) + 400); 
-                
-                // DIRECT REPLY: Forcefully replies to the specific 2x message ID
-                const sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
-                
-                trackData.msgIdsToClean.push(sentOtp.id);
+                try {
+                    await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                    await delay(Math.floor(Math.random() * 800) + 400); 
+                    
+                    let sentOtp;
+                    try {
+                        sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
+                    } catch (replyErr) {
+                        sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode });
+                    }
+                    
+                    if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
+                } catch (e) {}
                 return; 
             }
         } catch (e) {
-            // Log to console if GramJS crashes so you can see it
-            console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message);
+            console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message); 
         }
 
         await delay(2500); // Loop every 2.5 seconds

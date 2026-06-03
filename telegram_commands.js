@@ -187,13 +187,13 @@ export function getDedicatedSender(activeClients) {
     
     if (availableSessions.length > 0) {
         currentOtpSenderId = availableSessions[0]; 
-        console.log(`🚀 [SYSTEM] Account ${currentOtpSenderId} has been CLAIMED as Dedicated OTP Sender.`);
+        console.log(`[SYSTEM] Account ${currentOtpSenderId} has been CLAIMED as Dedicated OTP Sender.`);
         return activeClients[currentOtpSenderId];
     }
 
     // 3. Fallback: If ALL accounts have failed, clear the blacklist and try again
     if (failedAccounts.size > 0) {
-        console.log("🔄 [SYSTEM] All accounts failed once. Clearing blacklist to retry...");
+        console.log("[SYSTEM] All accounts failed once. Clearing blacklist to retry...");
         failedAccounts.clear();
         
         const retrySessions = Object.keys(activeClients).filter(id => activeClients[id]);
@@ -758,7 +758,7 @@ export async function initUserBot(activeClients) {
         await setupLiveOtpForwarder(userBot, activeClients);
 
         // Start the Custom API Poller
-        setupApiOtpForwarder(activeClients);
+        // setupApiOtpForwarder(activeClients); // Uncomment if you use this
         
         // ✅ START THE HYBRID CHANNEL SCANNER
         // Create the senderBot instance to pass to the scanner
@@ -767,10 +767,14 @@ export async function initUserBot(activeClients) {
         
         setupDailyChannelScanner(userBot, senderBot);
         
+        // 🚀 START THE NEW LIVE STATS ENGINE
+        setupLiveOtpStats(userBot, senderBot);
+        
     } catch (e) {
         console.error("[USERBOT INIT FAIL]", e.message);
     }
 }
+
 
 
 

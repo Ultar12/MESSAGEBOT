@@ -1,3 +1,5 @@
+process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+
 import { TelegramClient, Api } from "telegram";
 import { NewMessage } from "telegram/events/index.js";
 import { StringSession } from "telegram/sessions/index.js";

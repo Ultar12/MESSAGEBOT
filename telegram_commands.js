@@ -9511,10 +9511,13 @@ export function setupLiveOtpStats(userBot, senderBot) {
     const LOOKBACK_SECONDS = 30 * 60;
     const REFRESH_INTERVAL = 24 * 60 * 60 * 1000;
 
-    // ✅ Extract logic into named function
     const runStatsUpdate = async () => {
         try {
-            if (!userBot || !userBot.connected) return;
+            // ✅ Wait for connection if not ready yet
+            if (!userBot || !userBot.connected) {
+                console.log("[STATS ENGINE] UserBot not connected yet, skipping...");
+                return;
+            }
 
             const msgs = await userBot.getMessages(TARGET_GROUP, { limit: 800 });
             const thirtyMinsAgo = Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS;
@@ -9554,25 +9557,38 @@ export function setupLiveOtpStats(userBot, senderBot) {
 
             const now = Date.now();
 
+            // 24h reset: delete old, force new message
             if (liveStatsMsgId && liveStatsTimestamp && (now - liveStatsTimestamp >= REFRESH_INTERVAL)) {
                 try { await senderBot.deleteMessage(TARGET_GROUP, liveStatsMsgId); } catch (e) {}
                 liveStatsMsgId = null;
             }
 
             if (!liveStatsMsgId) {
+                // ✅ No message yet — SEND and PIN
                 const sentMsg = await senderBot.sendMessage(TARGET_GROUP, statsText, { parse_mode: 'Markdown' });
                 liveStatsMsgId = sentMsg.message_id;
                 liveStatsTimestamp = now;
-                try { await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true }); } catch(e) {}
+                console.log(`[STATS ENGINE] New stats message sent: ${liveStatsMsgId}`);
+                try { 
+                    await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true }); 
+                } catch(e) {
+                    console.error("[STATS ENGINE] Pin failed:", e.message);
+                }
             } else {
+                // ✅ Message exists — EDIT it
                 try {
                     await senderBot.editMessageText(statsText, {
                         chat_id: TARGET_GROUP,
                         message_id: liveStatsMsgId,
                         parse_mode: 'Markdown'
                     });
+                    console.log(`[STATS ENGINE] Stats message edited.`);
                 } catch (e) {
-                    if (e.message.includes('message to edit not found')) liveStatsMsgId = null;
+                    if (e.message.includes('message to edit not found') || e.message.includes('MESSAGE_ID_INVALID')) {
+                        console.log("[STATS ENGINE] Old message gone, sending new one...");
+                        liveStatsMsgId = null;
+                        await runStatsUpdate(); // retry as new message
+                    }
                 }
             }
 
@@ -9581,9 +9597,11 @@ export function setupLiveOtpStats(userBot, senderBot) {
         }
     };
 
-    // ✅ Run immediately on startup, then every 30 mins
-    runStatsUpdate();
-    setInterval(runStatsUpdate, UPDATE_INTERVAL);
+    // ✅ Wait 10 seconds for userBot to fully warm up, then start
+    setTimeout(() => {
+        runStatsUpdate();
+        setInterval(runStatsUpdate, UPDATE_INTERVAL);
+    }, 10000);
 
-    console.log("[STATS ENGINE] Live Board Initialized. Running now + every 30 mins.");
+    console.log("[STATS ENGINE] Initialized. First update in 10 seconds, then every 30 mins.");
 }

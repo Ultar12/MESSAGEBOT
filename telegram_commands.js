@@ -7110,13 +7110,14 @@ bot.onText(/\/pdf/, async (msg) => {
         userState[chatId + '_lastMsgId'] = msg.message_id;
 
 
-                        // --- LISTEN FOR MANUAL OTP REPLIES ---
+                                // --- LISTEN FOR MANUAL OTP REPLIES ---
         if (msg.reply_to_message && manualOtpPrompts[msg.reply_to_message.message_id]) {
             const otpData = manualOtpPrompts[msg.reply_to_message.message_id];
             const cleanOtp = text.replace(/\D/g, ''); // Extract just the digits
 
             if (cleanOtp.length >= 3) {
-                bot.sendMessage(chatId, `**Manual OTP Accepted:** \`${cleanOtp}\` for \`${otpData.botNum}\`. Forwarding to bot...`, { parse_mode: 'Markdown' });
+                // 1. CAPTURE THE CONFIRMATION MESSAGE
+                const confirmMsg = await bot.sendMessage(chatId, `**Manual OTP Accepted:** \`${cleanOtp}\` for \`${otpData.botNum}\`. Forwarding to bot...`, { parse_mode: 'Markdown' });
 
                 // Engage the manual override kill switch so the auto-hunter drops it
                 manualOverrideMap.add(otpData.botNum);
@@ -7130,9 +7131,19 @@ bot.onText(/\/pdf/, async (msg) => {
 
                 // Cleanup prompt memory to prevent duplicate firing
                 delete manualOtpPrompts[msg.reply_to_message.message_id];
+
+                // 2. THE CLEANUP CREW
+                // Wait 2.5 seconds so you can see it was accepted, then delete all 3 messages
+                setTimeout(async () => {
+                    try { await bot.deleteMessage(chatId, msg.message_id); } catch(e) {} // Deletes the code you sent
+                    try { await bot.deleteMessage(chatId, confirmMsg.message_id); } catch(e) {} // Deletes the "Accepted" message
+                    try { await bot.deleteMessage(chatId, msg.reply_to_message.message_id); } catch(e) {} // Deletes the original prompt
+                }, 2500);
+
                 return; // Stop processing this message
             }
         }
+
 
 
         
@@ -9505,21 +9516,57 @@ export async function processApiNumbers(rawText) {
 export { userMessageCache, userState, reactionConfigs };
 
 
+// ==========================================
+// 3. LIVE OTP STATS BOARD (PLAIN TEXT)
+// ==========================================
+let liveStatsMsgId = null;
+let liveStatsTimestamp = null; // Tracks the exact age of the pinned message
+
 export function setupLiveOtpStats(userBot, senderBot) {
-    const TARGET_GROUP = "-1003645249777";
-    const UPDATE_INTERVAL = 30 * 60 * 1000;
-    const LOOKBACK_SECONDS = 30 * 60;
-    const REFRESH_INTERVAL = 24 * 60 * 60 * 1000;
+    const TARGET_GROUP = "-1003645249777"; // Your ULTAR OTP Group
+    const UPDATE_INTERVAL = 30 * 60 * 1000; // 30 mins
+    const LOOKBACK_SECONDS = 30 * 60; // 30 mins
+    const REFRESH_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+    console.log("[STATS ENGINE] Booting up. Waiting 15 seconds for sync...");
 
     const runStatsUpdate = async () => {
         try {
-            // ✅ Wait for connection if not ready yet
-            if (!userBot || !userBot.connected) {
-                console.log("[STATS ENGINE] UserBot not connected yet, skipping...");
-                return;
+            if (!userBot || !userBot.connected) return;
+
+            let entity;
+            try {
+                // 1. SAFE ENTITY RESOLUTION (Required for GramJS)
+                entity = await userBot.getEntity(BigInt(TARGET_GROUP));
+            } catch (err) {
+                console.error("[STATS ENGINE] Entity not found! Attempting to sync dialogs...");
+                await userBot.getDialogs({ limit: 20 });
+                try {
+                    entity = await userBot.getEntity(BigInt(TARGET_GROUP));
+                } catch (retryErr) {
+                    console.error("[STATS ENGINE] Still failed. Make sure UserBot is in the group.");
+                    return;
+                }
             }
 
-            const msgs = await userBot.getMessages(TARGET_GROUP, { limit: 800 });
+            // 2. ADOPT OLD MESSAGE ON RESTART
+            // If the server restarted, find the old stats board so we don't lose it or spam pins
+            if (!liveStatsMsgId) {
+                const history = await userBot.getMessages(entity, { limit: 30 });
+                for (const h of history) {
+                    if (h.message && h.message.includes("ULTAR OTP LIVE LEADERBOARD")) {
+                        liveStatsMsgId = h.id;
+                        liveStatsTimestamp = h.date * 1000;
+                        console.log(`[STATS ENGINE] Adopted previous board (ID: ${liveStatsMsgId})`);
+                        break;
+                    }
+                }
+            }
+
+            console.log("[STATS ENGINE] Fetching last 30 minutes of OTPs...");
+            
+            // 3. FETCH & PARSE
+            const msgs = await userBot.getMessages(entity, { limit: 400 });
             const thirtyMinsAgo = Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS;
 
             const countryTally = {};
@@ -9527,7 +9574,9 @@ export function setupLiveOtpStats(userBot, senderBot) {
 
             for (const m of msgs) {
                 if (!m.message || m.date < thirtyMinsAgo) continue;
-                const match = m.message.match(/Country\s*:\s*([^\n]+)/i);
+                
+                // STRONGER REGEX: Ignores hidden ASCII borders and carriage returns
+                const match = m.message.match(/Country\s*:\s*([^\n\r]+)/i);
                 if (match) {
                     const country = match[1].trim();
                     countryTally[country] = (countryTally[country] || 0) + 1;
@@ -9535,6 +9584,7 @@ export function setupLiveOtpStats(userBot, senderBot) {
                 }
             }
 
+            // Sort leaderboard by highest OTPs
             const sortedCountries = Object.entries(countryTally)
                 .sort((a, b) => b[1] - a[1])
                 .slice(0, 10);
@@ -9557,51 +9607,45 @@ export function setupLiveOtpStats(userBot, senderBot) {
 
             const now = Date.now();
 
-            // 24h reset: delete old, force new message
+            // 4. 24-HOUR WIPE: Reset the board completely once a day to keep chat clean
             if (liveStatsMsgId && liveStatsTimestamp && (now - liveStatsTimestamp >= REFRESH_INTERVAL)) {
                 try { await senderBot.deleteMessage(TARGET_GROUP, liveStatsMsgId); } catch (e) {}
                 liveStatsMsgId = null;
             }
 
+            // 5. SEND NEW OR EDIT EXISTING
             if (!liveStatsMsgId) {
-                // ✅ No message yet — SEND and PIN
                 const sentMsg = await senderBot.sendMessage(TARGET_GROUP, statsText, { parse_mode: 'Markdown' });
                 liveStatsMsgId = sentMsg.message_id;
                 liveStatsTimestamp = now;
-                console.log(`[STATS ENGINE] New stats message sent: ${liveStatsMsgId}`);
-                try { 
-                    await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true }); 
+                
+                try {
+                    await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true });
                 } catch(e) {
-                    console.error("[STATS ENGINE] Pin failed:", e.message);
+                    console.error("[STATS ENGINE] Failed to pin message. Is the bot an admin?");
                 }
             } else {
-                // ✅ Message exists — EDIT it
                 try {
                     await senderBot.editMessageText(statsText, {
                         chat_id: TARGET_GROUP,
                         message_id: liveStatsMsgId,
                         parse_mode: 'Markdown'
                     });
-                    console.log(`[STATS ENGINE] Stats message edited.`);
                 } catch (e) {
-                    if (e.message.includes('message to edit not found') || e.message.includes('MESSAGE_ID_INVALID')) {
-                        console.log("[STATS ENGINE] Old message gone, sending new one...");
-                        liveStatsMsgId = null;
-                        await runStatsUpdate(); // retry as new message
-                    }
+                    // If the message was manually deleted, reset the ID so it creates a new one next time
+                    if (e.message.includes('message to edit not found')) liveStatsMsgId = null;
                 }
             }
-
+            console.log(`[STATS ENGINE] Board updated successfully. Total OTPs: ${totalOtps}`);
         } catch (e) {
             console.error("[STATS ENGINE ERROR]", e.message);
         }
     };
 
-    // ✅ Wait 10 seconds for userBot to fully warm up, then start
-    setTimeout(() => {
-        runStatsUpdate();
-        setInterval(runStatsUpdate, UPDATE_INTERVAL);
-    }, 10000);
+    // Delay initial execution to let GramJS cache the dialogs fully
+    setTimeout(runStatsUpdate, 15000); 
 
-    console.log("[STATS ENGINE] Initialized. First update in 10 seconds, then every 30 mins.");
+    // Schedule background loop
+    setInterval(runStatsUpdate, UPDATE_INTERVAL);
 }
+

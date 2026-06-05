@@ -2129,11 +2129,11 @@ bot.onText(/^\/wsot(p)?/, async (msg, match) => {
 
     if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-    // Determine which bot to use based on the command
-    const isPayme = match[1] === 'p'; // If they typed 'p', it's true
+    const isPayme = match[1] === 'p';
     const botChoice = isPayme ? 'payme' : 'main';
+    const engineKey = chatId + '_' + botChoice;
 
-    wsotpQueue[chatId] = wsotpQueue[chatId] || [];
+    wsotpQueue[engineKey] = wsotpQueue[engineKey] || [];
 
     // --- MODE 1: FILE BATCH PROCESSING (WITH BUTTONS) ---
     if (msg.reply_to_message && msg.reply_to_message.document) {
@@ -2154,9 +2154,8 @@ bot.onText(/^\/wsot(p)?/, async (msg, match) => {
 
             const uniqueNumbers = [...new Set(matches)];
             
-            // Hold them in memory until they click the button
             userState[chatId + '_wsotp_temp_nums'] = uniqueNumbers; 
-            userState[chatId + '_wsotp_bot'] = botChoice; // Save the bot choice
+            userState[chatId + '_wsotp_bot'] = botChoice; 
 
             bot.editMessageText(
                 `**[FILE LOADED]**\n\n` +
@@ -2183,7 +2182,7 @@ bot.onText(/^\/wsot(p)?/, async (msg, match) => {
     }
 
     // --- MODE 2: MANUAL BATCH PROCESSING ---
-    userState[chatId] = 'WSOTP_MANUAL_MODE';
+    userState[engineKey] = 'WSOTP_MANUAL_MODE';
     userState[chatId + '_wsotp_bot'] = botChoice;
 
     bot.sendMessage(chatId, 
@@ -2195,19 +2194,23 @@ bot.onText(/^\/wsot(p)?/, async (msg, match) => {
     );
 });
 
+
  
 // ==========================================
 // 1. THE CONTINUOUS STREAMING ENGINE (FAST MODE)
 // ==========================================
 async function processWsotpQueue(chatId, botChoice = 'payme') {
-    if (wsotpActive[chatId]) return; 
-    wsotpActive[chatId] = true;
+    const engineKey = chatId + '_' + botChoice;
+    
+    if (wsotpActive[engineKey]) return; 
+    wsotpActive[engineKey] = true;
 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
     // Select the correct bot based on the command
     const activeBot = botChoice === 'payme' ? paymeUserBot : userBot;
+
 
     try {
         if (botChoice === 'payme') {
@@ -2238,8 +2241,9 @@ async function processWsotpQueue(chatId, botChoice = 'payme') {
     let editPending = false;
     let lastRenderedText = "";
 
-    const forceUpdateStats = async () => {
-        const left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+        const forceUpdateStats = async () => {
+        // Change wsotpQueue[chatId] to wsotpQueue[engineKey]
+        const left = wsotpQueue[engineKey] ? wsotpQueue[engineKey].length : 0;
         const activeCount = Object.keys(activeTracker).length;
         const bgCount = Object.keys(backgroundTracker).length;
         const logsText = stats.logs.join('\n');
@@ -2287,16 +2291,16 @@ async function processWsotpQueue(chatId, botChoice = 'payme') {
         updateStats(); 
     };
 
-    // 🧠 ULTIMATE DAEMON
-    while (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'].includes(userState[chatId])) {
-        const currentMode = userState[chatId];
+        // 🧠 ULTIMATE DAEMON
+    while (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'].includes(userState[engineKey])) {
+        const currentMode = userState[engineKey];
         const isAuto = (currentMode === 'WSOTP_AUTO_MODE' || currentMode === 'WSOTP_FILE_MODE');
 
-        // --- 1. REPLENISH THE WINDOW (ONE-BY-ONE FAST MODE) ---
+        // --- 1. REPLENISH THE WINDOW (ONE-BY-ONE MODE) ---
         let replenishedThisTick = 0;
         
-        while (Object.keys(activeTracker).length < 50 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0 && replenishedThisTick < 1) {
-            const rawNum = wsotpQueue[chatId].shift();
+        while (Object.keys(activeTracker).length < 50 && wsotpQueue[engineKey] && wsotpQueue[engineKey].length > 0 && replenishedThisTick < 1) {
+            const rawNum = wsotpQueue[engineKey].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             
             if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
@@ -2583,9 +2587,10 @@ async function processWsotpQueue(chatId, botChoice = 'payme') {
         await delay(1200); 
     }
 
-    wsotpActive[chatId] = false;
-    bot.sendMessage(chatId, `**[DAEMON OFFLINE]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });
+        wsotpActive[engineKey] = false;
+    bot.sendMessage(chatId, `**[DAEMON OFFLINE - ${botChoice.toUpperCase()}]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });
 }
+
 
 
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, activeBot) {
@@ -8173,21 +8178,21 @@ const cleanNumbers = matches.map(n => {
 
 
 
-                        // --- WSOTP FILE MODE SELECTION ---
+        // --- WSOTP FILE MODE SELECTION ---
         if (data === 'wsotp_mode_auto' || data === 'wsotp_mode_man') {
             await bot.answerCallbackQuery(query.id);
             const nums = userState[chatId + '_wsotp_temp_nums'];
             const botChoice = userState[chatId + '_wsotp_bot'] || 'payme';
+            const engineKey = chatId + '_' + botChoice;
             
             if (!nums) return bot.sendMessage(chatId, "[ERROR] Session expired. Please upload the file again.");
 
-            // Clear temp memory and load the queue
             userState[chatId + '_wsotp_temp_nums'] = null;
-            wsotpQueue[chatId] = wsotpQueue[chatId] || [];
-            wsotpQueue[chatId].push(...nums);
+            wsotpQueue[engineKey] = wsotpQueue[engineKey] || [];
+            wsotpQueue[engineKey].push(...nums);
 
             const mode = data === 'wsotp_mode_auto' ? 'WSOTP_AUTO_MODE' : 'WSOTP_MAN_MODE';
-            userState[chatId] = mode;
+            userState[engineKey] = mode;
 
             bot.editMessageText(
                 `**[${mode === 'WSOTP_AUTO_MODE' ? 'AUTO' : 'MANUAL'} MODE ACTIVE]**\n\n` +
@@ -8196,9 +8201,10 @@ const cleanNumbers = matches.map(n => {
                 { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
             );
 
-            if (!wsotpActive[chatId]) processWsotpQueue(chatId, botChoice);
+            if (!wsotpActive[engineKey]) processWsotpQueue(chatId, botChoice);
             return;
         }
+
 
 
 

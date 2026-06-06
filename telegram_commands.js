@@ -1957,18 +1957,6 @@ bot.on('callback_query', async (query) => {
             await delay(800);
         };
 
-            
-            // 2. IF WHATSAPP BOT IS CONNECTED (Verify existence first)
-            try {
-                const [check] = await verifySock.onWhatsApp(jid);
-                if (check?.exists) {
-                    await executeOutput();
-                }
-            } catch(e) {}
-            
-            await delay(800);
-        };
-
         while (verified < amount && attempts < 50) {
             attempts++;
             const msgs = await userBot.getMessages(targetBot, { limit: 5 });

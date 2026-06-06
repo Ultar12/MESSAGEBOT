@@ -11,7 +11,7 @@
   "license": "MIT",
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^7.0.0-rc10",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "axios": "^1.6.0",
     "qrcode": "^1.5.3",
     "chalk": "^5.3.0",

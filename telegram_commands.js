@@ -2153,7 +2153,7 @@ async function processWsotpQueue(chatId) {
         const txt = 
             `**[WSOTP LIVE DASHBOARD]**\n\n` +
             `Queue Remaining: ${left}\n` +
-            `Active Window: ${activeCount} / 50\n` +
+            `Active Window: ${activeCount} / 100\n` +
             `Background Waiting: ${bgCount}\n` +
             `Total Sent to Bot: ${stats.sent}\n` +
             `Current In Progress (x2): ${stats.inProgress}\n` +
@@ -2196,7 +2196,7 @@ async function processWsotpQueue(chatId) {
         // --- 1. REPLENISH THE WINDOW (Up to 25) ---
         let replenishedThisTick = 0;
         
-        while (Object.keys(activeTracker).length < 50 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
+        while (Object.keys(activeTracker).length < 100 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
             const rawNum = wsotpQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             

@@ -1915,19 +1915,26 @@ bot.on('callback_query', async (query) => {
             
             const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
             
-            // --- UNIFIED OUTPUT ROUTER ---
+                        // --- UNIFIED OUTPUT ROUTER ---
             const executeOutput = async () => {
                 verified++;
                 
                 if (outMode === 'bot') {
-                    // Remove the very first zero from the payload before sending to WSOTP
+                    // Remove the very first zero from the payload
                     const botPayload = raw.replace(/^0/, '');
                     
-                    try {
-                        await paymeUserBot.sendMessage(SELL_BOT_USERNAME, { message: botPayload });
-                    } catch(err) {
-                        console.error("Sell bot error:", err.message);
+                    // 🚀 INJECT DIRECTLY INTO THE WSOTP ENGINE (Live Dashboard)
+                    wsotpQueue[chatId] = wsotpQueue[chatId] || [];
+                    if (!wsotpQueue[chatId].includes(botPayload)) {
+                        wsotpQueue[chatId].push(botPayload);
                     }
+                    
+                    // Trigger the daemon if it's sleeping
+                    userState[chatId] = 'WSOTP_AUTO_MODE';
+                    if (!wsotpActive[chatId]) {
+                        processWsotpQueue(chatId);
+                    }
+                    
                 } else {
                     // Standard Chat Batches
                     currentBatch.push(`\`${res.num}\``);
@@ -1936,7 +1943,8 @@ bot.on('callback_query', async (query) => {
                         currentBatch = [];
                     }
                 }
-                bot.editMessageText(`[LIVE] Processed: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                
+                bot.editMessageText(`[LIVE] Processed: ${verified}/${amount}${outMode === 'bot' ? '\nInjecting into Live Dashboard...' : ''}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
             };
 
             // 1. IF NO WHATSAPP BOT IS CONNECTED

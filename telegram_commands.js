@@ -2169,7 +2169,7 @@ async function processWsotpQueue(chatId) {
 
     const updateStats = async () => {
         const now = Date.now();
-        if (now - lastStatEdit >= 3000) {
+        if (now - lastStatEdit >= 5000) {
             lastStatEdit = now;
             await forceUpdateStats();
         } else if (!editPending) {
@@ -2185,7 +2185,7 @@ async function processWsotpQueue(chatId) {
     const addLog = async (msg) => {
         stats.logs.unshift(msg);
         if (stats.logs.length > 6) stats.logs.pop(); 
-        updateStats(); 
+     
     };
 
     // 🧠 ULTIMATE DAEMON: Stays awake for all WSOTP modes
@@ -2196,7 +2196,7 @@ async function processWsotpQueue(chatId) {
         // --- 1. REPLENISH THE WINDOW (Up to 25) ---
         let replenishedThisTick = 0;
         
-        while (Object.keys(activeTracker).length < 100 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0 && replenishedThisTick < 4) {
+        while (Object.keys(activeTracker).length < 100 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0 && replenishedThisTick < 6) {
             const rawNum = wsotpQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             
@@ -2228,7 +2228,7 @@ async function processWsotpQueue(chatId) {
 
             try {
                 await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                await delay(1200); 
+                await delay(700); 
                 
                 const sentMsg = await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
                 
@@ -2248,7 +2248,7 @@ async function processWsotpQueue(chatId) {
             }
             
             await updateStats();
-            await delay(1000); 
+            await delay(600); 
         }
 
         // --- 2. LISTEN FOR RESPONSES & REWARDS ---
@@ -2479,7 +2479,7 @@ async function processWsotpQueue(chatId) {
             }
         }
 
-        await delay(2500); 
+        await delay(1500); 
     }
 
     wsotpActive[chatId] = false;

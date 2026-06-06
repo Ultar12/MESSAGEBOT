@@ -1891,7 +1891,9 @@ bot.on('callback_query', async (query) => {
     await bot.answerCallbackQuery(query.id);
     const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers from ${targetBot}...`);
 
-    try {
+    
+
+        try {
         const activeFolders = Object.keys(clients).filter(f => clients[f]);
         const verifySock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
@@ -1899,8 +1901,10 @@ bot.on('callback_query', async (query) => {
         let currentBatch = [];
         let verified = 0;
         let attempts = 0;
+        let emptyRefreshes = 0; // NEW: Detects out-of-stock
+        let maxAttempts = amount * 5; // Scales with target amount
 
-                  const processNumber = async (raw) => {
+        const processNumber = async (raw) => {
             if (verified >= amount) return;
             
             // Format Zambia numbers correctly
@@ -1915,64 +1919,54 @@ bot.on('callback_query', async (query) => {
             
             const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
             
-                        // --- UNIFIED OUTPUT ROUTER ---
+            // --- UNIFIED OUTPUT ROUTER ---
             const executeOutput = async () => {
                 verified++;
+                emptyRefreshes = 0; // Found a new number, reset empty counter
                 
                 if (outMode === 'bot') {
                     // Remove the very first zero from the payload
                     const botPayload = raw.replace(/^0/, '');
                     
-                    // 🚀 INJECT DIRECTLY INTO THE WSOTP ENGINE (Live Dashboard)
+                    // Inject into engine
                     wsotpQueue[chatId] = wsotpQueue[chatId] || [];
                     if (!wsotpQueue[chatId].includes(botPayload)) {
                         wsotpQueue[chatId].push(botPayload);
                     }
                     
-                    // Trigger the daemon if it's sleeping
                     userState[chatId] = 'WSOTP_AUTO_MODE';
-                    if (!wsotpActive[chatId]) {
-                        processWsotpQueue(chatId);
-                    }
-                    
+                    if (!wsotpActive[chatId]) processWsotpQueue(chatId);
                 } else {
-                    // Standard Chat Batches
+                    // Chat Output
                     currentBatch.push(`\`${res.num}\``);
                     if (currentBatch.length === 5) {
                         await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                         currentBatch = [];
                     }
                 }
-                
                 bot.editMessageText(`[LIVE] Processed: ${verified}/${amount}${outMode === 'bot' ? '\nInjecting into Live Dashboard...' : ''}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
             };
 
-            // 1. IF NO WHATSAPP BOT IS CONNECTED
             if (!verifySock) {
                 await executeOutput();
-                await delay(800);
-                return;
+            } else {
+                try {
+                    const [check] = await verifySock.onWhatsApp(jid);
+                    if (check?.exists) await executeOutput();
+                } catch(e) {}
             }
-            
-            // 2. IF WHATSAPP BOT IS CONNECTED
-            try {
-                const [check] = await verifySock.onWhatsApp(jid);
-                if (check?.exists) {
-                    await executeOutput();
-                }
-            } catch(e) {}
-            
-            await delay(800);
+            await delay(500); // Tighter delay for speed
         };
 
-        while (verified < amount && attempts < 50) {
+        while (verified < amount && attempts < maxAttempts) {
             attempts++;
             const msgs = await userBot.getMessages(targetBot, { limit: 5 });
+            let initialVerified = verified;
 
             for (const msg of msgs) {
                 const text = msg.message || "";
                 if (text.includes("Choose a country:") || text.includes("Select service")) continue;
-
+                
                 // Buttons
                 if (msg.replyMarkup?.rows) {
                     for (const row of msg.replyMarkup.rows) {
@@ -1990,6 +1984,13 @@ bot.on('callback_query', async (query) => {
             }
 
             if (verified >= amount) break;
+            
+            // Failsafe for Out-of-Stock
+            if (verified === initialVerified) emptyRefreshes++;
+            if (emptyRefreshes >= 15) {
+                await bot.sendMessage(chatId, `⚠️ **Stopped:** No new numbers found after 15 refreshes. Bot may be empty.`);
+                break;
+            }
 
             // Click pagination
             let clicked = false;
@@ -2016,7 +2017,6 @@ bot.on('callback_query', async (query) => {
         try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
 
     } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
-});
 
     
 

@@ -1893,8 +1893,11 @@ bot.on('callback_query', async (query) => {
 
     try {
         const activeFolders = Object.keys(clients).filter(f => clients[f]);
-        if (activeFolders.length === 0) return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected!");
-        const verifySock = clients[activeFolders[0]];
+        const verifySock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
+
+        if (!verifySock) {
+    await bot.sendMessage(chatId, "⚠️ [WARNING] No WhatsApp bots connected. Verification mode is DISABLED. All numbers will be passed through raw.");
+}
 
         const seen = new Set();
         let currentBatch = [];

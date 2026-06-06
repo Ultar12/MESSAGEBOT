@@ -1900,41 +1900,72 @@ bot.on('callback_query', async (query) => {
         let verified = 0;
         let attempts = 0;
 
-        const processNumber = async (raw) => {
+                  const processNumber = async (raw) => {
             if (verified >= amount) return;
-            // Clean for WA
+            
+            // Format Zambia numbers correctly
+            if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
+            else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
+            
+            if (seen.has(raw)) return;
+            seen.add(raw);
+
             const res = normalizeWithCountry(raw);
             if (!res) return;
+            
             const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
             
+            // --- UNIFIED OUTPUT ROUTER ---
+            const executeOutput = async () => {
+                verified++;
+                
+                if (outMode === 'bot') {
+                    // Remove the very first zero from the payload before sending to WSOTP
+                    const botPayload = raw.replace(/^0/, '');
+                    
+                    try {
+                        await paymeUserBot.sendMessage(SELL_BOT_USERNAME, { message: botPayload });
+                    } catch(err) {
+                        console.error("Sell bot error:", err.message);
+                    }
+                } else {
+                    // Standard Chat Batches
+                    currentBatch.push(`\`${res.num}\``);
+                    if (currentBatch.length === 5) {
+                        await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                        currentBatch = [];
+                    }
+                }
+                bot.editMessageText(`[LIVE] Processed: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+            };
 
-       if (!verifySock) {
-        verified++;
-        currentBatch.push(`\`${res.num}\``);
-        if (currentBatch.length === 5) {
-            await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-            currentBatch = [];
-        }
-        return;
-    }
+            // 1. IF NO WHATSAPP BOT IS CONNECTED
+            if (!verifySock) {
+                await executeOutput();
+                await delay(800);
+                return;
+            }
             
+            // 2. IF WHATSAPP BOT IS CONNECTED
             try {
                 const [check] = await verifySock.onWhatsApp(jid);
                 if (check?.exists) {
-                    verified++;
-                    if (outMode === 'bot') {
-                        // SEND RAW TO SELL BOT
-                        await paymeUserBot.sendMessage(SELL_BOT_USERNAME, { message: raw });
-                    } else {
-                        currentBatch.push(`\`${res.num}\``);
-                        if (currentBatch.length === 5) {
-                            await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                            currentBatch = [];
-                        }
-                    }
-                    bot.editMessageText(`[LIVE] Verified: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    await executeOutput();
                 }
             } catch(e) {}
+            
+            await delay(800);
+        };
+
+            
+            // 2. IF WHATSAPP BOT IS CONNECTED (Verify existence first)
+            try {
+                const [check] = await verifySock.onWhatsApp(jid);
+                if (check?.exists) {
+                    await executeOutput();
+                }
+            } catch(e) {}
+            
             await delay(800);
         };
 
@@ -9504,17 +9535,31 @@ export async function processApiNumbers(rawText) {
 export { userMessageCache, userState, reactionConfigs };
 
 
-// ==========================================
-// 3. LIVE OTP STATS BOARD (PLAIN TEXT)
-// ==========================================
-let liveStatsMsgId = null;
-let liveStatsTimestamp = null; // Tracks the exact age of the pinned message
 
+// ==========================================
+// 3. LIVE OTP STATS BOARD (15 MINUTE ENGINE)
+// ==========================================
 export function setupLiveOtpStats(userBot, senderBot) {
     const TARGET_GROUP = "-1003645249777"; // Your ULTAR OTP Group
-    const UPDATE_INTERVAL = 30 * 60 * 1000; // 30 mins
-    const LOOKBACK_SECONDS = 30 * 60; // 30 mins
-    const REFRESH_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+    const UPDATE_INTERVAL = 15 * 60 * 1000; // 15 mins
+    const LOOKBACK_SECONDS = 15 * 60; // 15 mins
+
+    // Use a file to guarantee the bot never forgets the message ID across restarts
+    const STATS_FILE = path.join(process.cwd(), 'stats_msg_id.json');
+    
+    const loadStatsData = () => {
+        try {
+            if (fs.existsSync(STATS_FILE)) return JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
+        } catch(e) {}
+        return { msgId: null };
+    };
+    
+    const saveStatsData = (msgId) => {
+        try { fs.writeFileSync(STATS_FILE, JSON.stringify({ msgId })); } catch(e) {}
+    };
+
+    let savedData = loadStatsData();
+    let liveStatsMsgId = savedData.msgId;
 
     console.log("[STATS ENGINE] Booting up. Waiting 15 seconds for sync...");
 
@@ -9524,46 +9569,23 @@ export function setupLiveOtpStats(userBot, senderBot) {
 
             let entity;
             try {
-                // 1. SAFE ENTITY RESOLUTION (Required for GramJS)
                 entity = await userBot.getEntity(BigInt(TARGET_GROUP));
             } catch (err) {
-                console.error("[STATS ENGINE] Entity not found! Attempting to sync dialogs...");
                 await userBot.getDialogs({ limit: 20 });
-                try {
-                    entity = await userBot.getEntity(BigInt(TARGET_GROUP));
-                } catch (retryErr) {
-                    console.error("[STATS ENGINE] Still failed. Make sure UserBot is in the group.");
-                    return;
-                }
+                try { entity = await userBot.getEntity(BigInt(TARGET_GROUP)); } catch (e) { return; }
             }
 
-            // 2. ADOPT OLD MESSAGE ON RESTART
-            // If the server restarted, find the old stats board so we don't lose it or spam pins
-            if (!liveStatsMsgId) {
-                const history = await userBot.getMessages(entity, { limit: 30 });
-                for (const h of history) {
-                    if (h.message && h.message.includes("ULTAR OTP LIVE LEADERBOARD")) {
-                        liveStatsMsgId = h.id;
-                        liveStatsTimestamp = h.date * 1000;
-                        console.log(`[STATS ENGINE] Adopted previous board (ID: ${liveStatsMsgId})`);
-                        break;
-                    }
-                }
-            }
-
-            console.log("[STATS ENGINE] Fetching last 30 minutes of OTPs...");
+            console.log("[STATS ENGINE] Fetching last 15 minutes of OTPs...");
             
-            // 3. FETCH & PARSE
             const msgs = await userBot.getMessages(entity, { limit: 400 });
-            const thirtyMinsAgo = Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS;
+            const timeLimit = Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS;
 
             const countryTally = {};
             let totalOtps = 0;
 
             for (const m of msgs) {
-                if (!m.message || m.date < thirtyMinsAgo) continue;
+                if (!m.message || m.date < timeLimit) continue;
                 
-                // STRONGER REGEX: Ignores hidden ASCII borders and carriage returns
                 const match = m.message.match(/Country\s*:\s*([^\n\r]+)/i);
                 if (match) {
                     const country = match[1].trim();
@@ -9572,13 +9594,12 @@ export function setupLiveOtpStats(userBot, senderBot) {
                 }
             }
 
-            // Sort leaderboard by highest OTPs
             const sortedCountries = Object.entries(countryTally)
                 .sort((a, b) => b[1] - a[1])
                 .slice(0, 10);
 
             let statsText = `*ULTAR OTP LIVE LEADERBOARD*\n\n`;
-            statsText += `_Analyzing the last 30 minutes of activity..._\n\n`;
+            statsText += `_Analyzing the last 15 minutes of activity..._\n\n`;
             
             if (sortedCountries.length === 0) {
                 statsText += `_No OTPs captured recently._\n`;
@@ -9590,49 +9611,45 @@ export function setupLiveOtpStats(userBot, senderBot) {
                 }
             }
             
-            statsText += `\n*Total OTPs (30m):* ${totalOtps}\n`;
-            statsText += `_Auto-updates every 30 mins_`;
+            statsText += `\n*Total OTPs (15m):* ${totalOtps}\n`;
+            statsText += `_Auto-updates every 15 mins_`;
 
-            const now = Date.now();
-
-            // 4. 24-HOUR WIPE: Reset the board completely once a day to keep chat clean
-            if (liveStatsMsgId && liveStatsTimestamp && (now - liveStatsTimestamp >= REFRESH_INTERVAL)) {
-                try { await senderBot.deleteMessage(TARGET_GROUP, liveStatsMsgId); } catch (e) {}
-                liveStatsMsgId = null;
-            }
-
-            // 5. SEND NEW OR EDIT EXISTING
-            if (!liveStatsMsgId) {
-                const sentMsg = await senderBot.sendMessage(TARGET_GROUP, statsText, { parse_mode: 'Markdown' });
-                liveStatsMsgId = sentMsg.message_id;
-                liveStatsTimestamp = now;
-                
-                try {
-                    await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true });
-                } catch(e) {
-                    console.error("[STATS ENGINE] Failed to pin message. Is the bot an admin?");
-                }
-            } else {
+            // 1. Try to edit the existing message first
+            if (liveStatsMsgId) {
                 try {
                     await senderBot.editMessageText(statsText, {
                         chat_id: TARGET_GROUP,
                         message_id: liveStatsMsgId,
                         parse_mode: 'Markdown'
                     });
+                    console.log(`[STATS ENGINE] Board updated successfully.`);
+                    return; // Success! Stop here.
                 } catch (e) {
-                    // If the message was manually deleted, reset the ID so it creates a new one next time
-                    if (e.message.includes('message to edit not found')) liveStatsMsgId = null;
+                    // If message was manually deleted by admin, we reset and send a new one
+                    if (e.message.includes('not found') || e.message.includes('deleted')) {
+                        liveStatsMsgId = null; 
+                    }
                 }
             }
-            console.log(`[STATS ENGINE] Board updated successfully. Total OTPs: ${totalOtps}`);
+
+            // 2. Only send a new one if there is no saved ID or the old one was deleted
+            if (!liveStatsMsgId) {
+                const sentMsg = await senderBot.sendMessage(TARGET_GROUP, statsText, { parse_mode: 'Markdown' });
+                liveStatsMsgId = sentMsg.message_id;
+                
+                // Save it persistently
+                saveStatsData(liveStatsMsgId);
+                
+                try {
+                    await senderBot.pinChatMessage(TARGET_GROUP, liveStatsMsgId, { disable_notification: true });
+                } catch(e) {}
+            }
+
         } catch (e) {
             console.error("[STATS ENGINE ERROR]", e.message);
         }
     };
 
-    // Delay initial execution to let GramJS cache the dialogs fully
     setTimeout(runStatsUpdate, 15000); 
-
-    // Schedule background loop
     setInterval(runStatsUpdate, UPDATE_INTERVAL);
 }

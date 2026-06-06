@@ -2785,7 +2785,63 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
     });
 
- 
+
+
+        // --- /sa : Test external number using fetchAccountReachoutTimelock ---
+    bot.onText(/\/sa\s+(\S+)/, async (msg, match) => {
+        deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        const rawInput = match[1];
+        const res = normalizeWithCountry(rawInput);
+
+        if (!res || !res.num) {
+            return bot.sendMessage(chatId, "[ERROR] Invalid number format.");
+        }
+
+        const activeFolders = Object.keys(clients).filter(f => clients[f]);
+        if (activeFolders.length === 0) {
+            return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected to perform the test.");
+        }
+        
+        // Grab the first available bot to perform the check
+        const sock = clients[activeFolders[0]];
+
+        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+        const targetJid = `${fullPhone}@s.whatsapp.net`;
+
+        const statusMsg = await bot.sendMessage(chatId, `[TESTING] Fetching Reachout Timelock payload for +${fullPhone}...`);
+
+        try {
+            // Fire the function using the target JID
+            const timelock = await sock.fetchAccountReachoutTimelock(targetJid);
+            
+            let report = `**[TIMELOCK RESULT: +${fullPhone}]**\n\n`;
+
+            if (!timelock || Object.keys(timelock).length === 0) {
+                report += `Status: CLEAN (No restrictions or empty payload returned)`;
+            } else {
+                report += `Status: DATA FOUND\nPayload: \`${JSON.stringify(timelock)}\``;
+            }
+
+            await bot.editMessageText(report, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id, 
+                parse_mode: 'Markdown' 
+            });
+
+        } catch (e) {
+            bot.editMessageText(`[ERROR] Test failed for +${fullPhone}:\n_${e.message}_`, { 
+                chat_id: chatId, 
+                message_id: statusMsg.message_id, 
+                parse_mode: 'Markdown' 
+            });
+        }
+    });
+
 
 
         // --- /de command: Germany Number Analyzer and Sorter (High Specificity) ---

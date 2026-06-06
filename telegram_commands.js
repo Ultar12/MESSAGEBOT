@@ -1821,243 +1821,1164 @@ bot.onText(/\/getnu(?:\s+(\d+))?/, async (msg, match) => {
     const options = {
         reply_markup: {
             inline_keyboard: [
-                [{ text: "Target: Rocket OTP", callback_data: `target_rocket_${amount}` }],
-                [{ text: "Target: LolzFack (SMS_Sp)", callback_data: `target_lolzfack_${amount}` }]
+                [{ text: "Output: Send to Chat (Batches)", callback_data: `getnu_out_chat_${amount}` }],
+                [{ text: "Output: Send directly to Sell Bot", callback_data: `getnu_out_bot_${amount}` }]
             ]
         }
     };
-    await bot.sendMessage(chatId, `[EXTRACTION ENGINE]\nTarget: ${amount} active numbers.\n\nSelect target bot:`, options);
+    await bot.sendMessage(chatId, `[EXTRACTION ENGINE]\nTarget: ${amount} active numbers.\n\nWhere should the verified numbers be sent?`, options);
 });
 
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    if (!query.data.startsWith('target_') && !query.data.startsWith('start_scrape_')) return;
 
-    const parts = query.data.split('_');
-    const amount = parseInt(parts[parts.length - 1]) || 50;
-    const action = query.data.replace(`_${amount}`, ''); 
 
-    // --- LOLZFACK (INLINE BUTTON SCRAPER) ---
-    if (action === 'target_lolzfack' || action === 'start_scrape_lolzfack') {
-        const targetBot = "LolzFack_bot";
-        if (action === 'target_lolzfack') {
+     bot.on('callback_query', async (query) => {
+        const chatId = query.message.chat.id;
+        const userId = chatId.toString();
+        const data = query.data;
+
+        if (data === 'cancel_action') {
+            userState[chatId] = null;
+            await bot.deleteMessage(chatId, query.message.message_id);
             await bot.answerCallbackQuery(query.id);
-            await userBot.sendMessage(targetBot, { message: "Get Number" });
-            return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot}. Navigate to numbers and click:`, {
-                reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_lolzfack_${amount}` }]] }
+            return sendMenu(bot, chatId, 'Cancelled.');
+        }   
+
+        // --- SECONDARY MENU FOR BOTH TXT AND TTX ---
+        if (data === 'txt_menu_stream' || data === 'txt_menu_normal' || data === 'ttx_menu_stream' || data === 'ttx_menu_normal') {
+            const cmdType = data.startsWith('txt') ? 'txt' : 'ttx';
+            const modeName = data.includes('stream') ? 'stream' : 'normal';
+            
+            return bot.editMessageText(`[OUTPUT STYLE]\nHow do you want to receive the numbers?`, {
+                chat_id: chatId,
+                message_id: query.message.message_id,
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'Send as .TXT Files', callback_data: `${cmdType}_run_${modeName}_file` }],
+                        [{ text: 'Send in Chat Batches', callback_data: `${cmdType}_run_${modeName}_batch` }],
+                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                    ]
+                }
             });
         }
-        
-        await bot.answerCallbackQuery(query.id);
-        const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers...`);
 
-        try {
-            const activeFolders = Object.keys(clients).filter(f => clients[f]);
-            if (activeFolders.length === 0) return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected!");
-            const verifySock = clients[activeFolders[0]];
+        // --- WSOTP FILE MODE SELECTION ---
+        if (data === 'wsotp_mode_auto' || data === 'wsotp_mode_man') {
+            await bot.answerCallbackQuery(query.id);
+            const nums = userState[chatId + '_wsotp_temp_nums'];
+            const botChoice = userState[chatId + '_wsotp_bot'] || 'payme';
+            const engineKey = chatId + '_' + botChoice;
+            
+            if (!nums) return bot.sendMessage(chatId, "[ERROR] Session expired. Please upload the file again.");
 
-            const seen = new Set();
-            let currentBatch = [];
-            let verified = 0;
-            let attempts = 0;
+            // Clear temp memory and load the queue
+            userState[chatId + '_wsotp_temp_nums'] = null;
+            wsotpQueue[engineKey] = wsotpQueue[engineKey] || [];
+            wsotpQueue[engineKey].push(...nums);
 
-            while (verified < amount && attempts < 50) {
-                attempts++;
-                // Fetch the newest messages
-                const msgs = await userBot.getMessages(targetBot, { limit: 3 });
+            const mode = data === 'wsotp_mode_auto' ? 'WSOTP_AUTO_MODE' : 'WSOTP_MAN_MODE';
+            userState[engineKey] = mode;
 
-                // 1. EXTRACT NUMBERS FROM THE NEWEST MESSAGE
-                for (const msg of msgs) {
-                    if (msg.replyMarkup?.rows) {
-                        for (const row of msg.replyMarkup.rows) {
-                            for (const btn of row.buttons) {
-                                const bText = btn.text || "";
-                                // Skip action buttons (Change Number, Back, etc.)
-                                if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع")) continue;
+            bot.editMessageText(
+                `**[${mode === 'WSOTP_AUTO_MODE' ? 'AUTO' : 'MANUAL'} MODE ACTIVE]**\n\n` +
+                `Processing ${nums.length} numbers via ${botChoice.toUpperCase()}.\n` +
+                `Type \`STOP\` or \`/done\` to abort.`,
+                { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
+            );
 
-                                let raw = bText.replace(/\D/g, '');
-                                if (raw.length < 9) continue;
+            if (!wsotpActive[engineKey]) processWsotpQueue(chatId, botChoice);
+            return;
+        }
+
+        // --- /CONVT MENU 1: CHOOSE SORT METHOD ---
+        if (data === 'convt_sort_cc' || data === 'convt_sort_rng') {
+            await bot.answerCallbackQuery(query.id);
+            const fileData = userState[chatId + '_convt_file'];
+            if (!fileData) return bot.sendMessage(chatId, "[ERROR] File session expired. Please reply with /convt again.");
+
+            if (data === 'convt_sort_rng' && !fileData.name.endsWith('.xlsx')) {
+                return bot.sendMessage(chatId, "[ERROR] Grouping by Range requires an .xlsx file with a 'Range' column.");
+            }
+
+            userState[chatId + '_convt_sort'] = data === 'convt_sort_cc' ? 'cc' : 'rng';
+
+            const opts = {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Keep Country Code", callback_data: "convt_out_keep" }],
+                        [{ text: "Strip Country Code", callback_data: "convt_out_strip" }]
+                    ]
+                }
+            };
+            return bot.editMessageText("Do you want to KEEP or STRIP the country code in the final text files?", { chat_id: chatId, message_id: query.message.message_id, reply_markup: opts.reply_markup });
+        }
+
+        // --- /CONVT MENU 2: EXECUTION ---
+        if (data === 'convt_out_keep' || data === 'convt_out_strip') {
+            await bot.answerCallbackQuery(query.id);
+            const fileData = userState[chatId + '_convt_file'];
+            const sortMode = userState[chatId + '_convt_sort'];
+            const keepCode = data === 'convt_out_keep';
+
+            if (!fileData || !sortMode) return bot.sendMessage(chatId, "[ERROR] Session expired. Please reply with /convt again.");
+
+            userState[chatId + '_convt_file'] = null;
+            userState[chatId + '_convt_sort'] = null;
+
+            await bot.editMessageText(`[SYSTEM] Extracting & Sorting... (Strip Codes: ${keepCode ? 'NO' : 'YES'})`, { chat_id: chatId, message_id: query.message.message_id });
+
+            try {
+                const fileLink = await bot.getFileLink(fileData.id);
+                const response = await fetch(fileLink);
+
+                const groupedNumbers = {}; 
+                const groupNames = {};     
+
+                if (fileData.name.endsWith('.xlsx')) {
+                    const arrayBuffer = await response.arrayBuffer();
+                    const buffer = Buffer.from(arrayBuffer);
+                    const workbook = XLSX.read(buffer, { type: 'buffer' });
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+                    if (sortMode === 'rng') {
+                        // SMART HEADER HUNTER
+                        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                        
+                        let rangeColIndex = -1;
+                        let numberColIndex = -1;
+                        let dataStartIndex = 1;
+
+                        for (let i = 0; i < Math.min(10, rawData.length); i++) {
+                            const row = rawData[i];
+                            if (!Array.isArray(row)) continue;
+                            
+                            const lowerRow = row.map(cell => cell ? String(cell).toLowerCase().trim() : '');
+                            
+                            const rIdx = lowerRow.indexOf('range');
+                            let nIdx = lowerRow.indexOf('number');
+                            if (nIdx === -1) nIdx = lowerRow.indexOf('phone');
+
+                            if (rIdx !== -1 && nIdx !== -1) {
+                                rangeColIndex = rIdx;
+                                numberColIndex = nIdx;
+                                dataStartIndex = i + 1; 
+                                break;
+                            }
+                        }
+
+                        if (rangeColIndex !== -1 && numberColIndex !== -1) {
+                            for (let i = dataStartIndex; i < rawData.length; i++) {
+                                const row = rawData[i];
+                                if (!Array.isArray(row)) continue;
+
+                                const num = row[numberColIndex];
+                                const rangeName = row[rangeColIndex] || 'Unknown_Range';
+
+                                if (num) {
+                                    if (!groupedNumbers[rangeName]) {
+                                        groupedNumbers[rangeName] = [];
+                                        groupNames[rangeName] = `Range: ${rangeName}`;
+                                    }
+                                    groupedNumbers[rangeName].push(String(num));
+                                }
+                            }
+                        } else {
+                            throw new Error("Could not find both 'Range' and 'Number' columns in the Excel file.");
+                        }
+                    } else {
+                        const parsedData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                        parsedData.forEach(row => {
+                            if (Array.isArray(row)) {
+                                row.forEach(cell => {
+                                    if (cell) {
+                                        const numMatch = cell.toString().match(/\d{7,15}/g);
+                                        if (numMatch) {
+                                            numMatch.forEach(num => {
+                                                const res = normalizeWithCountry(num);
+                                                let groupKey = 'Unknown';
+                                                let groupName = 'Unknown / Local';
+
+                                                if (res && res.code && res.code !== 'N/A') {
+                                                    groupKey = res.code;
+                                                    groupName = `${res.name} (+${res.code})`;
+                                                }
+
+                                                if (!groupedNumbers[groupKey]) {
+                                                    groupedNumbers[groupKey] = [];
+                                                    groupNames[groupKey] = groupName;
+                                                }
+                                                groupedNumbers[groupKey].push(num);
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    }
+                } else if (fileData.name.endsWith('.txt')) {
+                    const rawText = await response.text();
+                    const matches = rawText.match(/\d{7,15}/g) || [];
+
+                    matches.forEach(num => {
+                        const res = normalizeWithCountry(num);
+                        let groupKey = 'Unknown';
+                        let groupName = 'Unknown / Local';
+
+                        if (res && res.code && res.code !== 'N/A') {
+                            groupKey = res.code;
+                            groupName = `${res.name} (+${res.code})`;
+                        }
+
+                        if (!groupedNumbers[groupKey]) {
+                            groupedNumbers[groupKey] = [];
+                            groupNames[groupKey] = groupName;
+                        }
+                        groupedNumbers[groupKey].push(num);
+                    });
+                }
+
+                const keys = Object.keys(groupedNumbers);
+                if (keys.length === 0) return bot.sendMessage(chatId, "[RESULT] No valid numbers found to extract. Check your columns.");
+
+                bot.sendMessage(chatId, `[INFO] Found ${keys.length} group(s). Generating files...`);
+
+                for (const groupKey of keys) {
+                    const rawArray = groupedNumbers[groupKey];
+                    const outputArray = [];
+
+                    for (let num of rawArray) {
+                        num = num ? String(num).trim() : "";
+                        if (!num) continue;
+
+                        const res = normalizeWithCountry(num);
+                        if (res && res.num) {
+                            if (keepCode) {
+                                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                                outputArray.push(fullPhone);
+                            } else {
+                                outputArray.push(res.num);
+                            }
+                        }
+                    }
+
+                    if (outputArray.length > 0) {
+                        const uniqueArray = Array.from(new Set(outputArray));
+                        const textBuffer = Buffer.from(uniqueArray.join('\n'));
+                        
+                        const safeName = groupKey.replace(/[^a-zA-Z0-9_\- ]/g, "").replace(/\s+/g, "_");
+                        const suffix = keepCode ? "WithCode" : "Stripped";
+
+                        let captionText = `**[CONVERT COMPLETE]**\n\n`;
+                        captionText += `**Group:** ${groupNames[groupKey]}\n`;
+                        captionText += `**Total Unique Numbers:** ${uniqueArray.length}\n`;
+                        captionText += `**Mode:** ${keepCode ? 'Kept Country Code' : 'Stripped Country Code'}\n\n`;
+                        captionText += `**OTP Grp:** [Tap to Join](https://chat.whatsapp.com/KGSHc7U07u3IqbUFPQX15q?mode=gi_t)`;
+
+                        await bot.sendDocument(chatId, textBuffer, {
+                            caption: captionText,
+                            parse_mode: 'Markdown'
+                        }, { filename: `converted_${safeName}_${suffix}.txt`, contentType: 'text/plain' });
+
+                        await new Promise(resolve => setTimeout(resolve, 800)); 
+                    }
+                }
+
+                bot.sendMessage(chatId, "[PROCESS COMPLETE] All files have been extracted and sent.");
+
+            } catch (err) {
+                console.error("Convt Error:", err);
+                bot.sendMessage(chatId, "[ERROR] Failed to convert file: " + err.message);
+            }
+        }
+
+        // --- SMART EXECUTION & RESUME ENGINE FOR TXT AND TTX ---
+        if (data.startsWith('txt_run_') || data.startsWith('ttx_run_') || data === 'resume_stream_txt') {
+            await bot.answerCallbackQuery(query.id);
+            
+            let job;
+            
+            if (data === 'resume_stream_txt') {
+                job = userState[chatId + '_stream_txt'];
+                if (!job) return bot.sendMessage(chatId, "[ERROR] No paused job found. It may have expired or finished.");
+                try { await bot.deleteMessage(chatId, query.message.message_id); } catch(e){}
+            } else {
+                try { await bot.deleteMessage(chatId, query.message.message_id); } catch(e){}
+                
+                const cmdType = data.startsWith('txt') ? 'txt' : 'ttx';
+                const fileId = userState[chatId + `_${cmdType}_file`];
+                
+                if (!fileId) return bot.sendMessage(chatId, `[ERROR] File expired or lost. Please reply to the file with /${cmdType} again.`);
+                userState[chatId + `_${cmdType}_file`] = null;
+
+                const isStreaming = data.includes('stream');
+                const outputAsFile = data.includes('file');
+
+                bot.sendMessage(chatId, `[SYSTEM] Downloading file and building memory...`);
+
+                const connectedSet = new Set();
+                Object.values(shortIdMap).forEach(session => {
+                    const res = normalizeWithCountry(session.phone);
+                    if (res) {
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        connectedSet.add(fullPhone);
+                    }
+                });
+                
+                const allDbDocs = await getAllNumbers(); 
+                const dbSet = new Set();
+                allDbDocs.forEach(doc => {
+                    const rawStr = String(doc.number || doc).replace(/\D/g, '');
+                    const res = normalizeWithCountry(rawStr);
+                    if (res && res.num) {
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        dbSet.add(fullPhone);
+                    } else {
+                        dbSet.add(rawStr);
+                    }
+                });
+
+                const fileLink = await bot.getFileLink(fileId);
+                const response = await fetch(fileLink);
+                const rawText = await response.text();
+                const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+                job = {
+                    cmdType, isStreaming, outputAsFile, lines,
+                    currentIndex: 0, totalChecked: 0, validCount: 0, skippedCount: 0,
+                    bannedNumbers: [], activeBatch: [], activeFileArray: [],
+                    failedFolders: [],
+                    detectedCountry: "Unknown", detectedCode: "N/A",
+                    connectedSet: Array.from(connectedSet),
+                    dbSet: Array.from(dbSet),
+                    statusMsgId: null
+                };
+                
+                userState[chatId + '_stream_txt'] = job;
+            }
+
+            const isUserAdmin = (userId === ADMIN_ID);
+            let statusMsg = await bot.sendMessage(chatId, `[SYSTEM] Starting Processing Engine...`);
+            job.statusMsgId = statusMsg.message_id;
+
+            let currentFolder = null;
+            let sock = null;
+            let checkerNum = "None";
+
+            const getActiveSocket = async () => {
+                let availableFolders = [];
+                if (isUserAdmin) {
+                    availableFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
+                } else {       
+                    const mySessions = await getAllSessions(userId);
+                    const mySessionIds = mySessions.map(s => s.session_id);
+                    availableFolders = mySessionIds.filter(f => clients[f] && f !== currentOtpSenderId && !job.failedFolders.includes(f));
+                }
+                
+                for (const folder of availableFolders) {
+                    const tempSock = clients[folder];
+                    if (tempSock && tempSock.user && tempSock.user.id) {
+                        currentFolder = folder;
+                        sock = tempSock;
+                        checkerNum = sock.user.id.split(':')[0];
+                        return true;
+                    } else {
+                        job.failedFolders.push(folder);
+                    }
+                }
+                return false;
+            };
+
+            if (job.isStreaming) {
+                const hasBot = await getActiveSocket();
+                if (!hasBot) {
+                    return bot.sendMessage(chatId, `[ERROR] NO BOTS AVAILABLE!\nPlease connect a WhatsApp account to continue processing.`, {
+                        reply_markup: { inline_keyboard: [[{text: "Resume Processing", callback_data: "resume_stream_txt"}]] }
+                    });
+                }
+                bot.sendMessage(chatId, `[STREAMING MODE]\nUsing Bot: +${checkerNum}`);
+            }
+
+            userState[chatId + '_stopFlag'] = false; 
+            const fastConnectedSet = new Set(job.connectedSet);
+            const fastDbSet = new Set(job.dbSet);
+
+            for (let i = job.currentIndex; i < job.lines.length; i++) {
+                if (userState[chatId + '_stopFlag']) {
+                    job.currentIndex = i; 
+                    break;
+                }
+
+                job.currentIndex = i;
+                const line = job.lines[i];
+                const res = normalizeWithCountry(line);
+                
+                if (!res || !res.num) continue; 
+
+                if (job.detectedCountry === "Unknown" && res.name !== "Local/Unknown") {
+                    job.detectedCountry = res.name;
+                    job.detectedCode = res.code;
+                }
+
+                const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                const numberToOutput = job.cmdType === 'txt' ? res.num : fullPhone;
+
+                if (fastConnectedSet.has(fullPhone) || fastDbSet.has(fullPhone)) {
+                    job.skippedCount++;
+                    continue;
+                }
+
+                job.totalChecked++;
+
+                if (job.isStreaming) {
+                    if (!clients[currentFolder] || !sock || !sock.user) {
+                        bot.sendMessage(chatId, `[WARNING] Bot +${checkerNum} disconnected or was BANNED!\n[SYSTEM] Finding a new bot...`);
+                        
+                        if (currentFolder) job.failedFolders.push(currentFolder);
+                        
+                        const hasNewBot = await getActiveSocket();
+                        if (!hasNewBot) {
+                            job.currentIndex = i; 
+                            return bot.sendMessage(chatId, `[FATAL ERROR] ALL BOTS ARE DEAD OR BANNED!\nStopped at ${i}/${job.lines.length}.\nConnect a new WhatsApp account and tap resume.`, {
+                                reply_markup: { inline_keyboard: [[{text: "Resume Processing", callback_data: "resume_stream_txt"}]] }
+                            });
+                        }
+                        bot.sendMessage(chatId, `[SUCCESS] Successfully switched to Bot: +${checkerNum}`);
+                        i--; 
+                        continue;
+                    }
+
+                    try {
+                        const jid = `${fullPhone}@s.whatsapp.net`;
+                        const checkPromise = sock.onWhatsApp(jid);
+                        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
+                        
+                        const [check] = await Promise.race([checkPromise, timeoutPromise]);
+                        
+                        if (check && check.exists) {
+                            job.validCount++;
+                            if (job.outputAsFile) {
+                                job.activeFileArray.push(numberToOutput);
+                            } else {
+                                job.activeBatch.push(numberToOutput);
+                                if (job.activeBatch.length === 5) {
+                                    await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                    job.activeBatch = []; 
+                                    await delay(1000); 
+                                }
+                            }
+                        } else {
+                            job.bannedNumbers.push(numberToOutput);
+                        }
+                    } catch (err) {
+                        if (err.message !== "WA_TIMEOUT" && (!clients[currentFolder] || !sock || !sock.user)) {
+                            i--; 
+                            continue;
+                        }
+                        job.bannedNumbers.push(numberToOutput); 
+                    }
+
+                    await delay(500); 
+                } else {
+                    job.validCount++;
+                    if (job.outputAsFile) {
+                        job.activeFileArray.push(numberToOutput); 
+                    } else {
+                        job.activeBatch.push(numberToOutput); 
+                        if (job.activeBatch.length === 5) {
+                            await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                            job.activeBatch = [];
+                            await delay(800);
+                        }
+                    }
+                }
+
+                if (i > 0 && i % 10 === 0) {
+                    const percent = Math.floor((i / job.lines.length) * 100);
+                    const left = job.lines.length - i;
+                    const progressMsg = 
+                        `[STREAMING IN PROGRESS]\n\n` +
+                        `Progress: ${percent}% [${i}/${job.lines.length}]\n` +
+                        `Remaining: ${left}\n` +
+                        `Active: ${job.validCount}\n` +
+                        (job.isStreaming ? `Weak/Dead: ${job.bannedNumbers.length}\n` : '') +
+                        `Skipped (DB/Dupe): ${job.skippedCount}\n\n` +
+                        (job.isStreaming ? `Current Bot: +${checkerNum}` : `Mode: Normal Filter`);
+                    
+                    try {
+                        await bot.editMessageText(progressMsg, {chat_id: chatId, message_id: job.statusMsgId, parse_mode: 'Markdown'});
+                    } catch(e){} 
+                }
+            }
+
+            const isAborted = userState[chatId + '_stopFlag'];
+            userState[chatId + '_stopFlag'] = false;
+
+            if (isAborted) {
+                return bot.sendMessage(chatId, `[PAUSED] Process Manually Paused.\nStopped at ${job.currentIndex} / ${job.lines.length}.`, {
+                    reply_markup: { inline_keyboard: [[{text: "Resume Processing", callback_data: "resume_stream_txt"}]] }
+                });
+            }
+
+            userState[chatId + '_stream_txt'] = null;
+
+            if (!job.outputAsFile && job.activeBatch.length > 0) {
+                await bot.sendMessage(chatId, job.activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+            }
+
+            if (!job.outputAsFile && job.isStreaming && job.bannedNumbers.length > 0) {
+                await bot.sendMessage(chatId, `[BANNED / DEAD] (${job.bannedNumbers.length})`, { parse_mode: 'Markdown' });
+                for (let i = 0; i < job.bannedNumbers.length; i += 10) {
+                    const chunk = job.bannedNumbers.slice(i, i + 10);
+                    if (chunk.length > 0) {
+                        await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                        await delay(800);
+                    }
+                }
+            }
+
+            let finalSummary = `[PROCESS COMPLETE]\n\n`;
+            finalSummary += `Country Detected: ${job.detectedCountry} (+${job.detectedCode})\n`;
+            finalSummary += `Total Checked: ${job.totalChecked}\n`;
+            finalSummary += `Active: ${job.validCount}\n`;
+            if (job.isStreaming) finalSummary += `Weak/Dead: ${job.bannedNumbers.length}\n`;
+            finalSummary += `Skipped (DB/Dupe): ${job.skippedCount}\n\n`;
+            finalSummary += `*Always save temporarily banned numbers so you can reuse them later.*\n`;
+            finalSummary += `[Tap to Join OTP Grp](https://t.me/+MLS1oZxY6TtiMTQ1)`;
+
+            if (job.outputAsFile) {
+                let formattedActiveText = "";
+                let batchNum = 1;
+                for (let j = 0; j < job.activeFileArray.length; j++) {
+                    if (j % 5 === 0) {
+                        formattedActiveText += `    ${batchNum}    \n`;
+                        batchNum++;
+                    }
+                    formattedActiveText += job.activeFileArray[j];
+                    if ((j + 1) % 5 === 0 && j !== job.activeFileArray.length - 1) {
+                        formattedActiveText += "\n\n\n"; 
+                    } else if (j !== job.activeFileArray.length - 1) {
+                        formattedActiveText += "\n"; 
+                    }
+                }
+
+                if (job.activeFileArray.length > 0 && job.isStreaming && job.bannedNumbers.length > 0) {
+                    const tempActive = `./Active_WA_Numbers_${Date.now()}.txt`;
+                    const tempWeak = `./Weak_WA_Numbers_${Date.now()}.txt`;
+                    
+                    fs.writeFileSync(tempActive, formattedActiveText);
+                    fs.writeFileSync(tempWeak, job.bannedNumbers.join('\n'));
+
+                    try {
+                        await bot.sendMediaGroup(chatId, [
+                            { type: 'document', media: tempActive, caption: finalSummary, parse_mode: 'Markdown' },
+                            { type: 'document', media: tempWeak }
+                        ]);
+                    } catch (err) {
+                        await bot.sendDocument(chatId, tempActive, { caption: finalSummary, parse_mode: 'Markdown' });
+                        await bot.sendDocument(chatId, tempWeak);
+                    }
+                    if (fs.existsSync(tempActive)) fs.unlinkSync(tempActive);
+                    if (fs.existsSync(tempWeak)) fs.unlinkSync(tempWeak);
+
+                } else if (job.activeFileArray.length > 0) {
+                    const activeBuffer = Buffer.from(formattedActiveText);
+                    await bot.sendDocument(chatId, activeBuffer, { caption: finalSummary, parse_mode: 'Markdown' }, { filename: 'Active_WA_Numbers.txt', contentType: 'text/plain' });
+                } else if (job.isStreaming && job.bannedNumbers.length > 0) {
+                    const deadBuffer = Buffer.from(job.bannedNumbers.join('\n'));
+                    await bot.sendDocument(chatId, deadBuffer, { caption: finalSummary, parse_mode: 'Markdown' }, { filename: 'Weak_WA_Numbers.txt', contentType: 'text/plain' });
+                } else {
+                    await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown', disable_web_page_preview: true });
+                }
+            } else {
+                await bot.sendMessage(chatId, finalSummary, { parse_mode: 'Markdown', disable_web_page_preview: true });
+            }
+            return;
+        }
+
+        // --- DOWNLOAD API NUMBERS ---
+        if (data === 'download_api_numbers') {
+            await bot.answerCallbackQuery(query.id, 'Preparing file...');
+            const numbersArray = userState[chatId + '_api_numbers'];
+            if (!numbersArray || numbersArray.length === 0) {
+                return bot.sendMessage(chatId, '[ERROR] Data expired. Please click "My Numbers" again to fetch fresh data.');
+            }
+            const buffer = Buffer.from(numbersArray.join('\n'));
+            await bot.sendDocument(chatId, buffer, { 
+                caption: `**API NUMBERS EXPORTED**\nTotal: ${numbersArray.length}\nFormat: Clean Numbers`,
+                parse_mode: 'Markdown'
+            }, { filename: `Eden_Numbers_${Date.now()}.txt`, contentType: 'text/plain' });
+            userState[chatId + '_api_numbers'] = null;
+            return bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: query.message.message_id });
+        }
+
+        // --- FILE MERGER BUTTONS ---
+        if (data === 'drop_merged_file') {
+            await bot.answerCallbackQuery(query.id);
+            if (!mergeBuffer[chatId] || mergeBuffer[chatId].size === 0) {
+                return bot.sendMessage(chatId, '[ERROR] Your merge buffer is empty.');
+            }
+            const allNumbers = Array.from(mergeBuffer[chatId]);
+            const buffer = Buffer.from(allNumbers.join('\n'));
+            await bot.sendDocument(chatId, buffer, { 
+                caption: `**MERGED FILE COMPLETE**\n\nTotal Numbers: ${allNumbers.length}\nBuffer has been cleared.`,
+                parse_mode: 'Markdown'
+            }, { filename: `Merged_Numbers_${Date.now()}.txt`, contentType: 'text/plain' });
+            mergeBuffer[chatId] = new Set();
+            return;
+        }
+
+        if (data === 'clear_merge_buffer') {
+            await bot.answerCallbackQuery(query.id, 'Buffer cleared.');
+            mergeBuffer[chatId] = new Set();
+            return bot.editMessageText(`Merge buffer has been cleared.`, { chat_id: chatId, message_id: query.message.message_id });
+        }
+
+        // --- QR / CONNECTION ---
+        if (data === 'cancel_qr') {
+            userState[chatId] = null;
+            await bot.answerCallbackQuery(query.id, 'QR connection cancelled');
+            try { await bot.deleteMessage(chatId, query.message.message_id); } catch (e) {}
+            return sendMenu(bot, chatId, 'QR connection cancelled. Please try again.');
+        }
+
+        if (data === 'connect_qr') {
+            userState[chatId] = 'WAITING_QR_CONNECT';
+            await bot.answerCallbackQuery(query.id);
+            for (const folder in qrActiveState) delete qrActiveState[folder];
+            await deleteOldMessagesAndSend(bot, chatId, 'Initializing QR connection...\n\nGenerating QR code...', {
+                reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]] }
+            });
+            const sessionId = makeSessionId();
+            startClient(sessionId, null, chatId, userId);
+            try { await setAntiMsgStatus(sessionId, true); } catch (e) {}
+            return;
+        }
+
+        if (data === 'connect_code') {
+            userState[chatId] = 'WAITING_PAIR';
+            await bot.answerCallbackQuery(query.id);
+            return deleteOldMessagesAndSend(bot, chatId, 'Enter WhatsApp number:', { 
+                reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]] }
+            });
+        }
+
+        // --- GETNU LOGIC START ---
+        if (data.startsWith('getnu_out_') || data.startsWith('target_rocket') || data.startsWith('target_lolzfack') || data.startsWith('start_scrape_')) {
+            
+            // 1. Output Selection Menu
+            if (data.startsWith('getnu_out_')) {
+                const parts = data.split('_');
+                const outMode = parts[2]; // 'chat' or 'bot'
+                const amount = parts[3];
+
+                userState[chatId + '_getnu_outmode'] = outMode;
+
+                const options = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Target: Rocket OTP", callback_data: `target_rocket_${amount}` }],
+                            [{ text: "Target: LolzFack (SMS_Sp)", callback_data: `target_lolzfack_${amount}` }]
+                        ]
+                    }
+                };
+                await bot.editMessageText(
+                    `[EXTRACTION ENGINE]\nTarget: ${amount} numbers\nOutput: ${outMode === 'bot' ? 'Direct to Sell Bot (Raw Numbers)' : 'Chat Batches'}\n\nSelect source bot:`, 
+                    { chat_id: chatId, message_id: query.message.message_id, reply_markup: options.reply_markup }
+                );
+                return;
+            }
+
+            const parts = data.split('_');
+            const amount = parseInt(parts[parts.length - 1]) || 50;
+            const action = data.replace(`_${amount}`, ''); 
+            const outMode = userState[chatId + '_getnu_outmode'] || 'chat'; 
+            const SELL_BOT_USERNAME = "wsotp200bot";
+
+            // --- LOLZFACK (INLINE BUTTON SCRAPER) ---
+            if (action === 'target_lolzfack' || action === 'start_scrape_lolzfack') {
+                const targetBot = "LolzFack_bot";
+                if (action === 'target_lolzfack') {
+                    await bot.answerCallbackQuery(query.id);
+                    await userBot.sendMessage(targetBot, { message: "Get Number" });
+                    return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot}. Navigate to numbers and click:`, {
+                        reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_lolzfack_${amount}` }]] }
+                    });
+                }
+                
+                await bot.answerCallbackQuery(query.id);
+                const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers...`);
+
+                try {
+                    const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                    if (activeFolders.length === 0) return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected!");
+                    const verifySock = clients[activeFolders[0]];
+
+                    const seen = new Set();
+                    let currentBatch = [];
+                    let verified = 0;
+                    let attempts = 0;
+
+                    while (verified < amount && attempts < 50) {
+                        attempts++;
+                        const msgs = await userBot.getMessages(targetBot, { limit: 3 });
+
+                        for (const msg of msgs) {
+                            if (msg.replyMarkup?.rows) {
+                                for (const row of msg.replyMarkup.rows) {
+                                    for (const btn of row.buttons) {
+                                        const bText = btn.text || "";
+                                        if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع")) continue;
+
+                                        let raw = bText.replace(/\D/g, '');
+                                        if (raw.length < 9) continue;
+                                        if (seen.has(raw)) continue;
+                                        seen.add(raw);
+
+                                        const res = normalizeWithCountry(raw);
+                                        if (!res) continue;
+                                        
+                                        const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
+                                        
+                                        try {
+                                            const [check] = await verifySock.onWhatsApp(jid);
+                                            if (check?.exists) {
+                                                verified++;
+                                                
+                                                if (outMode === 'bot') {
+                                                    try {
+                                                        if (typeof paymeUserBot !== 'undefined' && paymeUserBot.connected) {
+                                                            await paymeUserBot.sendMessage(SELL_BOT_USERNAME, { message: raw });
+                                                        } else {
+                                                            await userBot.sendMessage(SELL_BOT_USERNAME, { message: raw });
+                                                        }
+                                                    } catch(err) {}
+                                                } else {
+                                                    currentBatch.push(`\`${res.num}\``);
+                                                    if (currentBatch.length === 5) {
+                                                        await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                                                        currentBatch = [];
+                                                    }
+                                                }
+                                                
+                                                bot.editMessageText(`[LIVE] Verified: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                                            }
+                                        } catch(e) {}
+                                        await delay(800);
+                                    }
+                                }
+                            }
+                        }
+
+                        if (verified >= amount) break;
+
+                        let clicked = false;
+                        for (const msg of msgs) {
+                            if (msg.replyMarkup && msg.replyMarkup.rows) {
+                                for (const row of msg.replyMarkup.rows) {
+                                    for (const btn of row.buttons) {
+                                        const bText = btn.text || "";
+                                        if (bText.includes("تغيير") || bText.includes("🔄")) {
+                                            try {
+                                                await userBot.invoke(new Api.messages.GetBotCallbackAnswer({ peer: targetBot, msgId: msg.id, data: btn.data }));
+                                                clicked = true;
+                                            } catch (e) {
+                                                try { await msg.click({ text: bText }); clicked = true; } catch(err) {}
+                                            }
+                                            break;
+                                        }
+                                    }
+                                    if (clicked) break;
+                                }
+                            }
+                            if (clicked) break;
+                        }
+
+                        if (clicked) await delay(3500); 
+                        else {
+                            await bot.sendMessage(chatId, "⚠️ [WARNING] Auto-click failed. Retrying...");
+                            await delay(2000); 
+                        }
+                    }
+
+                    if (outMode === 'chat' && currentBatch.length > 0) {
+                        await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                    }
+                    await bot.sendMessage(chatId, `[DONE] Extraction complete. Processed ${verified} numbers.`);
+                    try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
+
+                } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
+            }
+
+            // --- ROCKET OTP (TEXT REGEX SCRAPER) ---
+            if (action === 'target_rocket' || action === 'start_scrape_rocket') {
+                const targetBot = "ROCKETOTP_BOT";
+                if (action === 'target_rocket') {
+                    await bot.answerCallbackQuery(query.id);
+                    await userBot.sendMessage(targetBot, { message: "/start" });
+                    return bot.sendMessage(chatId, `[SYSTEM] Trigger sent. Navigate to numbers and click:`, {
+                        reply_markup: { inline_keyboard: [[{ text: `START LIVE EXTRACTION (${amount})`, callback_data: `start_scrape_rocket_${amount}` }]] }
+                    });
+                }
+                await bot.answerCallbackQuery(query.id);
+                const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers...`);
+
+                try {
+                    const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                    if (activeFolders.length === 0) return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected!");
+                    const verifySock = clients[activeFolders[0]];
+
+                    const seen = new Set();
+                    let currentBatch = [];
+                    let verified = 0;
+                    let attempts = 0;
+
+                    while (verified < amount && attempts < 50) {
+                        attempts++;
+                        const msgs = await userBot.getMessages(targetBot, { limit: 5 });
+                        
+                        for (const msg of msgs) {
+                            const text = msg.message || "";
+                            const matches = text.match(/\d{9,15}/g) || [];
+                            
+                            for (let raw of matches) {
+                                if (verified >= amount) break;
+                                
+                                if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
+                                else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
+                                
                                 if (seen.has(raw)) continue;
                                 seen.add(raw);
 
-                                // Normalize for WA Check
                                 const res = normalizeWithCountry(raw);
                                 if (!res) continue;
-                                
+
                                 const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
-                                
                                 try {
                                     const [check] = await verifySock.onWhatsApp(jid);
                                     if (check?.exists) {
                                         verified++;
-                                        currentBatch.push(`\`${res.num}\``); // ADD WITHOUT COUNTRY CODE
                                         
-                                        if (currentBatch.length === 5) {
-                                            await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                                            currentBatch = [];
+                                        if (outMode === 'bot') {
+                                            try {
+                                                if (typeof paymeUserBot !== 'undefined' && paymeUserBot.connected) {
+                                                    await paymeUserBot.sendMessage(SELL_BOT_USERNAME, { message: raw });
+                                                } else {
+                                                    await userBot.sendMessage(SELL_BOT_USERNAME, { message: raw });
+                                                }
+                                            } catch(err) {}
+                                        } else {
+                                            currentBatch.push(`\`${res.num}\``);
+                                            if (currentBatch.length === 5) {
+                                                await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                                                currentBatch = [];
+                                            }
                                         }
+                                        
                                         bot.editMessageText(`[LIVE] Verified: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                                     }
                                 } catch(e) {}
                                 await delay(800);
                             }
                         }
-                    }
-                }
 
-                if (verified >= amount) break;
+                        if (verified >= amount) break;
 
-                // 2. BULLETPROOF PAGINATION CLICK
-                let clicked = false;
-                
-                for (const msg of msgs) {
-                    if (msg.replyMarkup && msg.replyMarkup.rows) {
-                        for (const row of msg.replyMarkup.rows) {
-                            for (const btn of row.buttons) {
-                                const bText = btn.text || "";
-                                // Look exactly for the refresh button
-                                if (bText.includes("تغيير") || bText.includes("🔄")) {
-                                    try {
-                                        // Direct Telegram API Call (Bypasses GramJS bugs)
-                                        await userBot.invoke(new Api.messages.GetBotCallbackAnswer({
-                                            peer: targetBot,
-                                            msgId: msg.id,
-                                            data: btn.data
-                                        }));
-                                        clicked = true;
-                                    } catch (e) {
-                                        // Extreme fallback
-                                        try { await msg.click({ text: bText }); clicked = true; } catch(err) {}
+                        let clicked = false;
+                        for (const msg of msgs) {
+                            if (msg.replyMarkup && msg.replyMarkup.rows) {
+                                for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
+                                    for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
+                                        const bText = msg.replyMarkup.rows[r].buttons[c].text || "";
+                                        if (bText.toLowerCase().includes("change")) {
+                                            try {
+                                                await userBot.invoke(new Api.messages.GetBotCallbackAnswer({ peer: targetBot, msgId: msg.id, data: msg.replyMarkup.rows[r].buttons[c].data }));
+                                                clicked = true;
+                                            } catch(e) {
+                                                try { await msg.click({ text: bText }); clicked = true; } catch(err){}
+                                            }
+                                            break;
+                                        }
                                     }
-                                    break;
+                                    if (clicked) break;
                                 }
                             }
                             if (clicked) break;
                         }
+                        
+                        if (clicked) await delay(3500); 
+                        else {
+                            await bot.sendMessage(chatId, "⚠️ [WARNING] Auto-click failed. Retrying...");
+                            await delay(2000);
+                        }
                     }
-                    if (clicked) break; // Stop checking older messages once we click the active button
-                }
-
-                if (clicked) {
-                    await delay(3500); // Wait for bot to load new numbers
-                } else {
-                    // Failsafe so it doesn't get permanently stuck
-                    await bot.sendMessage(chatId, "⚠️ [WARNING] Auto-click failed. Retrying...");
-                    await delay(2000); 
-                }
+                    
+                    if (outMode === 'chat' && currentBatch.length > 0) {
+                        await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                    }
+                    bot.sendMessage(chatId, `[DONE] Extraction complete. Processed ${verified} numbers.`);
+                    try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
+                    
+                } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
             }
+            return; 
+        }
+        // --- GETNU LOGIC END ---
 
-            if (currentBatch.length > 0) await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-            await bot.sendMessage(chatId, "[DONE] Extraction complete.");
-            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
+        // --- XL COMMAND: STEP 1 (COUNTRY SELECTION) ---
+        if (data.startsWith('xl_c_')) {
+            const countryCode = data.replace('xl_c_', '');
+            userState[chatId + '_xl_country'] = countryCode;
 
-        } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
-    }
-
-    // --- ROCKET OTP (TEXT REGEX SCRAPER) ---
-    if (action === 'target_rocket' || action === 'start_scrape_rocket') {
-        const targetBot = "ROCKETOTP_BOT";
-        if (action === 'target_rocket') {
             await bot.answerCallbackQuery(query.id);
-            await userBot.sendMessage(targetBot, { message: "/start" });
-            return bot.sendMessage(chatId, `[SYSTEM] Trigger sent. Navigate to numbers and click:`, {
-                reply_markup: { inline_keyboard: [[{ text: `START LIVE EXTRACTION (${amount})`, callback_data: `start_scrape_rocket_${amount}` }]] }
+            await bot.editMessageText(
+                `[COUNTRY SELECTED: +${countryCode}]\n\nSelect checking mode:`,
+                {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: 'Streaming Mode (Check WA)', callback_data: 'xl_m_stream' }],
+                            [{ text: 'Normal Mode (Filter Only)', callback_data: 'xl_m_normal' }],
+                            [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                        ]
+                    }
+                }
+            );
+            return;
+        }
+
+        // --- XL COMMAND: STEP 2 (MODE SELECTION) ---
+        if (data.startsWith('xl_m_')) {
+            const selectedMode = data.replace('xl_m_', ''); 
+            userState[chatId + '_xl_mode'] = selectedMode;
+
+            return bot.editMessageText(`[OUTPUT STYLE]\nHow do you want to receive the numbers?`, {
+                chat_id: chatId,
+                message_id: query.message.message_id,
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'Send as .TXT Files', callback_data: 'xl_run_file' }],
+                        [{ text: 'Send in Chat Batches', callback_data: 'xl_run_batch' }],
+                        [{ text: 'Cancel', callback_data: 'cancel_action' }]
+                    ]
+                }
             });
         }
-        await bot.answerCallbackQuery(query.id);
-        const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers...`);
 
-        try {
-            const activeFolders = Object.keys(clients).filter(f => clients[f]);
-            if (activeFolders.length === 0) return bot.sendMessage(chatId, "[ERROR] No WhatsApp bots connected!");
-            const verifySock = clients[activeFolders[0]];
+        // --- XL COMMAND: STEP 3 (EXECUTION) ---
+        if (data.startsWith('xl_run_')) {
+            await bot.answerCallbackQuery(query.id);
+            await bot.deleteMessage(chatId, query.message.message_id);
 
-            const seen = new Set();
-            let currentBatch = [];
-            let verified = 0;
-            let attempts = 0;
+            const fileId = userState[chatId + '_xl_file'];
+            const targetCountryCode = userState[chatId + '_xl_country'];
+            const selectedMode = userState[chatId + '_xl_mode'];
+            
+            if (!fileId || !targetCountryCode || !selectedMode) {
+                return bot.sendMessage(chatId, '[ERROR] Session expired. Please reply to the file with /xl again.');
+            }
 
-            while (verified < amount && attempts < 50) {
-                attempts++;
-                const msgs = await userBot.getMessages(targetBot, { limit: 5 });
-                
-                // 1. EXTRACT NUMBERS
-                for (const msg of msgs) {
-                    const text = msg.message || "";
-                    const matches = text.match(/\d{9,15}/g) || [];
+            userState[chatId + '_xl_file'] = null;
+            userState[chatId + '_xl_country'] = null;
+            userState[chatId + '_xl_mode'] = null;
+
+            const isStreaming = selectedMode === 'stream';
+            const outputAsFile = data.includes('file');
+
+            try {
+                let sock = null;
+                if (isStreaming) {
+                    const activeFolders = Object.keys(clients).filter(f => clients[f] && f !== currentOtpSenderId);
+                    sock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
                     
-                    for (let raw of matches) {
-                        if (verified >= amount) break;
-                        
-                        if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
-                        else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
-                        
-                        if (seen.has(raw)) continue;
-                        seen.add(raw);
-
-                        const res = normalizeWithCountry(raw);
-                        if (!res) continue;
-
-                        const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
-                        try {
-                            const [check] = await verifySock.onWhatsApp(jid);
-                            if (check?.exists) {
-                                verified++;
-                                currentBatch.push(`\`${res.num}\``);
-                                if (currentBatch.length === 5) {
-                                    await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                                    currentBatch = [];
-                                }
-                                bot.editMessageText(`[LIVE] Verified: ${verified}/${amount}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
-                            }
-                        } catch(e) {}
-                        await delay(800);
+                    if (sock) {
+                        const checkerNum = sock.user.id.split(':')[0]; 
+                        bot.sendMessage(chatId, `[STREAMING MODE: +${targetCountryCode}]\nUsing: ${checkerNum}\nChecking WA status...`);
+                    } else {
+                        return bot.sendMessage(chatId, '[ERROR] No checker account available for Streaming Mode.');
                     }
+                } else {
+                    bot.sendMessage(chatId, `[NORMAL MODE: +${targetCountryCode}]\nFiltering numbers without WA check...`);
                 }
 
-                if (verified >= amount) break;
+                const connectedSet = new Set();
+                Object.values(shortIdMap).forEach(session => {
+                    const res = normalizeWithCountry(session.phone);
+                    if (res) {
+                        connectedSet.add(res.num);
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        connectedSet.add(fullPhone);
+                    }
+                });
+                
+                const allDbDocs = await getAllNumbers(); 
+                const dbSet = new Set();
+                allDbDocs.forEach(doc => {
+                    const rawStr = String(doc.number || doc).replace(/\D/g, '');
+                    dbSet.add(rawStr); 
+                    const res = normalizeWithCountry(rawStr);
+                    if (res && res.num) {
+                        dbSet.add(res.num); 
+                        const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+                        dbSet.add(fullPhone); 
+                    }
+                });
 
-                // 2. BULLETPROOF PAGINATION CLICK
-                let clicked = false;
-                for (const msg of msgs) {
-                    if (msg.replyMarkup && msg.replyMarkup.rows) {
-                        for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
-                            for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
-                                const bText = msg.replyMarkup.rows[r].buttons[c].text || "";
-                                if (bText.toLowerCase().includes("change")) {
-                                    try {
-                                        await userBot.invoke(new Api.messages.GetBotCallbackAnswer({
-                                            peer: targetBot,
-                                            msgId: msg.id,
-                                            data: msg.replyMarkup.rows[r].buttons[c].data
-                                        }));
-                                        clicked = true;
-                                    } catch(e) {
-                                        try { await msg.click({ text: bText }); clicked = true; } catch(err){}
+                const fileLink = await bot.getFileLink(fileId);
+                const response = await fetch(fileLink);
+                const buffer = await response.buffer();
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const excelData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+                let activeBatch = []; 
+                let activeFileArray = [];
+                const bannedNumbers = []; 
+                let totalProcessed = 0;
+                let validCount = 0;
+                let skippedCount = 0;
+
+                userState[chatId + '_stopFlag'] = false;
+
+                for (const row of excelData) {
+                    if (userState[chatId + '_stopFlag']) break;
+                    if (!Array.isArray(row)) continue;
+                    
+                    for (const cell of row) {
+                        if (userState[chatId + '_stopFlag']) break;
+                        if (!cell) continue;
+                        
+                        const cellStr = cell.toString();
+                        const matches = cellStr.match(/\d{7,15}/g) || [];
+                        
+                        for (const rawNum of matches) {
+                            if (userState[chatId + '_stopFlag']) break;
+
+                            const res = normalizeWithCountry(rawNum);
+                            
+                            if (!res || !res.num) continue;
+                            if (res.code !== targetCountryCode) continue;
+
+                            const fullPhone = res.code === 'N/A' ? res.num : `${res.code}${res.num.replace(/^0/, '')}`;
+
+                            if (connectedSet.has(fullPhone) || connectedSet.has(res.num) || dbSet.has(fullPhone) || dbSet.has(res.num) || dbSet.has(rawNum)) {
+                                skippedCount++;
+                                continue;
+                            }
+
+                            if (isStreaming && sock) {
+                                totalProcessed++;
+                                try {
+                                    const jid = `${fullPhone}@s.whatsapp.net`;
+                                    const checkPromise = sock.onWhatsApp(jid);
+                                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
+                                    
+                                    const [check] = await Promise.race([checkPromise, timeoutPromise]);
+                                    
+                                    if (check && check.exists) {
+                                        validCount++;
+                                        if (outputAsFile) {
+                                            activeFileArray.push(res.num);
+                                        } else {
+                                            activeBatch.push(res.num);
+                                            if (activeBatch.length === 5) {
+                                                await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                                activeBatch = []; 
+                                                await delay(1000); 
+                                            }
+                                        }
+                                    } else {
+                                        bannedNumbers.push(res.num);
                                     }
-                                    break;
+                                } catch (err) {
+                                    bannedNumbers.push(res.num);
+                                }
+
+                                if (totalProcessed % 5 === 0) await delay(500); 
+
+                            } else {
+                                totalProcessed++;
+                                validCount++;
+                                if (outputAsFile) {
+                                    activeFileArray.push(res.num);
+                                } else {
+                                    activeBatch.push(res.num);
+                                    if (activeBatch.length === 5) {
+                                        await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                                        activeBatch = [];
+                                        await delay(800);
+                                    }
                                 }
                             }
-                            if (clicked) break;
                         }
                     }
-                    if (clicked) break;
                 }
-                
-                if (clicked) await delay(3500); 
-                else {
-                    await bot.sendMessage(chatId, "⚠️ [WARNING] Auto-click failed. Retrying...");
-                    await delay(2000);
+
+                const isAborted = userState[chatId + '_stopFlag'];
+                userState[chatId + '_stopFlag'] = false;
+
+                if (!outputAsFile && activeBatch.length > 0) {
+                    await bot.sendMessage(chatId, activeBatch.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
                 }
-            }
-            
-            if (currentBatch.length > 0) await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-            bot.sendMessage(chatId, "[DONE] Extraction complete.");
-            try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
-            
-        } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
-    }
-});
+
+                if (!outputAsFile && isStreaming && sock && bannedNumbers.length > 0) {
+                    await bot.sendMessage(chatId, `[BANNED / DEAD] (${bannedNumbers.length})`, { parse_mode: 'Markdown' });
+                    for (let i = 0; i < bannedNumbers.length; i += 10) {
+                        const chunk = bannedNumbers.slice(i, i + 10);
+                        if (chunk.length > 0) {
+                            await bot.sendMessage(chatId, chunk.map(n => `\`${n}\``).join('\n'), { parse_mode: 'Markdown' });
+                            await delay(800);
+                        }
+                    }
+                }
+
+                let finalSummary = isAborted ? `[PROCESS ABORTED BY USER]\n\n` : `[PROCESS COMPLETE]\n\n`;
+                finalSummary += `Command Used: /XL\n`;
+                finalSummary += `Target: +${targetCountryCode}\n`;
+                finalSummary += `Total Checked: ${totalProcessed}\n`;
+                finalSummary += `Active: ${validCount}\n`;
+                if (isStreaming) finalSummary += `Weak: ${bannedNumbers.length}\n`;
+                finalSummary += `Skipped (Duplicates/DB): ${skippedCount}`;
+                finalSummary += `\n\nAlways save temporarily banned numbers so you can reuse them later.`;
+                finalSummary += `\nOTP Grp: [Join](https://t.me/+MLS1oZxY6TtiMTQ1)`;
+
+                if (outputAsFile) {
+                    if (activeFileArray.length > 0 && isStreaming && bannedNumbers.length > 0) {
+                        
+                        const tempDir = `./tmp_xl_${Date.now()}_${chatId}`;
+                        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+                        
+                        const tempActive = `${tempDir}/Active_WA_Numbers.txt`;
+                        const tempWeak = `${tempDir}/Weak_WA_Numbers.txt`;
+
+                        fs.writeFileSync(tempActive, activeFileArray.join('\n'));
+                        fs.writeFileSync(tempWeak, bannedNumbers.join('\n'));
+
+                        try {
+                            await bot.sendMediaGroup(chatId, [
+                                {
+                                    type: 'document',
+                                    media: tempActive,
+                                    caption: finalSummary,
+                                    parse_mode: 'Markdown'
+                                },
+                                {
+                                    type: 'document',
+                                    media: tempWeak
+                                }
+                            ]);
+                        } catch (err) {
+                            await bot.sendDocument(chatId, tempActive, { caption: finalSummary, parse_mode: 'Markdown' });
+                            await bot.sendDocument(chatId, tempWeak);
+                        }
+
+                        if (fs.existsSync(tempActive)) fs.unlinkSync(tempActive);
+                        if (fs.existsSync(tempWeak)) fs.unlinkSync(tempWeak);
+                        if (fs.existsSync(tempDir)) fs.rmdirSync(tempDir);
+
+                    } else if (activeFileArray.length >
+                   
+                        
 
     
 

@@ -1870,7 +1870,7 @@ bot.on('callback_query', async (query) => {
 
     const targetBotMap = {
         'target_lolzfack': 'LolzFack_bot', 'start_scrape_lolzfack': 'LolzFack_bot',
-        'target_rocket': 'ROCKETOTP_BOT', 'start_scrape_rocket': 'ROCKETOTP_BOT',
+        'target_rocket': 'ROCKETOTP_BOT', 'start_scrape_rocketotp': 'ROCKETOTP_BOT',
         'target_nokosx': 'NokosxBot', 'start_scrape_nokosx': 'NokosxBot'
     };
 
@@ -1895,10 +1895,6 @@ bot.on('callback_query', async (query) => {
         const activeFolders = Object.keys(clients).filter(f => clients[f]);
         const verifySock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
-        if (!verifySock) {
-    await bot.sendMessage(chatId, "⚠️ [WARNING] No WhatsApp bots connected. Verification mode is DISABLED. All numbers will be passed through raw.");
-}
-
         const seen = new Set();
         let currentBatch = [];
         let verified = 0;
@@ -1910,6 +1906,17 @@ bot.on('callback_query', async (query) => {
             const res = normalizeWithCountry(raw);
             if (!res) return;
             const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
+            
+
+       if (!verifySock) {
+        verified++;
+        currentBatch.push(`\`${res.num}\``);
+        if (currentBatch.length === 5) {
+            await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+            currentBatch = [];
+        }
+        return;
+    }
             
             try {
                 const [check] = await verifySock.onWhatsApp(jid);

@@ -2080,6 +2080,8 @@ bot.on('callback_query', async (query) => {
             } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
             return;
         }
+
+     });
         // --- END GETNU SYSTEM ---
 
 

@@ -83,6 +83,9 @@ export let spyFound = new Set();
 // ==========================================
 const wsotpQueue = {};
 const wsotpActive = {};
+const getnuStopFlags = {};
+const getnuWsotpQueue = {};
+const getnuWsotpActive = {};
 let wsotpWarnedNoWa = false;
 let getnumSelectedBot = null; // 'ROCKETOTP_BOT', 'LolzFack_bot', etc.
 
@@ -487,6 +490,363 @@ if (paymeApiId && paymeApiHash) {
         connectionRetries: 5,
         useWSS: true 
     });
+}
+
+
+async function processGetnuWsotpQueue(chatId) {
+    if (getnuWsotpActive[chatId]) return; 
+    getnuWsotpActive[chatId] = true;
+
+    const TARGET_BOT = "wsotp200bot";
+    const { Api } = await import("telegram");
+
+    // ✅ Use Rocket UserBot instead of Payme - completely independent
+    try {
+        await ensureRocketConnected();
+        if (!rocketUserBot.connected) await rocketUserBot.connect();
+    } catch (e) {
+        bot.sendMessage(chatId, `[GETNU ENGINE ERROR] Failed to connect Rocket UserBot: ${e.message}`);
+        getnuWsotpActive[chatId] = false;
+        return;
+    }
+
+    let wsotpWarnedNoWaGetnu = false;
+
+    // --- LIVE DASHBOARD ---
+    let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [] };
+    let statsMsg = await bot.sendMessage(chatId, `[GETNU ENGINE] Initializing Live Dashboard...`, { parse_mode: 'Markdown' });
+
+    let activeTracker = {};     
+    let backgroundTracker = {}; 
+
+    let lastStatEdit = 0;
+    let editPending = false;
+
+    const forceUpdateStats = async () => {
+        const left = getnuWsotpQueue[chatId] ? getnuWsotpQueue[chatId].length : 0;
+        const activeCount = Object.keys(activeTracker).length;
+        const bgCount = Object.keys(backgroundTracker).length;
+        const logsText = stats.logs.join('\n');
+        
+        const txt = 
+            `**[GETNU ENGINE DASHBOARD]**\n\n` +
+            `Queue Remaining: ${left}\n` +
+            `Active Window: ${activeCount} / 100\n` +
+            `Background Waiting: ${bgCount}\n` +
+            `Total Sent to Bot: ${stats.sent}\n` +
+            `Current In Progress (x2): ${stats.inProgress}\n` +
+            `Completed/Paid: ${stats.completed}\n` +
+            `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
+            `Trash (Deleted): ${stats.trash}\n\n` +
+            `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
+            `_Rocket OTP Engine active..._`;
+        try {
+            await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
+        } catch(e) {} 
+    };
+
+    const updateStats = async () => {
+        const now = Date.now();
+        if (now - lastStatEdit >= 5000) {
+            lastStatEdit = now;
+            await forceUpdateStats();
+        } else if (!editPending) {
+            editPending = true;
+            setTimeout(() => {
+                lastStatEdit = Date.now();
+                editPending = false;
+                forceUpdateStats();
+            }, 3000 - (now - lastStatEdit));
+        }
+    };
+
+    const addLog = async (msg) => {
+        stats.logs.unshift(msg);
+        if (stats.logs.length > 6) stats.logs.pop(); 
+    };
+
+    // Replace the while loop condition
+while (getnuWsotpQueue[chatId] && getnuWsotpQueue[chatId].length > 0 || 
+       Object.keys(activeTracker).length > 0 || 
+       Object.keys(backgroundTracker).length > 0) {
+
+    // ✅ ADD THIS at the very top of the while loop
+    if (getnuStopFlags[chatId]) {
+        getnuStopFlags[chatId] = false;
+        break;
+    }
+
+        // --- 1. REPLENISH THE WINDOW ---
+        let replenishedThisTick = 0;
+        
+        while (Object.keys(activeTracker).length < 100 && getnuWsotpQueue[chatId] && getnuWsotpQueue[chatId].length > 0 && replenishedThisTick < 6) {
+            const rawNum = getnuWsotpQueue[chatId].shift();
+            let formattedNum = rawNum.replace(/\D/g, '');
+            
+            if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
+            else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+            else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
+
+            let isWaActive = true;
+            const activeFolders = Object.keys(clients).filter(f => clients[f]);
+            
+            if (activeFolders.length > 0) {
+                const sock = clients[activeFolders[0]];
+                const jid = `${formattedNum}@s.whatsapp.net`;
+                try {
+                    const [waCheck] = await sock.onWhatsApp(jid);
+                    if (!waCheck?.exists) isWaActive = false; 
+                } catch (e) {
+                    if (!wsotpWarnedNoWaGetnu) {
+                        bot.sendMessage(chatId, `[GETNU ALERT] WA Checker Offline! Continuing blindly.`);
+                        wsotpWarnedNoWaGetnu = true;
+                    }
+                }
+            }
+
+            if (!isWaActive) continue; 
+
+            replenishedThisTick++;
+            stats.sent++;
+
+            try {
+                // ✅ Uses rocketUserBot NOT paymeUserBot
+                await rocketUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                await delay(700); 
+                
+                const sentMsg = await rocketUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
+                
+                activeTracker[formattedNum] = {
+                    count: 0,
+                    seenUpdates: new Set(), 
+                    usedCodes: new Set(), 
+                    msgIdsToClean: [sentMsg.id], 
+                    addedAt: Date.now(),
+                    inProgressCounted: false,
+                    hunterSpawned: false,
+                    manualPromptSent: false 
+                };
+            } catch (e) {
+                stats.sent--;
+                replenishedThisTick--;
+            }
+            
+            await updateStats();
+            await delay(600); 
+        }
+
+        // --- 2. LISTEN FOR RESPONSES ---
+        try {
+            // ✅ Reads from rocketUserBot NOT paymeUserBot
+            const msgs = await rocketUserBot.getMessages(TARGET_BOT, { limit: 100 }); 
+            
+            for (const msg of msgs) {
+                const text = msg.message || "";
+                if (!text) continue;
+
+                let trackData = null;
+                let isBackground = false;
+                let botNum = null;
+
+                const potentialNums = text.match(/\d{9,15}/g); 
+                if (potentialNums) {
+                    for (const n of potentialNums) {
+                        if (activeTracker[n]) {
+                            botNum = n; trackData = activeTracker[n]; break;
+                        }
+                        if (backgroundTracker[n]) {
+                            botNum = n; trackData = backgroundTracker[n]; isBackground = true; break;
+                        }
+                    }
+
+                    if (!trackData && potentialNums.length > 0) {
+                        const textLower = text.toLowerCase();
+                        if (text.includes("🔵") || text.includes("🟡") || text.includes("⚫️") || text.includes("🟢") || text.includes("🔴") || textLower.includes("error") || textLower.includes("incorrect") || textLower.includes("reward") || textLower.includes("success")) {
+                            botNum = potentialNums[0]; 
+                            activeTracker[botNum] = {
+                                count: 0,
+                                seenUpdates: new Set(), 
+                                usedCodes: new Set(), 
+                                msgIdsToClean: [], 
+                                addedAt: Date.now(),
+                                inProgressCounted: false,
+                                hunterSpawned: false,
+                                manualPromptSent: false
+                            };
+                            trackData = activeTracker[botNum];
+                            isBackground = false;
+                            stats.sent++;
+                        }
+                    }
+                }
+                
+                if (!trackData) continue;
+
+                if (!trackData.seenUpdates) trackData.seenUpdates = new Set();
+                const updateKey = `${msg.id}_${msg.editDate || '0'}`;
+                const isNewUpdate = !trackData.seenUpdates.has(updateKey);
+
+                if (isNewUpdate) {
+                    trackData.seenUpdates.add(updateKey);
+                    
+                    const textLower = text.toLowerCase();
+                    const isErrorCode = text.includes("🔴") || textLower.includes("error code");
+                    const isRewardOrWithdrawal = textLower.includes("reward") || textLower.includes("withdraw") || text.includes("💰");
+
+                    if (!isErrorCode && !isRewardOrWithdrawal) {
+                        trackData.msgIdsToClean.push(msg.id); 
+                    }
+
+                    // 🛑 TRASH
+                    if (
+                        textLower.includes("already registered") || 
+                        textLower.includes("please submit this number again") ||
+                        text.includes("🟡") || text.includes("⚫️") || 
+                        textLower.includes("try later") || 
+                        textLower.includes("badnum") || 
+                        textLower.includes("blocked") ||
+                        (textLower.includes("error") && !isErrorCode && !text.includes("🔵"))
+                    ) {
+                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
+                        try { await rocketUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+
+                        if (telegramCleanupMap[botNum]) {
+                            for (const tgId of telegramCleanupMap[botNum]) {
+                                try { await bot.deleteMessage(chatId, tgId); } catch(e){}
+                            }
+                            delete telegramCleanupMap[botNum];
+                        }
+
+                        stats.trash++;
+                        if (trackData.inProgressCounted) {
+                            stats.inProgress = Math.max(0, stats.inProgress - 1);
+                            trackData.inProgressCounted = false; 
+                        }
+                        
+                        if (isBackground) delete backgroundTracker[botNum];
+                        else delete activeTracker[botNum];
+                        
+                        await updateStats();
+                    } 
+                    
+                    // 💰 SUCCESS
+                    else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢") || textLower.includes("success")) {
+                        let amountStr = "0.00";
+                        const amountMatch = text.match(/Amount:\s*([\d.]+)\s*USD/i) || text.match(/Amount:\s*([\d.]+)/i);
+                        if (amountMatch) {
+                            const val = parseFloat(amountMatch[1]);
+                            if (!isNaN(val)) {
+                                stats.earned += val;
+                                amountStr = val.toFixed(2);
+                            }
+                        }
+
+                        trackData.msgIdsToClean.push(msg.id);
+                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
+                        try { await rocketUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+
+                        if (telegramCleanupMap[botNum]) {
+                            for (const tgId of telegramCleanupMap[botNum]) {
+                                try { await bot.deleteMessage(chatId, tgId); } catch(e){}
+                            }
+                            delete telegramCleanupMap[botNum];
+                        }
+
+                        stats.completed++;
+                        if (trackData.inProgressCounted) {
+                            stats.inProgress = Math.max(0, stats.inProgress - 1); 
+                            trackData.inProgressCounted = false;
+                        }
+
+                        if (isBackground) delete backgroundTracker[botNum];
+                        else delete activeTracker[botNum];
+                        
+                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
+                        await updateStats();
+                    }
+
+                    // 🔵 IN PROGRESS
+                    else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
+                        if (!isErrorCode && (text.includes("🔵") || textLower.includes("in progress"))) {
+                            trackData.count++;
+                        }
+
+                        if (trackData.count === 2 || isErrorCode) {
+                            if (trackData.count === 2 && !isErrorCode && !trackData.inProgressCounted) {
+                                stats.inProgress++;
+                                trackData.inProgressCounted = true;
+                                
+                                if (!isBackground) {
+                                    backgroundTracker[botNum] = activeTracker[botNum];
+                                    delete activeTracker[botNum];
+                                    isBackground = true;
+                                }
+                            }
+
+                            if (!trackData.manualPromptSent || isErrorCode) {
+                                if (!telegramCleanupMap[botNum]) telegramCleanupMap[botNum] = [];
+                                
+                                let promptText = `🔔 **[GETNU] MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
+                                if (isErrorCode) promptText = `🔴 **[GETNU] WRONG CODE**\nNumber: \`${botNum}\`\n\n_Reply with the CORRECT code!_`;
+
+                                await delay(1200);
+                                
+                                try {
+                                    const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+                                    telegramCleanupMap[botNum].push(promptMsg.message_id);
+                                    // ✅ Uses rocketUserBot msg id for reply tracking
+                                    manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useRocket: true };
+                                    trackData.manualPromptSent = true;
+                                } catch (spamErr) {}
+                            }
+
+                            // ✅ Always auto hunt since getnu is always auto mode
+                            if (isErrorCode) {
+                                await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next OTP...`);
+                                huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                            } else if (!trackData.hunterSpawned) {
+                                trackData.hunterSpawned = true;
+                                await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
+                                huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                            }
+                            
+                            await updateStats();
+                        }
+                    }
+                }
+            }
+        } catch (readErr) {}
+
+        // --- 3. MEMORY MANAGEMENT ---
+        const nowTime = Date.now();
+        
+        for (const num in activeTracker) {
+            if (nowTime - activeTracker[num].addedAt > 900000) {
+                backgroundTracker[num] = activeTracker[num];
+                delete activeTracker[num]; 
+            }
+        }
+
+        for (const num in backgroundTracker) {
+            if (nowTime - backgroundTracker[num].addedAt > 1800000) {
+                if (telegramCleanupMap[num]) {
+                    for (const tgId of telegramCleanupMap[num]) {
+                        try { await bot.deleteMessage(chatId, tgId); } catch(e){}
+                    }
+                    delete telegramCleanupMap[num];
+                }
+                if (backgroundTracker[num].inProgressCounted) {
+                    stats.inProgress = Math.max(0, stats.inProgress - 1);
+                }
+                delete backgroundTracker[num];
+            }
+        }
+
+        await delay(1500); 
+    }
+
+    getnuWsotpActive[chatId] = false;
+    bot.sendMessage(chatId, `**[GETNU ENGINE OFFLINE]**\nAll numbers processed.`, { parse_mode: 'Markdown' });
 }
 
 async function ensurePaymeConnected() {
@@ -1928,18 +2288,16 @@ bot.on('callback_query', async (query) => {
                 emptyRefreshes = 0; // Found a new number, reset empty counter
                 
                 if (outMode === 'bot') {
-                    // Remove the very first zero from the payload
-                    const botPayload = raw.replace(/^0/, '');
-                    
-                    // Inject into engine
-                    wsotpQueue[chatId] = wsotpQueue[chatId] || [];
-                    if (!wsotpQueue[chatId].includes(botPayload)) {
-                        wsotpQueue[chatId].push(botPayload);
-                    }
-                    
-                    userState[chatId] = 'WSOTP_AUTO_MODE';
-                    if (!wsotpActive[chatId]) processWsotpQueue(chatId);
-                } else {
+         const botPayload = raw.replace(/^0/, '');
+    
+        // ✅ NEW - independent queue for getnu
+        getnuWsotpQueue[chatId] = getnuWsotpQueue[chatId] || [];
+        if (!getnuWsotpQueue[chatId].includes(botPayload)) {
+        getnuWsotpQueue[chatId].push(botPayload);
+    }
+    
+    if (!getnuWsotpActive[chatId]) processGetnuWsotpQueue(chatId);
+   } else {
                     // Chat Output
                     currentBatch.push(`\`${res.num}\``);
                     if (currentBatch.length === 5) {
@@ -2564,7 +2922,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
             
             for (const m of otpMsgs) {
@@ -2574,35 +2932,37 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 let tempCode = null;
 
                 if (getnumSelectedBot === 'ROCKETOTP_BOT') {
-                    // ✅ ROCKET FORMAT:
-                    // 🎉 NEW OTP RECEIVED 🎉
-                    // 🌍 Country: Haiti🇭🇹
-                    // 📱 Number: +5094XXXXXX201
-                    // 🚨 Service: WhatsApp
-                    // 🔐 OTP: 585-909
 
-                    // ✅ FIX: Use last 4, last 3, AND last 2 digits for matching
-                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3}|${search2})`, 'i');
 
-                    if (numRegex.test(m.message)) {
-                        console.log(`[ROCKET HUNTER] Number line matched for ...${search4}/${search3}/${search2} in message: ${m.message.substring(0, 150)}`);
+    // ✅ Extract country code from cleanNum (e.g "509" from "50941059713")
+    const numberCountryCode = cleanNum.substring(0, cleanNum.length - 8);
 
-                        // ✅ FIX: Match dashed OTPs like "518-993" or "585-909" AND plain "758984"
-                        const otpMatch = 
-                            m.message.match(/🔐\s*OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
-                            m.message.match(/OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
-                            m.message.match(/Code[:\s]+(\d{3,4}[-\s]?\d{3,4})/i);
+    // ✅ STRICT: Country code + last 3 OR last 2 digits BOTH must match
+    const numRegex = new RegExp(
+        `Number[^\n]*\\+?${numberCountryCode}[^\n]*(?:${search3}|${search2})`,
+        'i'
+    );
 
-                        if (otpMatch) {
-                            // ✅ Strip dash/space so we send "518993" not "518-993"
-                            tempCode = otpMatch[1].replace(/[-\s]/g, '');
-                            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
-                        } else {
-                            console.log(`[ROCKET HUNTER] Number matched but NO OTP found in message: ${m.message}`);
-                        }
-                    }
+    if (numRegex.test(m.message)) {
+        console.log(`[ROCKET HUNTER] STRICT match: cc=${numberCountryCode} suffix=${search3}/${search2} in: ${m.message.substring(0, 150)}`);
 
-                } else {
+        // ✅ Match dashed OTPs like "518-993" or "585-909" AND plain "758984"
+        const otpMatch = 
+            m.message.match(/🔐\s*OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
+            m.message.match(/OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
+            m.message.match(/Code[:\s]+(\d{3,4}[-\s]?\d{3,4})/i);
+
+        if (otpMatch) {
+            // ✅ Strip dash/space so we send "518993" not "518-993"
+            tempCode = otpMatch[1].replace(/[-\s]/g, '');
+            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
+        } else {
+            console.log(`[ROCKET HUNTER] Number matched but NO OTP found in message: ${m.message}`);
+        }
+    }
+                }
+
+                 else {
                     // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
                     
@@ -5761,246 +6121,7 @@ bot.onText(/\/vz/, async (msg) => {
         }
     });
 
-        // --- /savezm : Enter Zimbabwe Save Mode ---
-    bot.onText(/\/savezm/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
 
-        if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
-
-        // Set State
-        userState[chatId] = 'SAVE_MODE_ZM';
-
-        bot.sendMessage(chatId, 
-            '🇿🇼 **ZIMBABWE SAVE MODE ACTIVE** 🇿🇼\n\n' +
-            'Forward your messages now.\n' +
-            'I will extract numbers starting with 0 and save them with the +263 country code.\n\n' +
-            'Type `STOP` or `/done` to exit this mode.',
-            { parse_mode: 'Markdown' }
-        );
-    });
-
-        // --- /zm [Reply to file] (Supports TXT and XLSX for Zimbabwe) ---
-    bot.onText(/\/zm/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-        
-        const isUserAdmin = (userId === ADMIN_ID);
-        const isSubAdmin = SUBADMIN_IDS.includes(userId);
-        if (!isUserAdmin && !isSubAdmin) return;
-
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Reply to a .txt, .vcf, or .xlsx file with /zm');
-        }
-
-        try {
-            bot.sendMessage(chatId, '[PROCESSING] Reading file and checking database...');
-
-            // Zimbabwe Country Code
-            const TARGET_CODE = '263'; 
-
-            const connectedSet = new Set();
-            Object.values(shortIdMap).forEach(session => {
-                const res = normalizeWithCountry(session.phone);
-                if (res) connectedSet.add(res.num);
-            });
-
-            const allDbDocs = await getAllNumbers(); 
-            const dbSet = new Set(allDbDocs.map(doc => (doc.number || doc).toString()));
-
-            const fileId = msg.reply_to_message.document.file_id;
-            const fileLink = await bot.getFileLink(fileId);
-            const response = await fetch(fileLink);
-            const fileName = msg.reply_to_message.document.file_name || '';
-            
-            let rawText = "";
-
-            // --- 1. HANDLE XLSX vs TXT ---
-            if (fileName.toLowerCase().endsWith('.xlsx')) {
-                const buffer = await response.buffer();
-                const workbook = XLSX.read(buffer, { type: 'buffer' });
-                const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-                
-                data.forEach(row => {
-                    if (Array.isArray(row)) {
-                        row.forEach(cell => { 
-                            if (cell) rawText += cell.toString() + '\n'; 
-                        });
-                    }
-                });
-            } else {
-                rawText = await response.text();
-            }
-            
-            // --- 2. EXTRACT NUMBERS ---
-            const matches = rawText.match(/\d{9,15}/g) || [];
-
-            const uniqueNewNumbers = [];
-            const seenInThisFile = new Set();
-            let foundInDbCount = 0;
-            let skippedConnected = 0;
-
-            for (let num of matches) {
-                let s = String(num);
-                let coreNumber;
-
-                // --- 3. STANDARDIZE FORMAT FOR ZIMBABWE ---
-                if (s.length === (TARGET_CODE.length + 9) && s.startsWith(TARGET_CODE)) {
-                    coreNumber = s.substring(TARGET_CODE.length); // Remove country code
-                } else if (s.length === 10 && s.startsWith('0')) {
-                    coreNumber = s.substring(1); // Remove 0
-                } else if (s.length === 9) {
-                    coreNumber = s; // Already core 9 digits
-                } else {
-                    continue; // Skip invalid lengths
-                }
-
-                const normalizedForCheck = TARGET_CODE + coreNumber;
-                const outputFormat = '0' + coreNumber; 
-
-                // Prevent processing the same number twice from the file
-                if (seenInThisFile.has(normalizedForCheck)) continue;
-                seenInThisFile.add(normalizedForCheck);
-
-                // --- 4. FILTER AGAINST DB AND SESSIONS ---
-                if (connectedSet.has(normalizedForCheck)) {
-                    skippedConnected++;
-                    continue;
-                }
-
-                if (dbSet.has(normalizedForCheck)) {
-                    foundInDbCount++;
-                    continue;
-                }
-
-                uniqueNewNumbers.push(outputFormat);
-            }
-
-            if (uniqueNewNumbers.length === 0) {
-                return bot.sendMessage(chatId, `[DONE] No new numbers. Found ${foundInDbCount} in DB.`);
-            }
-
-            await bot.sendMessage(chatId, 
-                `SORT REPORT\n` +
-                `Target Code: +${TARGET_CODE}\n` +
-                `Total extracted: ${matches.length}\n` +
-                `Found in DB: ${foundInDbCount}\n` +
-                `Active sessions: ${skippedConnected}\n` +
-                `New clean numbers: ${uniqueNewNumbers.length}`, 
-                { parse_mode: 'Markdown' }
-            );
-
-            // --- 5. SEND BATCHES OF 6 ---
-            const BATCH_SIZE = 6;
-            for (let i = 0; i < uniqueNewNumbers.length; i += BATCH_SIZE) {
-                const chunk = uniqueNewNumbers.slice(i, i + BATCH_SIZE);
-                const msgText = chunk.map(n => `\`${n}\``).join('\n'); 
-                
-                await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-                await delay(800);
-            }
-            
-            bot.sendMessage(chatId, '[FINISHED] All batches sent.');
-
-        } catch (e) {
-            bot.sendMessage(chatId, '[ERROR] ' + e.message);
-        }
-    });
-
-
-        // --- /addgrp [@username] : Force-add or Auto-DM an invite link using UserBot ---
-    bot.onText(/\/addgrp\s+(.+)/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-
-        // Authorization check
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
-
-        let targetUser = match[1].trim();
-        
-        // Ensure the @ symbol is there for GramJS to resolve it properly
-        if (!targetUser.startsWith('@') && isNaN(targetUser)) {
-            targetUser = '@' + targetUser;
-        }
-
-        // --- CONFIGURATION ---
-        const TARGET_GROUP = "-1003645249777"; // Your ULTAR_OTP_GROUP_ID
-        const INVITE_LINK = "https://t.me/+MLS1oZxY6TtiMTQ1"; // Put your actual tap-to-join link here
-
-        if (!userBot || !userBot.connected) {
-            return bot.sendMessage(chatId, "[ERROR] UserBot is not connected. I need the UserBot active to execute this.");
-        }
-
-        let statusMsg = await bot.sendMessage(chatId, `Attempting to force-add ${targetUser}...`);
-
-        try {
-            // STEP 1: Try to force-add them silently
-            await userBot.invoke(new Api.channels.InviteToChannel({
-                channel: TARGET_GROUP,
-                users: [targetUser]
-            }));
-
-            bot.editMessageText(`**[SUCCESS]**\nSuccessfully added ${targetUser} directly to the group!`, { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id,
-                parse_mode: 'Markdown'
-            });
-
-        } catch (e) {
-            let errorText = e.message;
-            
-            // If they are already in the group, stop immediately.
-            if (errorText.includes("USER_ALREADY_PARTICIPANT")) {
-                return bot.editMessageText(`${targetUser} is already inside the group.`, { chat_id: chatId, message_id: statusMsg.message_id });
-            } else if (errorText.includes("USERNAME_INVALID") || errorText.includes("ResolveUsername")) {
-                return bot.editMessageText(`**[ERROR]** This username does not exist on Telegram.`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' });
-            }
-
-            // STEP 2: The Fallback Protocol (Direct Message)
-            try {
-                await bot.editMessageText(`**[BLOCKED]** Privacy settings prevented the direct add.\n\nAttempting to send the invite link directly to their DM...`, { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id,
-                    parse_mode: 'Markdown'
-                });
-
-                // Send the DM using the UserBot
-                const dmMessage = await userBot.sendMessage(targetUser, {
-                    message: `Hello! You have been invited to join our group. Click the link below to enter:\n\n${INVITE_LINK}\n\n_Note: This invite link will expire and be deleted in 24 hours._`
-                });
-
-                await bot.editMessageText(`**[DM SENT]**\nCould not force-add, but successfully dropped the invite link into ${targetUser}'s DMs!\n\n🕒 The message will self-destruct in exactly 24 hours.`, { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id,
-                    parse_mode: 'Markdown'
-                });
-
-                // STEP 3: The 24-Hour Kill Timer
-                // 86,400,000 milliseconds = exactly 24 hours
-                setTimeout(async () => {
-                    try {
-                        // 'revoke: true' ensures the message is deleted for BOTH people in the DM
-                        await userBot.deleteMessages(targetUser, [dmMessage.id], { revoke: true });
-                        console.log(`[SYSTEM] Auto-deleted the 24h invite link sent to ${targetUser}`);
-                    } catch (delErr) {
-                        console.error("Failed to auto-delete DM:", delErr.message);
-                    }
-                }, 86400000);
-
-            } catch (dmErr) {
-                // If the DM fails, it usually means the target user has blocked the UserBot account
-                bot.editMessageText(`**[FATAL ERROR]**\nCould not force-add AND could not send a DM to ${targetUser}.\n\nReason: _${dmErr.message}_\n(They may have blocked the account or have absolute privacy enabled).`, { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id,
-                    parse_mode: 'Markdown'
-                });
-            }
-        }
-    });
 
 
 
@@ -7189,8 +7310,11 @@ bot.onText(/\/pdf/, async (msg) => {
 
                 try {
                     // Send directly to the WSOTP bot via Payme Userbot
-                    await paymeUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
-                } catch (e) {
+                    if (otpData.useRocket) {
+          await rocketUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
+        } else {
+          await paymeUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
+        } catch (e) {
                     bot.sendMessage(chatId, `Failed to forward OTP: ${e.message}`);
                 }
 

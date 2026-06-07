@@ -1902,7 +1902,7 @@ bot.on('callback_query', async (query) => {
 
             const targetBotMap = {
                 'target_lolzfack': 'LolzFack_bot', 'start_scrape_lolzfack': 'LolzFack_bot',
-                'target_rocket': 'ROCKETOTP_BOT', 'start_scrape_rocket': 'ROCKETOTP_BOT',
+                'target_rocket': 'ROCKETOTP_BOT', 'start_scrape_rocketotp': 'ROCKETOTP_BOT',
                 'target_nokosx': 'NokosxBot', 'start_scrape_nokosx': 'NokosxBot'
             };
 

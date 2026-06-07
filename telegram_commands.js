@@ -112,6 +112,36 @@ export function updateOtpSender(id, wasError = false) {
 }
 
 
+// 🚀 --- NEW TELEGRAM 2 SETUP (For Dual Scraping) --- 🚀
+const telegram2ApiId = parseInt(process.env.TELEGRAM2_API_ID || "0"); 
+const telegram2ApiHash = process.env.TELEGRAM2_API_HASH || "";
+const telegram2StringSession = new StringSession(process.env.TELEGRAM2_SESSION || ""); 
+
+let telegram2UserBot = null;
+if (telegram2ApiId && telegram2ApiHash) {
+    telegram2UserBot = new TelegramClient(telegram2StringSession, telegram2ApiId, telegram2ApiHash, { 
+        connectionRetries: 5,
+        useWSS: true 
+    });
+}
+
+async function ensureTelegram2Connected() {
+    if (!telegram2UserBot) throw new Error("Telegram2 UserBot credentials not set in Config Vars.");
+    if (!telegram2UserBot.connected) {
+        console.log("[TELEGRAM2 BOT] Connecting...");
+        await telegram2UserBot.connect();
+    }
+    try {
+        await telegram2UserBot.getMe(); 
+    } catch (e) {
+        console.log("[TELEGRAM2 BOT] Session might be invalid. Re-authorizing...");
+        await telegram2UserBot.connect();
+    }
+}
+// ------------------------------------
+
+
+
 
 // 🚀 --- NEW ROCKET BOT SETUP --- 🚀
 const ROCKET_OTP_GROUP = -1003573619278; // Your Rocket OTP group
@@ -1838,190 +1868,220 @@ bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
 
-    // --- 1. HANDLE OUTPUT MODE SELECTION ---
-    if (data.startsWith('getnu_out_')) {
-        const parts = data.split('_');
-        const outMode = parts[2]; // 'chat' or 'bot'
-        const amount = parts[3];
+            // --- GETNU SCRAPER SYSTEM (DUAL ENGINE) ---
+        if (data.startsWith('getnu_out_') || data.startsWith('target_rocket') || data.startsWith('target_lolzfack') || data.startsWith('target_nokosx') || data.startsWith('start_scrape_')) {
+            
+            // Step A: Select Source Bot Menu
+            if (data.startsWith('getnu_out_')) {
+                const parts = data.split('_');
+                const outMode = parts[2]; 
+                const amount = parts[3];
 
-        userState[chatId + '_getnu_outmode'] = outMode;
+                userState[chatId + '_getnu_outmode'] = outMode;
 
-        const options = {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "Target: Rocket OTP", callback_data: `target_rocket_${amount}` }],
-                    [{ text: "Target: LolzFack (SMS_Sp)", callback_data: `target_lolzfack_${amount}` }],
-                    [{ text: "Target: NokosX BOT", callback_data: `target_nokosx_${amount}` }]
-                ]
+                const options = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Target: Rocket OTP", callback_data: `target_rocket_${amount}` }],
+                            [{ text: "Target: LolzFack (SMS_Sp)", callback_data: `target_lolzfack_${amount}` }],
+                            [{ text: "Target: NokosX BOT", callback_data: `target_nokosx_${amount}` }]
+                        ]
+                    }
+                };
+                await bot.editMessageText(
+                    `[EXTRACTION ENGINE]\nTarget: ${amount} numbers\nOutput: ${outMode === 'bot' ? 'Direct to Sell Bot Engine' : 'Chat Batches'}\n\nSelect source bot:`, 
+                    { chat_id: chatId, message_id: query.message.message_id, reply_markup: options.reply_markup }
+                );
+                return;
             }
-        };
-        await bot.editMessageText(
-            `[EXTRACTION ENGINE]\nTarget: ${amount} numbers\nOutput: ${outMode === 'bot' ? 'Direct to Sell Bot (Raw)' : 'Chat Batches'}\n\nSelect source bot:`, 
-            { chat_id: chatId, message_id: query.message.message_id, reply_markup: options.reply_markup }
-        );
-        return;
-    }
 
-    if (!data.startsWith('target_') && !data.startsWith('start_scrape_')) return;
+            const parts = data.split('_');
+            const amount = parseInt(parts[parts.length - 1]) || 50;
+            const action = data.replace(`_${amount}`, ''); 
+            const outMode = userState[chatId + '_getnu_outmode'] || 'chat'; 
 
-    const parts = data.split('_');
-    const amount = parseInt(parts[parts.length - 1]) || 50;
-    const action = data.replace(`_${amount}`, ''); 
-    const outMode = userState[chatId + '_getnu_outmode'] || 'chat'; 
-    const SELL_BOT_USERNAME = "wsotp200bot";
-
-    const targetBotMap = {
-        'target_lolzfack': 'LolzFack_bot', 'start_scrape_lolzfack': 'LolzFack_bot',
-        'target_rocket': 'ROCKETOTP_BOT', 'start_scrape_rocketotp': 'ROCKETOTP_BOT',
-        'target_nokosx': 'NokosxBot', 'start_scrape_nokosx': 'NokosxBot'
-    };
-
-    const targetBot = targetBotMap[action];
-    if (!targetBot) return;
-
-    // --- 2. TRIGGER STEP ---
-    if (action.startsWith('target_')) {
-        await bot.answerCallbackQuery(query.id);
-        const startCmd = targetBot === "LolzFack_bot" ? "Get Number" : "/start";
-        await userBot.sendMessage(targetBot, { message: startCmd });
-        getnumSelectedBot = targetBot;
-        return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot}.\nSelect country/options, then click below:`, {
-            reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_${targetBot.toLowerCase().replace('_bot', '').replace('bot', '')}_${amount}` }]] }
-        });
-    }
-    
-    // --- 3. SCRAPE LOOP ---
-    await bot.answerCallbackQuery(query.id);
-    const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Scraping ${amount} numbers from ${targetBot}...`);
-
-    
-
-        try {
-        const activeFolders = Object.keys(clients).filter(f => clients[f]);
-        const verifySock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
-
-        const seen = new Set();
-        let currentBatch = [];
-        let verified = 0;
-        let attempts = 0;
-        let emptyRefreshes = 0; // NEW: Detects out-of-stock
-        let maxAttempts = amount * 5; // Scales with target amount
-
-        const processNumber = async (raw) => {
-            if (verified >= amount) return;
-            
-            // Format Zambia numbers correctly
-            if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
-            else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
-            
-            if (seen.has(raw)) return;
-            seen.add(raw);
-
-            const res = normalizeWithCountry(raw);
-            if (!res) return;
-            
-            const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
-            
-            // --- UNIFIED OUTPUT ROUTER ---
-            const executeOutput = async () => {
-                verified++;
-                emptyRefreshes = 0; // Found a new number, reset empty counter
-                
-                if (outMode === 'bot') {
-                    // Remove the very first zero from the payload
-                    const botPayload = raw.replace(/^0/, '');
-                    
-                    // Inject into engine
-                    wsotpQueue[chatId] = wsotpQueue[chatId] || [];
-                    if (!wsotpQueue[chatId].includes(botPayload)) {
-                        wsotpQueue[chatId].push(botPayload);
-                    }
-                    
-                    userState[chatId] = 'WSOTP_AUTO_MODE';
-                    if (!wsotpActive[chatId]) processWsotpQueue(chatId);
-                } else {
-                    // Chat Output
-                    currentBatch.push(`\`${res.num}\``);
-                    if (currentBatch.length === 5) {
-                        await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-                        currentBatch = [];
-                    }
-                }
-                bot.editMessageText(`[LIVE] Processed: ${verified}/${amount}${outMode === 'bot' ? '\nInjecting into Live Dashboard...' : ''}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+            const targetBotMap = {
+                'target_lolzfack': 'LolzFack_bot', 'start_scrape_lolzfack': 'LolzFack_bot',
+                'target_rocket': 'ROCKETOTP_BOT', 'start_scrape_rocket': 'ROCKETOTP_BOT',
+                'target_nokosx': 'NokosxBot', 'start_scrape_nokosx': 'NokosxBot'
             };
 
-            if (!verifySock) {
-                await executeOutput();
-            } else {
-                try {
-                    const [check] = await verifySock.onWhatsApp(jid);
-                    if (check?.exists) await executeOutput();
-                } catch(e) {}
-            }
-            await delay(500); // Tighter delay for speed
-        };
+            const targetBot = targetBotMap[action];
+            if (!targetBot) return;
 
-        while (verified < amount && attempts < maxAttempts) {
-            attempts++;
-            const msgs = await userBot.getMessages(targetBot, { limit: 5 });
-            let initialVerified = verified;
-
-            for (const msg of msgs) {
-                const text = msg.message || "";
-                if (text.includes("Choose a country:") || text.includes("Select service")) continue;
+            // Step B: Send Initial Trigger Commands (Dual)
+            if (action.startsWith('target_')) {
+                await bot.answerCallbackQuery(query.id);
+                const startCmd = targetBot === "LolzFack_bot" ? "Get Number" : "/start";
                 
-                // Buttons
-                if (msg.replyMarkup?.rows) {
-                    for (const row of msg.replyMarkup.rows) {
-                        for (const btn of row.buttons) {
-                            const bText = btn.text || "";
-                            if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع")) continue;
-                            const match = bText.match(/\d{9,15}/);
-                            if (match) await processNumber(match[0]);
-                        }
-                    }
+                // Fire Primary
+                await userBot.sendMessage(targetBot, { message: startCmd });
+                
+                // Fire Secondary
+                if (telegram2UserBot) {
+                    try {
+                        await ensureTelegram2Connected();
+                        await telegram2UserBot.sendMessage(targetBot, { message: startCmd });
+                    } catch(e) { console.log("Telegram2 Trigger Error:", e.message); }
                 }
-                // Text
-                const matches = text.match(/\d{9,15}/g) || [];
-                for (let raw of matches) await processNumber(raw);
-            }
 
-            if (verified >= amount) break;
+                return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot} (Dual-Scraping Mode).\nSelect country/options on BOTH accounts if needed, then click below to start:`, {
+                    reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_${targetBot.toLowerCase().replace('_bot', '').replace('bot', '')}_${amount}` }]] }
+                });
+            }
             
-            // Failsafe for Out-of-Stock
-            if (verified === initialVerified) emptyRefreshes++;
-            if (emptyRefreshes >= 15) {
-                await bot.sendMessage(chatId, `⚠️ **Stopped:** No new numbers found after 15 refreshes. Bot may be empty.`);
-                break;
-            }
+            // Step C: Run Scraper Loop
+            await bot.answerCallbackQuery(query.id);
+            const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Dual-Scraping ${amount} numbers from ${targetBot}...`);
 
-            // Click pagination
-            let clicked = false;
-            for (const msg of msgs) {
-                if (msg.replyMarkup?.rows) {
-                    for (const row of msg.replyMarkup.rows) {
-                        for (const btn of row.buttons) {
-                            const bText = (btn.text || "").toLowerCase();
-                            if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change")) {
-                                try { await msg.click({ text: btn.text }); clicked = true; } catch(err) {}
-                                break;
+            try {
+                const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                const verifySock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
+
+                const seen = new Set();
+                let currentBatch = [];
+                let verified = 0;
+                let attempts = 0;
+                let emptyRefreshes = 0;
+                let maxAttempts = amount * 5; 
+
+                const processNumber = async (raw) => {
+                    if (verified >= amount) return;
+                    
+                    if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
+                    else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
+                    
+                    if (seen.has(raw)) return;
+                    seen.add(raw);
+
+                    const res = normalizeWithCountry(raw);
+                    if (!res) return;
+                    
+                    const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
+                    
+                    const executeOutput = async () => {
+                        verified++;
+                        emptyRefreshes = 0; 
+                        
+                        if (outMode === 'bot') {
+                            const botPayload = raw.replace(/^0/, '');
+                            
+                            // INJECT DIRECTLY & INSTANTLY
+                            wsotpQueue[chatId] = wsotpQueue[chatId] || [];
+                            if (!wsotpQueue[chatId].includes(botPayload)) {
+                                wsotpQueue[chatId].push(botPayload);
+                            }
+                            
+                            userState[chatId] = 'WSOTP_AUTO_MODE';
+                            if (!wsotpActive[chatId]) processWsotpQueue(chatId);
+                        } else {
+                            currentBatch.push(`\`${res.num}\``);
+                            if (currentBatch.length === 5) {
+                                await bot.sendMessage(chatId, `[BATCH]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                                currentBatch = [];
                             }
                         }
-                        if (clicked) break;
+                        
+                        bot.editMessageText(`[DUAL ENGINE] Processed: ${verified}/${amount}${outMode === 'bot' ? '\nInjecting into Live Dashboard...' : ''}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                    };
+
+                    // Execute without WA Check if no bot is connected
+                    if (!verifySock) {
+                        await executeOutput();
+                    } else {
+                        try {
+                            const [check] = await verifySock.onWhatsApp(jid);
+                            if (check?.exists) await executeOutput();
+                        } catch(e) {}
                     }
+                };
+
+                while (verified < amount && attempts < maxAttempts) {
+                    attempts++;
+                    let initialVerified = verified;
+
+                    // 🚀 PARALLEL FETCH: Pulling from both accounts concurrently
+                    const fetch1 = userBot.getMessages(targetBot, { limit: 3 }).catch(() => []);
+                    const fetch2 = (telegram2UserBot && telegram2UserBot.connected) 
+                        ? telegram2UserBot.getMessages(targetBot, { limit: 3 }).catch(() => []) 
+                        : Promise.resolve([]);
+
+                    const [msgs1, msgs2] = await Promise.all([fetch1, fetch2]);
+                    const allMsgs = [...msgs1, ...msgs2];
+
+                    for (const msg of allMsgs) {
+                        const text = msg.message || "";
+                        if (text.includes("Choose a country:") || text.includes("Select service")) continue;
+
+                        if (msg.replyMarkup?.rows) {
+                            for (const row of msg.replyMarkup.rows) {
+                                for (const btn of row.buttons) {
+                                    const bText = btn.text || "";
+                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
+
+                                    const match = bText.match(/\d{9,15}/);
+                                    if (match) await processNumber(match[0]);
+                                }
+                            }
+                        }
+                        const textMatches = text.match(/\d{9,15}/g) || [];
+                        for (let raw of textMatches) {
+                            await processNumber(raw);
+                        }
+                    }
+
+                    if (verified >= amount) break;
+
+                    if (verified === initialVerified) emptyRefreshes++;
+                    if (emptyRefreshes >= 15) {
+                        await bot.sendMessage(chatId, `⚠️ **Stopped:** No new numbers found after 15 refreshes. Bots may be empty.`);
+                        break;
+                    }
+
+                    // 🚀 PARALLEL CLICK: Clicks pagination on both bots simultaneously
+                    const clickPagination = async (client, msgs) => {
+                        if (!client) return false;
+                        for (const msg of msgs) {
+                            if (msg.replyMarkup && msg.replyMarkup.rows) {
+                                for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
+                                    for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
+                                        const bText = (msg.replyMarkup.rows[r].buttons[c].text || "").toLowerCase();
+                                        if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change") || bText.includes("new numbers")) {
+                                            try {
+                                                await client.invoke(new Api.messages.GetBotCallbackAnswer({ peer: targetBot, msgId: msg.id, data: msg.replyMarkup.rows[r].buttons[c].data }));
+                                                return true;
+                                            } catch(e) {
+                                                try { await msg.click({ text: msg.replyMarkup.rows[r].buttons[c].text }); return true; } catch(err){}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return false;
+                    };
+
+                    const [clicked1, clicked2] = await Promise.all([
+                        clickPagination(userBot, msgs1),
+                        clickPagination(telegram2UserBot && telegram2UserBot.connected ? telegram2UserBot : null, msgs2)
+                    ]);
+
+                    // Faster cycle times since Rocket yields 2 numbers per scrape
+                    (clicked1 || clicked2) ? await delay(2500) : await delay(1500);
                 }
-                if (clicked) break;
-            }
-            clicked ? await delay(3500) : await delay(2000);
+                
+                if (outMode === 'chat' && currentBatch.length > 0) {
+                    await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
+                }
+                
+                bot.sendMessage(chatId, `[DONE] Dual-Extraction complete. Processed ${verified} numbers.`);
+                try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
+                
+            } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
+            return;
         }
+        // --- END GETNU SYSTEM ---
 
-        if (outMode === 'chat' && currentBatch.length > 0) await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
-        await bot.sendMessage(chatId, "[DONE] Extraction complete.");
-        try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
-
-    } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
-
- });
 
     
 

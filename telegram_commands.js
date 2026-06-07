@@ -2529,7 +2529,6 @@ async function processWsotpQueue(chatId) {
 }
 
 
-
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
@@ -2537,6 +2536,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const cleanNum = formattedNum.replace(/\D/g, '');
     const search4 = cleanNum.slice(-4);
     const search3 = cleanNum.slice(-3);
+    const search2 = cleanNum.slice(-2);
 
     const startTime = Date.now();
     const MAX_TIME = 180000;
@@ -2546,7 +2546,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         ? -1003573619278   // Rocket OTP Group
         : -1003645249777;  // Default ULTAR OTP Group
 
-    console.log(`[HUNTER DEBUG] cleanNum=${cleanNum} search4=${search4} search3=${search3} group=${OTP_GROUP} source=${getnumSelectedBot}`);
+    console.log(`[HUNTER DEBUG] cleanNum=${cleanNum} search4=${search4} search3=${search3} search2=${search2} group=${OTP_GROUP} source=${getnumSelectedBot}`);
 
     // ✅ Wait longer for Rocket OTP group to receive the message
     await delay(getnumSelectedBot === 'ROCKETOTP_BOT' ? 10000 : 3000);
@@ -2577,29 +2577,31 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                     // ✅ ROCKET FORMAT:
                     // 🎉 NEW OTP RECEIVED 🎉
                     // 🌍 Country: Haiti🇭🇹
-                    // 📱 Number: +5094XXXXXX151
-                    // 🚨 Service: Facebook
-                    // 🔐 OTP: 758984
+                    // 📱 Number: +5094XXXXXX201
+                    // 🚨 Service: WhatsApp
+                    // 🔐 OTP: 585-909
 
-                    // ✅ FIX: Broader regex — matches last 4 OR last 3 digits anywhere on the Number line
-                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
+                    // ✅ FIX: Use last 4, last 3, AND last 2 digits for matching
+                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3}|${search2})`, 'i');
 
                     if (numRegex.test(m.message)) {
-                        console.log(`[ROCKET HUNTER] Number line matched for ...${search4} in message: ${m.message.substring(0, 100)}`);
+                        console.log(`[ROCKET HUNTER] Number line matched for ...${search4}/${search3}/${search2} in message: ${m.message.substring(0, 150)}`);
 
-                        // ✅ Try emoji format first, then plain text fallback
+                        // ✅ FIX: Match dashed OTPs like "518-993" or "585-909" AND plain "758984"
                         const otpMatch = 
-                            m.message.match(/🔐\s*OTP[:\s]+(\d{4,8})/i) ||
-                            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
-                            m.message.match(/Code[:\s]+(\d{4,8})/i);
+                            m.message.match(/🔐\s*OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
+                            m.message.match(/OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
+                            m.message.match(/Code[:\s]+(\d{3,4}[-\s]?\d{3,4})/i);
 
                         if (otpMatch) {
-                            tempCode = otpMatch[1];
+                            // ✅ Strip dash/space so we send "518993" not "518-993"
+                            tempCode = otpMatch[1].replace(/[-\s]/g, '');
                             console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
                         } else {
                             console.log(`[ROCKET HUNTER] Number matched but NO OTP found in message: ${m.message}`);
                         }
                     }
+
                 } else {
                     // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');

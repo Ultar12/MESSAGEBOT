@@ -84,6 +84,7 @@ export let spyFound = new Set();
 const wsotpQueue = {};
 const wsotpActive = {};
 let wsotpWarnedNoWa = false;
+let getnumSelectedBot = null; // 'ROCKETOTP_BOT', 'LolzFack_bot', etc.
 
 
 
@@ -113,6 +114,7 @@ export function updateOtpSender(id, wasError = false) {
 
 
 // 🚀 --- NEW ROCKET BOT SETUP --- 🚀
+const ROCKET_OTP_GROUP = -1003573619278; // Your Rocket OTP group
 const rocketApiId = parseInt(process.env.ROCKET_API_ID || "0"); 
 const rocketApiHash = process.env.ROCKET_API_HASH || "";
 const rocketStringSession = new StringSession(process.env.ROCKET_SESSION || ""); 
@@ -1882,6 +1884,7 @@ bot.on('callback_query', async (query) => {
         await bot.answerCallbackQuery(query.id);
         const startCmd = targetBot === "LolzFack_bot" ? "Get Number" : "/start";
         await userBot.sendMessage(targetBot, { message: startCmd });
+        getnumSelectedBot = targetBot;
         return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot}.\nSelect country/options, then click below:`, {
             reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_${targetBot.toLowerCase().replace('_bot', '').replace('bot', '')}_${amount}` }]] }
         });
@@ -2526,8 +2529,8 @@ async function processWsotpQueue(chatId) {
 }
 
 
+
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
-    const OTP_GROUP = -1003645249777; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
@@ -2538,12 +2541,19 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const startTime = Date.now();
     const MAX_TIME = 180000;
 
-    await delay(3000);
+    // ✅ DYNAMIC GROUP: Rocket OTP group if Rocket was selected, else default ULTAR group
+    const OTP_GROUP = (getnumSelectedBot === 'ROCKETOTP_BOT')
+        ? -1003573619278   // Rocket OTP Group
+        : -1003645249777;  // Default ULTAR OTP Group
+
+    console.log(`[HUNTER] Using group ${OTP_GROUP} (Source: ${getnumSelectedBot || 'DEFAULT'})`);
+
+    // ✅ Wait longer for Rocket OTP group to receive the message
+    await delay(getnumSelectedBot === 'ROCKETOTP_BOT' ? 10000 : 3000);
 
     let foundCode = null;
     
     while (Date.now() - startTime < MAX_TIME) {
-        // ✅ FIX 1: State check includes all valid modes
         const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
         if (!validModes.includes(userState[chatId])) return;
         
@@ -2554,40 +2564,59 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         }
 
         try {
-            // ✅ FIX 2: Live group fetch (same as your old bot.onText logic)
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
             
             for (const m of otpMsgs) {
                 if (!m.message) continue;
                 if (m.date < tenMinsAgo) continue; 
                 
-                const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
-                
-                if (numRegex.test(m.message)) {
-                    let tempCode = null;
+                let tempCode = null;
 
-                    // Check inline buttons
-                    if (m.replyMarkup && m.replyMarkup.rows) {
-                        for (const row of m.replyMarkup.rows) {
-                            const btnArray = row.buttons || row; 
-                            for (const btn of btnArray) {
-                                const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
-                                if (btnMatch) tempCode = btnMatch[1];
+                if (getnumSelectedBot === 'ROCKETOTP_BOT') {
+                    // ✅ ROCKET FORMAT:
+                    // 🎉 NEW OTP RECEIVED 🎉
+                    // 📱 Number: +5094XXXXXX151
+                    // 🔐 OTP: 758984
+
+                    const numRegex = new RegExp(`Number.*?(?:${search4}|${search3})`, 'i');
+                    if (numRegex.test(m.message)) {
+                        const otpMatch = m.message.match(/OTP[:\s]+(\d{4,8})/i);
+                        if (otpMatch) tempCode = otpMatch[1];
+                    }
+                } else {
+                    // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
+                    const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
+                    
+                    if (numRegex.test(m.message)) {
+                        // Check inline buttons first
+                        if (m.replyMarkup && m.replyMarkup.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                const btnArray = row.buttons || row; 
+                                for (const btn of btnArray) {
+                                    const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
+                                    if (btnMatch) tempCode = btnMatch[1];
+                                }
+                                if (tempCode) break;
                             }
-                            if (tempCode) break;
+                        }
+
+                        // Fallback to text body
+                        if (!tempCode) {
+                            const codeMatch = m.message.match(/(?:Code|OTP)[:\s]+(\d{4,8})/i);
+                            if (codeMatch) tempCode = codeMatch[1];
                         }
                     }
-                    
-                    if (tempCode) {
-                        if (trackData.usedCodes.has(tempCode)) {
-                            tempCode = null; 
-                            continue;
-                        } else {
-                            foundCode = tempCode;
-                            trackData.usedCodes.add(foundCode); 
-                            break;
-                        }
+                }
+
+                if (tempCode) {
+                    if (trackData.usedCodes.has(tempCode)) {
+                        tempCode = null; 
+                        continue;
+                    } else {
+                        foundCode = tempCode;
+                        trackData.usedCodes.add(foundCode); 
+                        break;
                     }
                 }
             }

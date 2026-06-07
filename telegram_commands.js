@@ -2546,7 +2546,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
         ? -1003573619278   // Rocket OTP Group
         : -1003645249777;  // Default ULTAR OTP Group
 
-    console.log(`[HUNTER] Using group ${OTP_GROUP} (Source: ${getnumSelectedBot || 'DEFAULT'})`);
+    console.log(`[HUNTER DEBUG] cleanNum=${cleanNum} search4=${search4} search3=${search3} group=${OTP_GROUP} source=${getnumSelectedBot}`);
 
     // ✅ Wait longer for Rocket OTP group to receive the message
     await delay(getnumSelectedBot === 'ROCKETOTP_BOT' ? 10000 : 3000);
@@ -2574,20 +2574,32 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 let tempCode = null;
 
                 if (getnumSelectedBot === 'ROCKETOTP_BOT') {
-    // Rocket format: 📱 Number: +5094XXXXXX151
-    // Try last 4 AND last 3 digits of the clean number
-    const numRegex = new RegExp(`Number[^\n]*${search4}|Number[^\n]*${search3}`, 'i');
-    
-    if (numRegex.test(m.message)) {
-        // Extract OTP line: 🔐 OTP: 758984
-        const otpMatch = m.message.match(/🔐\s*OTP[:\s]+(\d{4,8})/i) || 
-                         m.message.match(/OTP[:\s]+(\d{4,8})/i);
-        if (otpMatch) tempCode = otpMatch[1];
-        
-        // Also check Service line for Facebook/WhatsApp to confirm it's the right message
-        console.log(`[ROCKET HUNTER] Matched number for ...${search4}, code: ${tempCode}`);
-    }
-}
+                    // ✅ ROCKET FORMAT:
+                    // 🎉 NEW OTP RECEIVED 🎉
+                    // 🌍 Country: Haiti🇭🇹
+                    // 📱 Number: +5094XXXXXX151
+                    // 🚨 Service: Facebook
+                    // 🔐 OTP: 758984
+
+                    // ✅ FIX: Broader regex — matches last 4 OR last 3 digits anywhere on the Number line
+                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
+
+                    if (numRegex.test(m.message)) {
+                        console.log(`[ROCKET HUNTER] Number line matched for ...${search4} in message: ${m.message.substring(0, 100)}`);
+
+                        // ✅ Try emoji format first, then plain text fallback
+                        const otpMatch = 
+                            m.message.match(/🔐\s*OTP[:\s]+(\d{4,8})/i) ||
+                            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
+                            m.message.match(/Code[:\s]+(\d{4,8})/i);
+
+                        if (otpMatch) {
+                            tempCode = otpMatch[1];
+                            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
+                        } else {
+                            console.log(`[ROCKET HUNTER] Number matched but NO OTP found in message: ${m.message}`);
+                        }
+                    }
                 } else {
                     // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
@@ -2615,6 +2627,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
                 if (tempCode) {
                     if (trackData.usedCodes.has(tempCode)) {
+                        console.log(`[HUNTER] Code ${tempCode} already used, skipping...`);
                         tempCode = null; 
                         continue;
                     } else {

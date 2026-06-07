@@ -7296,45 +7296,43 @@ bot.onText(/\/pdf/, async (msg) => {
         userState[chatId + '_lastMsgId'] = msg.message_id;
 
 
-                                // --- LISTEN FOR MANUAL OTP REPLIES ---
-        if (msg.reply_to_message && manualOtpPrompts[msg.reply_to_message.message_id]) {
-            const otpData = manualOtpPrompts[msg.reply_to_message.message_id];
-            const cleanOtp = text.replace(/\D/g, ''); // Extract just the digits
+        // --- LISTEN FOR MANUAL OTP REPLIES ---
+if (msg.reply_to_message && manualOtpPrompts[msg.reply_to_message.message_id]) {
+    const otpData = manualOtpPrompts[msg.reply_to_message.message_id];
+    const cleanOtp = text.replace(/\D/g, '');
 
-            if (cleanOtp.length >= 3) {
-                // 1. CAPTURE THE CONFIRMATION MESSAGE
-                const confirmMsg = await bot.sendMessage(chatId, `**Manual OTP Accepted:** \`${cleanOtp}\` for \`${otpData.botNum}\`. Forwarding to bot...`, { parse_mode: 'Markdown' });
+    if (cleanOtp.length >= 3) {
+        // 1. CAPTURE THE CONFIRMATION MESSAGE
+        const confirmMsg = await bot.sendMessage(chatId, `**Manual OTP Accepted:** \`${cleanOtp}\` for \`${otpData.botNum}\`. Forwarding to bot...`, { parse_mode: 'Markdown' });
 
-                // Engage the manual override kill switch so the auto-hunter drops it
-                manualOverrideMap.add(otpData.botNum);
+        // Engage the manual override kill switch so the auto-hunter drops it
+        manualOverrideMap.add(otpData.botNum);
 
-                try {
-                    // Send directly to the WSOTP bot via Payme Userbot
-                    if (otpData.useRocket) {
-          await rocketUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
-        } else {
-          await paymeUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
-        } catch (e) {
-                    bot.sendMessage(chatId, `Failed to forward OTP: ${e.message}`);
-                }
-
-                // Cleanup prompt memory to prevent duplicate firing
-                delete manualOtpPrompts[msg.reply_to_message.message_id];
-
-                // 2. THE CLEANUP CREW
-                // Wait 2.5 seconds so you can see it was accepted, then delete all 3 messages
-                setTimeout(async () => {
-                    try { await bot.deleteMessage(chatId, msg.message_id); } catch(e) {} // Deletes the code you sent
-                    try { await bot.deleteMessage(chatId, confirmMsg.message_id); } catch(e) {} // Deletes the "Accepted" message
-                    try { await bot.deleteMessage(chatId, msg.reply_to_message.message_id); } catch(e) {} // Deletes the original prompt
-                }, 2500);
-
-                return; // Stop processing this message
+        try {
+            // ✅ FIXED: Proper if/else with correct closing braces
+            if (otpData.useRocket) {
+                await rocketUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
+            } else {
+                await paymeUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
             }
+        } catch (e) {
+            bot.sendMessage(chatId, `Failed to forward OTP: ${e.message}`);
         }
 
+        // Cleanup prompt memory to prevent duplicate firing
+        delete manualOtpPrompts[msg.reply_to_message.message_id];
 
+        // 2. THE CLEANUP CREW
+        setTimeout(async () => {
+            try { await bot.deleteMessage(chatId, msg.message_id); } catch(e) {}
+            try { await bot.deleteMessage(chatId, confirmMsg.message_id); } catch(e) {}
+            try { await bot.deleteMessage(chatId, msg.reply_to_message.message_id); } catch(e) {}
+        }, 2500);
 
+        return;
+    }
+}
+        
         
         // RATE LIMIT CHECK
         if (!isUserAdmin && !isSubAdmin && !checkRateLimit(userId)) {

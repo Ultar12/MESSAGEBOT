@@ -1971,6 +1971,8 @@ bot.on('callback_query', async (query) => {
                         
                         if (outMode === 'bot') {
                             const botPayload = raw.replace(/^0/, '');
+
+                            getnumSelectedBot = targetBot;
                             
                             // INJECT DIRECTLY & INSTANTLY
                             wsotpQueue[chatId] = wsotpQueue[chatId] || [];
@@ -2538,12 +2540,12 @@ async function processWsotpQueue(chatId) {
                             // ⚡ TRIGGER LOGIC: Auto scrapes group. Manual waits for user.
                             if (isErrorCode) {
                                 await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
-                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, getnumSelectedBot);
                             } else if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
                                 if (isAuto) {
                                     await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
-                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog);
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, getnumSelectedBot);
                                 } else {
                                     await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for your reply)...`);
                                 }

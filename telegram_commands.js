@@ -2642,33 +2642,24 @@ async function processWsotpQueue(chatId) {
                 let tempCode = null;
 
                 if (getnumSelectedBot === 'ROCKETOTP_BOT') {
-                    // ✅ ROCKET FORMAT:
-                    // 🎉 NEW OTP RECEIVED 🎉
-                    // 🌍 Country: Haiti🇭🇹
-                    // 📱 Number: +5094XXXXXX151
-                    // 🚨 Service: Facebook
-                    // 🔐 OTP: 758984
+    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
 
-                    // ✅ FIX: Broader regex — matches last 4 OR last 3 digits anywhere on the Number line
-                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
+    if (numRegex.test(m.message)) {
+        console.log(`[ROCKET HUNTER] Number line matched for ...${search4}`);
 
-                    if (numRegex.test(m.message)) {
-                        console.log(`[ROCKET HUNTER] Number line matched for ...${search4} in message: ${m.message.substring(0, 100)}`);
+        const otpMatch = 
+            m.message.match(/🔐\s*OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
+            m.message.match(/OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
+            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
+            m.message.match(/Code[:\s]+(\d{3}[-\s]?\d{3})/i);
 
-                        // ✅ Try emoji format first, then plain text fallback
-                        const otpMatch = 
-                            m.message.match(/🔐\s*OTP[:\s]+(\d{4,8})/i) ||
-                            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
-                            m.message.match(/Code[:\s]+(\d{4,8})/i);
-
-                        if (otpMatch) {
-                            tempCode = otpMatch[1];
-                            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
-                        } else {
-                            console.log(`[ROCKET HUNTER] Number matched but NO OTP found in message: ${m.message}`);
-                        }
-                    }
-                } else {
+        if (otpMatch) {
+            // Strip the dash so it becomes clean 6 digits
+            tempCode = otpMatch[1].replace(/[-\s]/g, '');
+            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
+        }
+    }
+} else {
                     // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
                     

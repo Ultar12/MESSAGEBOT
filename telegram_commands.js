@@ -7332,7 +7332,48 @@ if (msg.reply_to_message && manualOtpPrompts[msg.reply_to_message.message_id]) {
         return;
     }
 }
+
+
         
+        // --- LIVE STATS IN WSOTP/GETNU MODE ---
+if (
+    text.toLowerCase() === 'stats' &&
+    (
+        userState[chatId] === 'WSOTP_MANUAL_MODE' ||
+        userState[chatId] === 'WSOTP_FILE_MODE' ||
+        userState[chatId] === 'WSOTP_AUTO_MODE' ||
+        userState[chatId] === 'WSOTP_MAN_MODE' ||
+        getnuWsotpActive[chatId]
+    )
+) {
+    try {
+        // Delete the user's "stats" message
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch(e) {}
+
+        const wsQueue = wsotpQueue[chatId]?.length || 0;
+        const gnQueue = getnuWsotpQueue[chatId]?.length || 0;
+
+        const statsText =
+            `**[LIVE ENGINE STATS]**\n\n` +
+            `**WSOTP Engine:** ${wsotpActive[chatId] ? '🟢 Running' : '⚫ Idle'}\n` +
+            `Queue: ${wsQueue} numbers\n` +
+            `Mode: ${userState[chatId] || 'N/A'}\n\n` +
+            `**GETNU Engine:** ${getnuWsotpActive[chatId] ? '🟢 Running' : '⚫ Idle'}\n` +
+            `Queue: ${gnQueue} numbers\n\n` +
+            `_This message deletes in 10 minutes._`;
+
+        const statsMsg = await bot.sendMessage(chatId, statsText, { parse_mode: 'Markdown' });
+
+        // ✅ Auto-delete after 10 minutes
+        setTimeout(async () => {
+            try { await bot.deleteMessage(chatId, statsMsg.message_id); } catch(e) {}
+        }, 600000);
+
+    } catch(e) {
+        console.error('[LIVE STATS ERROR]', e.message);
+    }
+    return;
+}
         
         // RATE LIMIT CHECK
         if (!isUserAdmin && !isSubAdmin && !checkRateLimit(userId)) {

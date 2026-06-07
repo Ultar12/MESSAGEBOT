@@ -2598,23 +2598,27 @@ async function processWsotpQueue(chatId) {
 
 
 
-                async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
-    // ✅ DYNAMIC GROUP: Uses Rocket group if selected, otherwise your main group
-    const OTP_GROUP = (typeof getnumSelectedBot !== 'undefined' && getnumSelectedBot === 'ROCKETOTP_BOT') 
-        ? -1003573619278 
-        : -1003645249777; 
-
+    async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
     const cleanNum = formattedNum.replace(/\D/g, '');
     const search4 = cleanNum.slice(-4);
     const search3 = cleanNum.slice(-3);
+    const search2 = cleanNum.slice(-2);
 
     const startTime = Date.now();
     const MAX_TIME = 180000;
 
-    await delay(3000);
+    // ✅ DYNAMIC GROUP: Rocket OTP group if Rocket was selected, else default ULTAR group
+    const OTP_GROUP = (getnumSelectedBot === 'ROCKETOTP_BOT')
+        ? -1003573619278   // Rocket OTP Group
+        : -1003645249777;  // Default ULTAR OTP Group
+
+    console.log(`[HUNTER DEBUG] cleanNum=${cleanNum} search4=${search4} search3=${search3} search2=${search2} group=${OTP_GROUP} source=${getnumSelectedBot}`);
+
+    // ✅ Wait longer for Rocket OTP group to receive the message
+    await delay(getnumSelectedBot === 'ROCKETOTP_BOT' ? 10000 : 3000);
 
     let foundCode = null;
     
@@ -2629,50 +2633,78 @@ async function processWsotpQueue(chatId) {
         }
 
         try {
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
             
             for (const m of otpMsgs) {
                 if (!m.message) continue;
                 if (m.date < tenMinsAgo) continue; 
                 
-                // 🚀 Removed \b boundary to make it flawlessly catch numbers like +2556XXXXXX704
-                const numRegex = new RegExp(`Number.*?(?:${search4}|${search3})`, 'i');
-                
-                if (numRegex.test(m.message)) {
-                    let tempCode = null;
+                let tempCode = null;
 
-                    // 1. Check inline buttons (For your normal group)
-                    if (m.replyMarkup && m.replyMarkup.rows) {
-                        for (const row of m.replyMarkup.rows) {
-                            const btnArray = row.buttons || row; 
-                            for (const btn of btnArray) {
-                                const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
-                                if (btnMatch) tempCode = btnMatch[1];
-                            }
-                            if (tempCode) break;
-                        }
-                    }
-                    
-                    // 2. 🚀 FALLBACK TO TEXT BODY (CRITICAL FOR ROCKET OTP)
-                    if (!tempCode) {
-                        // Looks for Code, OTP, 🔑, or 🔐 followed by 4-9 digits (handles hyphens)
-                        const codeMatchText = m.message.match(/(?:Code|OTP|🔑|🔐)[^\n\d]*?([\d\-\s]{4,9})(?!\d)/i);
-                        if (codeMatchText) {
-                            // Strip hyphens and spaces so '709-512' becomes '709512'
-                            tempCode = codeMatchText[1].replace(/\D/g, ''); 
-                        }
-                    }
-                    
-                    if (tempCode) {
-                        if (trackData.usedCodes.has(tempCode)) {
-                            tempCode = null; 
-                            continue;
+                if (getnumSelectedBot === 'ROCKETOTP_BOT') {
+                    // ✅ ROCKET FORMAT:
+                    // 🎉 NEW OTP RECEIVED 🎉
+                    // 🌍 Country: Haiti🇭🇹
+                    // 📱 Number: +5094XXXXXX201
+                    // 🚨 Service: WhatsApp
+                    // 🔐 OTP: 585-909
+
+                    // ✅ FIX: Use last 4, last 3, AND last 2 digits for matching
+                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3}|${search2})`, 'i');
+
+                    if (numRegex.test(m.message)) {
+                        console.log(`[ROCKET HUNTER] Number line matched for ...${search4}/${search3}/${search2} in message: ${m.message.substring(0, 150)}`);
+
+                        // ✅ FIX: Match dashed OTPs like "518-993" or "585-909" AND plain "758984"
+                        const otpMatch = 
+                            m.message.match(/🔐\s*OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
+                            m.message.match(/OTP[:\s]+(\d{3,4}[-\s]?\d{3,4})/i) ||
+                            m.message.match(/Code[:\s]+(\d{3,4}[-\s]?\d{3,4})/i);
+
+                        if (otpMatch) {
+                            // ✅ Strip dash/space so we send "518993" not "518-993"
+                            tempCode = otpMatch[1].replace(/[-\s]/g, '');
+                            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
                         } else {
-                            foundCode = tempCode;
-                            trackData.usedCodes.add(foundCode); 
-                            break;
+                            console.log(`[ROCKET HUNTER] Number matched but NO OTP found in message: ${m.message}`);
                         }
+                    }
+
+                } else {
+                    // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
+                    const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
+                    
+                    if (numRegex.test(m.message)) {
+                        // Check inline buttons first
+                        if (m.replyMarkup && m.replyMarkup.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                const btnArray = row.buttons || row; 
+                                for (const btn of btnArray) {
+                                    const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
+                                    if (btnMatch) tempCode = btnMatch[1];
+                                }
+                                if (tempCode) break;
+                            }
+                        }
+
+                        // Fallback to text body
+                        if (!tempCode) {
+                            const codeMatch = m.message.match(/(?:Code|OTP)[:\s]+(\d{4,8})/i);
+                            if (codeMatch) tempCode = codeMatch[1];
+                        }
+                    }
+                }
+
+                if (tempCode) {
+                    if (trackData.usedCodes.has(tempCode)) {
+                        console.log(`[HUNTER] Code ${tempCode} already used, skipping...`);
+                        tempCode = null; 
+                        continue;
+                    } else {
+                        foundCode = tempCode;
+                        trackData.usedCodes.add(foundCode); 
+                        break;
                     }
                 }
             }
@@ -2704,7 +2736,6 @@ async function processWsotpQueue(chatId) {
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
 }
-
 
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

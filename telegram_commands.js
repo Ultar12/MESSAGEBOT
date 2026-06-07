@@ -2598,7 +2598,7 @@ async function processWsotpQueue(chatId) {
 
 
 
-    async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog) {
+    async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null) {
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
@@ -2609,15 +2609,13 @@ async function processWsotpQueue(chatId) {
     const startTime = Date.now();
     const MAX_TIME = 180000;
 
-    // ✅ DYNAMIC GROUP: Rocket OTP group if Rocket was selected, else default ULTAR group
-    const OTP_GROUP = (getnumSelectedBot === 'ROCKETOTP_BOT')
-        ? -1003573619278   // Rocket OTP Group
-        : -1003645249777;  // Default ULTAR OTP Group
+    // ✅ CLEAN SOURCE DETECTION
+    const isRocket = (sourceBot === 'ROCKETOTP_BOT' || getnumSelectedBot === 'ROCKETOTP_BOT');
+    const OTP_GROUP = isRocket ? -1003573619278 : -1003645249777;
 
-    console.log(`[HUNTER DEBUG] cleanNum=${cleanNum} search4=${search4} search3=${search3} group=${OTP_GROUP} source=${getnumSelectedBot}`);
+    console.log(`[HUNTER DEBUG] cleanNum=${cleanNum} search4=${search4} search3=${search3} group=${OTP_GROUP} isRocket=${isRocket}`);
 
-    // ✅ Wait longer for Rocket OTP group to receive the message
-    await delay(getnumSelectedBot === 'ROCKETOTP_BOT' ? 10000 : 3000);
+    await delay(isRocket ? 10000 : 3000);
 
     let foundCode = null;
     
@@ -2641,26 +2639,35 @@ async function processWsotpQueue(chatId) {
                 
                 let tempCode = null;
 
-                if (getnumSelectedBot === 'ROCKETOTP_BOT') {
-    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
+                if (isRocket) {
+                    // ✅ ROCKET FORMAT:
+                    // 🌍 Country: Tanzania
+                    // 📱 Number: +2556XXXXXX209
+                    // 🔐 OTP: 654-662
 
-    if (numRegex.test(m.message)) {
-        console.log(`[ROCKET HUNTER] Number line matched for ...${search4}`);
+                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
 
-        const otpMatch = 
-            m.message.match(/🔐\s*OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
-            m.message.match(/OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
-            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
-            m.message.match(/Code[:\s]+(\d{3}[-\s]?\d{3})/i);
+                    if (numRegex.test(m.message)) {
+                        console.log(`[ROCKET HUNTER] Number matched for ...${search4}`);
 
-        if (otpMatch) {
-            // Strip the dash so it becomes clean 6 digits
-            tempCode = otpMatch[1].replace(/[-\s]/g, '');
-            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
-        }
-    }
-} else {
-                    // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
+                        // ✅ Handles both "654-662" and "654662" formats
+                        const otpMatch = 
+                            m.message.match(/🔐\s*OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
+                            m.message.match(/OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
+                            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
+                            m.message.match(/Code[:\s]+(\d{3}[-\s]?\d{3})/i);
+
+                        if (otpMatch) {
+                            // ✅ Strip dash so "654-662" becomes "654662"
+                            tempCode = otpMatch[1].replace(/[-\s]/g, '');
+                            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
+                        } else {
+                            console.log(`[ROCKET HUNTER] Number matched but NO OTP found in:\n${m.message}`);
+                        }
+                    }
+
+                } else {
+                    // ✅ ULTAR GROUP FORMAT (buttons + text)
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
                     
                     if (numRegex.test(m.message)) {
@@ -2678,8 +2685,8 @@ async function processWsotpQueue(chatId) {
 
                         // Fallback to text body
                         if (!tempCode) {
-                            const codeMatch = m.message.match(/(?:Code|OTP)[:\s]+(\d{4,8})/i);
-                            if (codeMatch) tempCode = codeMatch[1];
+                            const codeMatch = m.message.match(/(?:Code|OTP)[:\s]+(\d{3}[-\s]?\d{3}|\d{4,8})/i);
+                            if (codeMatch) tempCode = codeMatch[1].replace(/[-\s]/g, '');
                         }
                     }
                 }
@@ -2701,18 +2708,26 @@ async function processWsotpQueue(chatId) {
                 await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 try {
-                    await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                    await paymeUserBot.invoke(new Api.messages.SetTyping({ 
+                        peer: TARGET_BOT, 
+                        action: new Api.SendMessageTypingAction() 
+                    }));
                     await delay(Math.floor(Math.random() * 800) + 400); 
                     
                     let sentOtp;
                     try {
-                        sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
+                        sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { 
+                            message: foundCode, 
+                            replyTo: botMsgIdToReply 
+                        });
                     } catch (replyErr) {
                         sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode });
                     }
                     
                     if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
-                } catch (e) {}
+                } catch (e) {
+                    console.error(`[HUNTER SEND ERROR]:`, e.message);
+                }
                 return; 
             }
         } catch (e) {
@@ -2722,7 +2737,7 @@ async function processWsotpQueue(chatId) {
         await delay(2500);
     }
 
-    await addLog(`❌ \`${cleanNum}\`: Gave up after 5 minutes.`);
+    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
 
 

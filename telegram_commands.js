@@ -2574,16 +2574,20 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                 let tempCode = null;
 
                 if (getnumSelectedBot === 'ROCKETOTP_BOT') {
-                    // ✅ ROCKET FORMAT:
-                    // 🎉 NEW OTP RECEIVED 🎉
-                    // 📱 Number: +5094XXXXXX151
-                    // 🔐 OTP: 758984
-
-                    const numRegex = new RegExp(`Number.*?(?:${search4}|${search3})`, 'i');
-                    if (numRegex.test(m.message)) {
-                        const otpMatch = m.message.match(/OTP[:\s]+(\d{4,8})/i);
-                        if (otpMatch) tempCode = otpMatch[1];
-                    }
+    // Rocket format: 📱 Number: +5094XXXXXX151
+    // Try last 4 AND last 3 digits of the clean number
+    const numRegex = new RegExp(`Number[^\n]*${search4}|Number[^\n]*${search3}`, 'i');
+    
+    if (numRegex.test(m.message)) {
+        // Extract OTP line: 🔐 OTP: 758984
+        const otpMatch = m.message.match(/🔐\s*OTP[:\s]+(\d{4,8})/i) || 
+                         m.message.match(/OTP[:\s]+(\d{4,8})/i);
+        if (otpMatch) tempCode = otpMatch[1];
+        
+        // Also check Service line for Facebook/WhatsApp to confirm it's the right message
+        console.log(`[ROCKET HUNTER] Matched number for ...${search4}, code: ${tempCode}`);
+    }
+}
                 } else {
                     // ✅ DEFAULT ULTAR GROUP FORMAT (buttons + text)
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');

@@ -2637,7 +2637,7 @@ try {
 
 
 
-    async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null) {
+    async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null, activeWsotpBot = null) {
     const botToUse = activeWsotpBot || paymeUserBot; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");

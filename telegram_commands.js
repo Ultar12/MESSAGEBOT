@@ -83,6 +83,7 @@ export let spyFound = new Set();
 // ==========================================
 const wsotpQueue = {};
 const wsotpActive = {};
+let wsotpAccount = 'payme'; // Default: 'payme' or 'telegram2'
 let wsotpWarnedNoWa = false;
 let getnumSelectedBot = null; // 'ROCKETOTP_BOT', 'LolzFack_bot', etc.
 
@@ -1845,8 +1846,31 @@ export function setupTelegramCommands(bot, notificationBot, clients, shortIdMap,
     }
 
 
+bot.onText(/\/acc\s+(\d+)/, async (msg, match) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+    
+    if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+    
+    const choice = match[1];
+    
+    if (choice === '1') {
+        wsotpAccount = 'payme';
+        bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **PAYME UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
+    } else if (choice === '2') {
+        if (!telegram2UserBot) {
+            return bot.sendMessage(chatId, `[ERROR] Telegram2 account is not configured in Config Vars.`);
+        }
+        wsotpAccount = 'telegram2';
+        bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **TELEGRAM2 UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
+    } else {
+        bot.sendMessage(chatId, `[ERROR] Invalid choice.\nUse /acc 1 (Payme) or /acc 2 (Telegram2)`);
+    }
+});
 
-                                        
+
+    
 // ====================================================
 // UNIFIED GETNU COMMAND
 // ====================================================
@@ -2234,13 +2258,27 @@ async function processWsotpQueue(chatId) {
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
 
-    try {
-        if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
-        if (!paymeUserBot.connected) await paymeUserBot.connect();
-    } catch (e) {
-        bot.sendMessage(chatId, `[ERROR] Failed to connect Payme UserBot: ${e.message}`);
-        wsotpActive[chatId] = false;
-        return;
+    // Select which account to use based on /acc setting
+let activeWsotpBot = paymeUserBot;
+
+try {
+    if (wsotpAccount === 'telegram2') {
+        if (!telegram2UserBot) {
+            bot.sendMessage(chatId, `[ERROR] Telegram2 not configured. Falling back to Payme.`);
+            wsotpAccount = 'payme';
+        } else {
+            await ensureTelegram2Connected();
+            activeWsotpBot = telegram2UserBot;
+        }
+    } else {
+        await ensurePaymeConnected();
+        activeWsotpBot = paymeUserBot;
+    }
+} catch (e) {
+    bot.sendMessage(chatId, `[ERROR] Failed to connect WSOTP account: ${e.message}`);
+    wsotpActive[chatId] = false;
+    return;
+}
     }
 
     wsotpWarnedNoWa = false; 
@@ -2339,10 +2377,10 @@ async function processWsotpQueue(chatId) {
             stats.sent++;
 
             try {
-                await paymeUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                await activeWsotpBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
                 await delay(700); 
                 
-                const sentMsg = await paymeUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
+                const sentMsg = await activeWsotpBot.sendMessage(TARGET_BOT, { message: formattedNum });
                 
                 activeTracker[formattedNum] = {
                     count: 0,
@@ -2365,7 +2403,7 @@ async function processWsotpQueue(chatId) {
 
         // --- 2. LISTEN FOR RESPONSES & REWARDS ---
         try {
-            const msgs = await paymeUserBot.getMessages(TARGET_BOT, { limit: 100 }); 
+            const msgs = await activeWsotpBot.getMessages(TARGET_BOT, { limit: 100 }); 
             
             for (const msg of msgs) {
                 const text = msg.message || "";
@@ -2476,7 +2514,7 @@ async function processWsotpQueue(chatId) {
 
                         trackData.msgIdsToClean.push(msg.id);
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
-                        try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+                        try { await activeWsotpBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
 
                         // 🧹 NUKE MANUAL TG MESSAGES
                         if (telegramCleanupMap[botNum]) {
@@ -2545,7 +2583,7 @@ async function processWsotpQueue(chatId) {
                                 trackData.hunterSpawned = true;
                                 if (isAuto) {
                                     await addLog(`⚡ \`${botNum}\`: Background Hunt Started...`);
-                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, getnumSelectedBot);
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, getnumSelectedBot, activeWsotpBot);
                                 } else {
                                     await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for your reply)...`);
                                 }
@@ -2601,6 +2639,7 @@ async function processWsotpQueue(chatId) {
 
 
     async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null) {
+    const botToUse = wsotpBot || paymeUserBot; 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     
@@ -2710,7 +2749,7 @@ async function processWsotpQueue(chatId) {
                 await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 try {
-                    await paymeUserBot.invoke(new Api.messages.SetTyping({ 
+                    await botToUse.invoke(new Api.messages.SetTyping({ 
                         peer: TARGET_BOT, 
                         action: new Api.SendMessageTypingAction() 
                     }));
@@ -2718,12 +2757,12 @@ async function processWsotpQueue(chatId) {
                     
                     let sentOtp;
                     try {
-                        sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { 
+                        sentOtp = await botToUse.sendMessage(TARGET_BOT, { 
                             message: foundCode, 
                             replyTo: botMsgIdToReply 
                         });
                     } catch (replyErr) {
-                        sentOtp = await paymeUserBot.sendMessage(TARGET_BOT, { message: foundCode });
+                        sentOtp = await botToUse.sendMessage(TARGET_BOT, { message: foundCode });
                     }
                     
                     if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);

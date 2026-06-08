@@ -2279,7 +2279,6 @@ try {
     wsotpActive[chatId] = false;
     return;
 }
-    }
 
     wsotpWarnedNoWa = false; 
 

@@ -2376,7 +2376,7 @@ try {
 
         // --- 2. LISTEN FOR RESPONSES & REWARDS ---
         try {
-            const msgs = await activeWsotpBot.getMessages(TARGET_BOT, { limit: 100 }); 
+            const msgs = await activeWsotpBot.getMessages(TARGET_BOT, { limit: 60 }); 
 
             
             for (const msg of msgs) {
@@ -2653,7 +2653,7 @@ try {
         }
 
         try {
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 100 });
+            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
             
             for (const m of otpMsgs) {
@@ -2727,15 +2727,12 @@ try {
                 }
             }
 
-            if (foundCode) {
+                        if (foundCode) {
                 await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
                 
                 try {
-                    await botToUse.invoke(new Api.messages.SetTyping({ 
-                        peer: TARGET_BOT, 
-                        action: new Api.SendMessageTypingAction() 
-                    }));
-                    await delay(Math.floor(Math.random() * 800) + 400); 
+                    // 🛡️ ANTI-BAN MICRO-DELAY (replaces the fake SetTyping)
+                    await delay(Math.floor(Math.random() * 200) + 150); 
                     
                     let sentOtp;
                     try {
@@ -2748,28 +2745,39 @@ try {
                     }
                     
                     if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
+                    
+                    // ✅ Successfully sent! Exit the hunter loop.
+                    return; 
+                    
                 } catch (e) {
-                    console.error(`[HUNTER SEND ERROR]:`, e.message);
-                }
-                return; 
-            }
-             } catch (e) {
-                    console.error(`[HUNTER SEND ERROR]:`, e.message);
+                    console.error(`[HUNTER SEND ERROR on ${cleanNum}]:`, e.message);
                     
                     // 🛑 Catch the FloodWait error and pause
-                    if (e.message.includes('wait of')) {
+                    if (e.message && e.message.includes('wait of')) {
                         const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 60;
-                        await addLog(`RATE LIMITED: Hunter sleeping for ${waitSeconds}s...`);
-                        await delay((waitSeconds * 1000) + 2000); // Wait the penalty time + 2s buffer
+                        await addLog(`🛑 RATE LIMITED: Hunter sleeping for ${waitSeconds}s...`);
+                        await delay((waitSeconds * 1000) + 2000); 
+                        
+                        // 🔄 CRITICAL FIX: Unmark the code and continue the loop so it tries to send it AGAIN!
+                        trackData.usedCodes.delete(foundCode); 
+                        continue; 
                     }
+                    
+                    // If it's a fatal error that ISN'T a rate limit, just exit.
+                    return; 
                 }
+            }
+        } catch (e) {
+            console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message); 
+        }
 
-
-        await delay(2500);
+        await delay(4500);
     }
 
-    await addLog(`\`${cleanNum}\`: Gave up after 3 minutes.`);
+    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
+
+             
 
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---

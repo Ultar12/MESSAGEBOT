@@ -82,6 +82,8 @@ export let spyFound = new Set();
 // WSOTP GLOBAL STATE TRACKERS
 // ==========================================
 const wsotpQueue = {};
+// 🧠 GLOBAL OTP MEMORY POOL
+const globalOtpMemory = new Map();
 const wsotpActive = {};
 const wsotpGlobalStats = {};
 let wsotpAccount = 'payme'; // Default: 'payme' or 'telegram2'
@@ -258,6 +260,49 @@ const manualOtpPrompts = {};
 const manualOverrideMap = new Set(); // 🧠 Kill Switch
 
 
+export function startGlobalOtpListener() {
+    console.log("🛡️ [MASTER LISTENER] Started monitoring Rocket OTP group...");
+    
+    const ROCKET_GROUP = -1003573619278;
+
+    setInterval(async () => {
+        try {
+            if (!userBot || !userBot.connected) return;
+            const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
+
+            const rocketMsgs = await userBot.getMessages(ROCKET_GROUP, { limit: 15 }); 
+            for (const m of rocketMsgs) {
+                if (!m.message || m.date < tenMinsAgo) continue;
+
+                const numMatch = m.message.match(/Number[^\n]*\+(\d{10,15})/i);
+                if (numMatch) {
+                    const fullNum = numMatch[1];
+                    
+                    const serviceMatch = m.message.match(/Service:\s*([^\n]+)/i);
+                    if (serviceMatch) {
+                        const serviceName = serviceMatch[1].toLowerCase();
+                        if (!serviceName.includes('whatsapp') && !serviceName.includes('wa') && !serviceName.includes('lnst')) {
+                            continue; 
+                        }
+                    }
+
+                    const otpMatch = m.message.match(/(?:🔐\s*OTP|OTP|Code)[:\s]+(\d{3}[-\s]?\d{3}|\d{4,8})/i);
+                    if (otpMatch) {
+                        const cleanOtp = otpMatch[1].replace(/[-\s]/g, '');
+                        const last4 = fullNum.slice(-4);
+                        globalOtpMemory.set(last4, cleanOtp); 
+                    }
+                }
+            }
+        } catch (e) {
+            // Silently catch minor network drops
+        }
+    }, 5000); 
+}
+
+
+
+
 // 1. This is the main function your Express server calls
 export async function processWsTask(payload) {
     if (!payload || !payload.phone_number) {
@@ -385,121 +430,6 @@ async function executeWsTaskSteps(phoneStr) {
     if (!clickedNoLimit) throw new Error("Stuck at NoLimit menu.");
 
     console.log(`[WSTASK] ✅ Finished ${formattedNum} via ${accountName}`);
-}
-
-
-// ==========================================
-// ZAMBIA TWO-WAY SYNC (HARDENED & DEBUG VERSION)
-// ==========================================
-export async function syncZambiaWithChat() {
-    console.log("\n[ZAMBIA SYNC] Step 1: Starting sync for @rekanwspanelbot...");
-    
-    const TARGET_CHAT = "rekanwspanelbot";
-    const ZAMBIA_CODE = "260"; 
-
-    try {
-        if (typeof ensurePaymeConnected === 'function') await ensurePaymeConnected();
-
-        // FIX: Must get the Entity first, otherwise Telegram Userbots often return 0 messages
-        let entity;
-        try {
-            entity = await paymeUserBot.getEntity(TARGET_CHAT);
-        } catch (e) {
-            console.error("❌ [ZAMBIA SYNC ERROR] Could not find chat @rekanwspanelbot. Is the bot joined?");
-            return;
-        }
-
-        // Fetch Messages
-        const messages = await paymeUserBot.getMessages(entity, { limit: 1000 });
-        console.log(`[ZAMBIA SYNC] Step 2: Fetched ${messages.length} messages from Telegram.`);
-
-        const chatNumbers = new Set();
-
-        // Extract numbers safely
-        for (const msg of messages) {
-            // Support both GramJS and standard Telegram objects
-            const textStr = msg.message || msg.text || ""; 
-            
-            if (textStr) {
-                const foundNumbers = textStr.match(/\d{9,12}/g);
-                if (foundNumbers) {
-                    for (let rawNum of foundNumbers) {
-                        let formattedNum = rawNum;
-
-                        if (rawNum.length === 10 && (rawNum.startsWith('09') || rawNum.startsWith('07'))) {
-                            formattedNum = ZAMBIA_CODE + rawNum.substring(1);
-                        } else if (rawNum.length === 12 && rawNum.startsWith(ZAMBIA_CODE)) {
-                            formattedNum = rawNum;
-                        } else if (rawNum.length === 9 && (rawNum.startsWith('9') || rawNum.startsWith('7'))) {
-                            formattedNum = ZAMBIA_CODE + rawNum;
-                        } else {
-                            continue; 
-                        }
-                        chatNumbers.add(formattedNum);
-                    }
-                }
-            }
-        }
-
-        console.log(`[ZAMBIA SYNC] Step 3: Extracted ${chatNumbers.size} valid Zambia numbers from chat.`);
-
-        // Fetch DB
-        const allDbDocs = await getAllNumbers(); 
-        const dbZambiaNumbers = new Set();
-        
-        allDbDocs.forEach(doc => {
-            const rawStr = String(doc.number || doc).replace(/\D/g, '');
-            if (rawStr.length === 12 && rawStr.startsWith(ZAMBIA_CODE)) {
-                dbZambiaNumbers.add(rawStr);
-            }
-        });
-
-        console.log(`[ZAMBIA SYNC] Step 4: Found ${dbZambiaNumbers.size} existing Zambia numbers in Database.`);
-
-        const numbersToAdd = [];
-        const numbersToRemove = [];
-
-        // Compare logic
-        for (const phone of chatNumbers) {
-            if (!dbZambiaNumbers.has(phone)) {
-                numbersToAdd.push(phone);
-            }
-        }
-
-        for (const phone of dbZambiaNumbers) {
-            if (!chatNumbers.has(phone)) {
-                numbersToRemove.push(phone);
-            }
-        }
-
-        console.log(`[ZAMBIA SYNC] Step 5: Calculation complete. NEW to add: ${numbersToAdd.length} | OLD to remove: ${numbersToRemove.length}`);
-
-        // Execute Database updates with Try/Catch to see if DB is rejecting them
-        if (numbersToAdd.length > 0) {
-            try {
-                await addNumbersToDb(numbersToAdd);
-                console.log(`[ZAMBIA SYNC] Successfully ADDED ${numbersToAdd.length} numbers.`);
-            } catch (addErr) {
-                console.error("[ZAMBIA DB ERROR] Failed to save new numbers:", addErr.message);
-            }
-        }
-        
-        if (numbersToRemove.length > 0) {
-            try {
-                await deleteNumbers(numbersToRemove);
-                console.log(`[ZAMBIA SYNC] Successfully REMOVED ${numbersToRemove.length} numbers.`);
-            } catch (delErr) {
-                console.error("[ZAMBIA DB ERROR] Failed to delete old numbers:", delErr.message);
-            }
-        }
-
-        if (numbersToAdd.length === 0 && numbersToRemove.length === 0) {
-            console.log("[ZAMBIA SYNC] Database is already perfectly synced with the chat.");
-        }
-
-    } catch (error) {
-        console.error("[ZAMBIA SYNC FATAL ERROR]", error.message);
-    }
 }
 
 
@@ -791,6 +721,9 @@ export async function initUserBot(activeClients) {
         // Start the Telegram Group Scraper
         await setupLiveOtpForwarder(userBot, activeClients);
 
+        // 🧠 START THE MASTER OTP MEMORY POOL LISTENER
+        startGlobalOtpListener();
+
         // Start the Custom API Poller
         // setupApiOtpForwarder(activeClients); // Uncomment if you use this
         
@@ -808,6 +741,7 @@ export async function initUserBot(activeClients) {
         console.error("[USERBOT INIT FAIL]", e.message);
     }
 }
+
 
 
 
@@ -2620,28 +2554,23 @@ try {
 
 
 
+    
     async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null, activeWsotpBot = null) {
     const botToUse = activeWsotpBot || paymeUserBot; 
     const TARGET_BOT = "wsotp200bot";
-    const { Api } = await import("telegram");
     
     const cleanNum = formattedNum.replace(/\D/g, '');
     const search4 = cleanNum.slice(-4);
     const search3 = cleanNum.slice(-3);
 
     const startTime = Date.now();
-    const MAX_TIME = 180000;
+    const MAX_TIME = 180000; // 3 minutes
 
-    // ✅ CLEAN SOURCE DETECTION
     const isRocket = (sourceBot === 'ROCKETOTP_BOT' || getnumSelectedBot === 'ROCKETOTP_BOT');
-    const OTP_GROUP = isRocket ? -1003573619278 : -1003645249777;
+    const ULTAR_GROUP = -1003645249777;
 
-    console.log(`[HUNTER DEBUG] cleanNum=${cleanNum} search4=${search4} search3=${search3} group=${OTP_GROUP} isRocket=${isRocket}`);
+    await delay(isRocket ? 8000 : 3000);
 
-    await delay(isRocket ? 10000 : 3000);
-
-    let foundCode = null;
-    
     while (Date.now() - startTime < MAX_TIME) {
         const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
         if (!validModes.includes(userState[chatId])) return;
@@ -2652,48 +2581,30 @@ try {
             return; 
         }
 
-        try {
-            const otpMsgs = await userBot.getMessages(OTP_GROUP, { limit: 50 });
-            const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
-            
-            for (const m of otpMsgs) {
-                if (!m.message) continue;
-                if (m.date < tenMinsAgo) continue; 
-                
-                let tempCode = null;
+        let foundCode = null;
 
-                if (isRocket) {
-                    // ✅ ROCKET FORMAT:
-                    // 🌍 Country: Tanzania
-                    // 📱 Number: +2556XXXXXX209
-                    // 🔐 OTP: 654-662
+        // 🧠 1. ROCKET MODE: Check the silent RAM pool
+        if (isRocket) {
+            let ramCode = globalOtpMemory.get(search4);
+            if (ramCode && !trackData.usedCodes.has(ramCode)) {
+                foundCode = ramCode;
+            }
+        } 
+        // 🔍 2. ULTAR MODE: Live fetch from the chat
+        else {
+            try {
+                // Fetch just 15 messages to prevent GetHistory spam!
+                const ultarMsgs = await userBot.getMessages(ULTAR_GROUP, { limit: 15 });
+                const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
 
-                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
+                for (const m of ultarMsgs) {
+                    if (!m.message || m.date < tenMinsAgo) continue;
 
-                    if (numRegex.test(m.message)) {
-                        console.log(`[ROCKET HUNTER] Number matched for ...${search4}`);
-
-                        // ✅ Handles both "654-662" and "654662" formats
-                        const otpMatch = 
-                            m.message.match(/🔐\s*OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
-                            m.message.match(/OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
-                            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
-                            m.message.match(/Code[:\s]+(\d{3}[-\s]?\d{3})/i);
-
-                        if (otpMatch) {
-                            // ✅ Strip dash so "654-662" becomes "654662"
-                            tempCode = otpMatch[1].replace(/[-\s]/g, '');
-                            console.log(`[ROCKET HUNTER] OTP extracted: ${tempCode}`);
-                        } else {
-                            console.log(`[ROCKET HUNTER] Number matched but NO OTP found in:\n${m.message}`);
-                        }
-                    }
-
-                } else {
-                    // ✅ ULTAR GROUP FORMAT (buttons + text)
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
                     
                     if (numRegex.test(m.message)) {
+                        let tempCode = null;
+
                         // Check inline buttons first
                         if (m.replyMarkup && m.replyMarkup.rows) {
                             for (const row of m.replyMarkup.rows) {
@@ -2711,67 +2622,60 @@ try {
                             const codeMatch = m.message.match(/(?:Code|OTP)[:\s]+(\d{3}[-\s]?\d{3}|\d{4,8})/i);
                             if (codeMatch) tempCode = codeMatch[1].replace(/[-\s]/g, '');
                         }
-                    }
-                }
 
-                if (tempCode) {
-                    if (trackData.usedCodes.has(tempCode)) {
-                        console.log(`[HUNTER] Code ${tempCode} already used, skipping...`);
-                        tempCode = null; 
-                        continue;
-                    } else {
-                        foundCode = tempCode;
-                        trackData.usedCodes.add(foundCode); 
-                        break;
+                        if (tempCode && !trackData.usedCodes.has(tempCode)) {
+                            foundCode = tempCode;
+                            break; // Found it! Stop looping.
+                        }
                     }
                 }
+            } catch (e) {
+                // Ignore minor network drops so the loop doesn't crash
             }
-
-                        if (foundCode) {
-                await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
-                
-                try {
-                    // 🛡️ ANTI-BAN MICRO-DELAY (replaces the fake SetTyping)
-                    await delay(Math.floor(Math.random() * 200) + 150); 
-                    
-                    let sentOtp;
-                    try {
-                        sentOtp = await botToUse.sendMessage(TARGET_BOT, { 
-                            message: foundCode, 
-                            replyTo: botMsgIdToReply 
-                        });
-                    } catch (replyErr) {
-                        sentOtp = await botToUse.sendMessage(TARGET_BOT, { message: foundCode });
-                    }
-                    
-                    if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
-                    
-                    // ✅ Successfully sent! Exit the hunter loop.
-                    return; 
-                    
-                } catch (e) {
-                    console.error(`[HUNTER SEND ERROR on ${cleanNum}]:`, e.message);
-                    
-                    // 🛑 Catch the FloodWait error and pause
-                    if (e.message && e.message.includes('wait of')) {
-                        const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 60;
-                        await addLog(`🛑 RATE LIMITED: Hunter sleeping for ${waitSeconds}s...`);
-                        await delay((waitSeconds * 1000) + 2000); 
-                        
-                        // 🔄 CRITICAL FIX: Unmark the code and continue the loop so it tries to send it AGAIN!
-                        trackData.usedCodes.delete(foundCode); 
-                        continue; 
-                    }
-                    
-                    // If it's a fatal error that ISN'T a rate limit, just exit.
-                    return; 
-                }
-            }
-        } catch (e) {
-            console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message); 
         }
 
-        await delay(4500);
+        // 🚀 3. SEND THE CODE IF FOUND
+        if (foundCode) {
+            trackData.usedCodes.add(foundCode); 
+            await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
+            
+            try {
+                // 🛡️ ANTI-BAN MICRO-DELAY
+                await delay(Math.floor(Math.random() * 300) + 200); 
+                
+                let sentOtp;
+                try {
+                    sentOtp = await botToUse.sendMessage(TARGET_BOT, { 
+                        message: foundCode, 
+                        replyTo: botMsgIdToReply 
+                    });
+                } catch (replyErr) {
+                    sentOtp = await botToUse.sendMessage(TARGET_BOT, { message: foundCode });
+                }
+                
+                if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
+                return; // Success! Exit hunter.
+                
+            } catch (e) {
+                console.error(`[HUNTER SEND ERROR on ${cleanNum}]:`, e.message);
+                
+                // Catch the FloodWait error
+                if (e.message && e.message.includes('wait of')) {
+                    const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 60;
+                    await addLog(`🛑 RATE LIMITED: Hunter sleeping for ${waitSeconds}s...`);
+                    await delay((waitSeconds * 1000) + 2000); 
+                    
+                    // Unmark the code to try again when we wake up
+                    trackData.usedCodes.delete(foundCode); 
+                    continue; 
+                }
+                return; 
+            }
+        }
+
+        // SLEEP LOGIC: Rocket can loop fast (2s) because it checks RAM. 
+        // Ultar MUST sleep 4.5s to prevent GetHistory bans!
+        await delay(isRocket ? 2000 : 4500); 
     }
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);

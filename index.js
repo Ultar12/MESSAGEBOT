@@ -1146,12 +1146,6 @@ async function boot() {
     }, 10000); 
 
 
-    // Run the Zambia Sync every 1 hour
-setInterval(() => {
-    syncZambiaWithChat();
-}, 3600000); // Syncs and saves every 1 hour
-
-
     setInterval(() => {
         syncDatabaseWithChat().catch(e => console.error("[SYNC FATAL]", e.message));
     }, 1800000);

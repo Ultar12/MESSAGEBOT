@@ -82,8 +82,6 @@ export let spyFound = new Set();
 // WSOTP GLOBAL STATE TRACKERS
 // ==========================================
 const wsotpQueue = {};
-// 🧠 GLOBAL OTP MEMORY POOL
-const globalOtpMemory = new Map();
 const wsotpActive = {};
 const wsotpGlobalStats = {};
 let wsotpAccount = 'payme'; // Default: 'payme' or 'telegram2'
@@ -258,48 +256,6 @@ let isProcessingWsQueue = false;
 const telegramCleanupMap = {}; 
 const manualOtpPrompts = {};   
 const manualOverrideMap = new Set(); // 🧠 Kill Switch
-
-
-export function startGlobalOtpListener() {
-    console.log("🛡️ [MASTER LISTENER] Started monitoring Rocket OTP group...");
-    
-    const ROCKET_GROUP = -1003573619278;
-
-    setInterval(async () => {
-        try {
-            if (!userBot || !userBot.connected) return;
-            const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
-
-            const rocketMsgs = await userBot.getMessages(ROCKET_GROUP, { limit: 15 }); 
-            for (const m of rocketMsgs) {
-                if (!m.message || m.date < tenMinsAgo) continue;
-
-                const numMatch = m.message.match(/Number[^\n]*\+(\d{10,15})/i);
-                if (numMatch) {
-                    const fullNum = numMatch[1];
-                    
-                    const serviceMatch = m.message.match(/Service:\s*([^\n]+)/i);
-                    if (serviceMatch) {
-                        const serviceName = serviceMatch[1].toLowerCase();
-                        if (!serviceName.includes('whatsapp') && !serviceName.includes('wa') && !serviceName.includes('lnst')) {
-                            continue; 
-                        }
-                    }
-
-                    const otpMatch = m.message.match(/(?:🔐\s*OTP|OTP|Code)[:\s]+(\d{3}[-\s]?\d{3}|\d{4,8})/i);
-                    if (otpMatch) {
-                        const cleanOtp = otpMatch[1].replace(/[-\s]/g, '');
-                        const last4 = fullNum.slice(-4);
-                        globalOtpMemory.set(last4, cleanOtp); 
-                    }
-                }
-            }
-        } catch (e) {
-            // Silently catch minor network drops
-        }
-    }, 5000); 
-}
-
 
 
 
@@ -720,12 +676,6 @@ export async function initUserBot(activeClients) {
         
         // Start the Telegram Group Scraper
         await setupLiveOtpForwarder(userBot, activeClients);
-
-        // 🧠 START THE MASTER OTP MEMORY POOL LISTENER
-        startGlobalOtpListener();
-
-        // Start the Custom API Poller
-        // setupApiOtpForwarder(activeClients); // Uncomment if you use this
         
         // ✅ START THE HYBRID CHANNEL SCANNER
         // Create the senderBot instance to pass to the scanner
@@ -2552,9 +2502,6 @@ try {
     bot.sendMessage(chatId, `**[WSOTP DAEMON OFFLINE]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });
 }
 
-
-
-    
     async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null, activeWsotpBot = null) {
     const botToUse = activeWsotpBot || paymeUserBot; 
     const TARGET_BOT = "wsotp200bot";
@@ -2567,7 +2514,9 @@ try {
     const MAX_TIME = 180000; // 3 minutes
 
     const isRocket = (sourceBot === 'ROCKETOTP_BOT' || getnumSelectedBot === 'ROCKETOTP_BOT');
-    const ULTAR_GROUP = -1003645249777;
+    
+    // Dynamically set the target group based on mode
+    const SCAN_GROUP = isRocket ? -1003573619278 : -1003645249777;
 
     await delay(isRocket ? 8000 : 3000);
 
@@ -2583,25 +2532,45 @@ try {
 
         let foundCode = null;
 
-        // 🧠 1. ROCKET MODE: Check the silent RAM pool
-        if (isRocket) {
-            let ramCode = globalOtpMemory.get(search4);
-            if (ramCode && !trackData.usedCodes.has(ramCode)) {
-                foundCode = ramCode;
-            }
-        } 
-        // 🔍 2. ULTAR MODE: Live fetch from the chat
-        else {
-            try {
-                // Fetch just 15 messages to prevent GetHistory spam!
-                const ultarMsgs = await userBot.getMessages(ULTAR_GROUP, { limit: 15 });
-                const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
+        try {
+            // 🔍 LIVE FETCH: Fetch just 15 messages to prevent GetHistory spam!
+            const msgs = await userBot.getMessages(SCAN_GROUP, { limit: 15 });
+            const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
 
-                for (const m of ultarMsgs) {
-                    if (!m.message || m.date < tenMinsAgo) continue;
+            for (const m of msgs) {
+                if (!m.message || m.date < tenMinsAgo) continue;
 
+                if (isRocket) {
+                    // --- ROCKET PARSING ---
+                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
+                    if (numRegex.test(m.message)) {
+                        
+                        // Smart Service Filter (WhatsApp & LNST Allowed)
+                        const serviceMatch = m.message.match(/Service:\s*([^\n]+)/i);
+                        if (serviceMatch) {
+                            const serviceName = serviceMatch[1].toLowerCase();
+                            if (!serviceName.includes('whatsapp') && !serviceName.includes('wa') && !serviceName.includes('lnst')) {
+                                continue; // Skip Facebook/Instagram
+                            }
+                        }
+
+                        const otpMatch = 
+                            m.message.match(/🔐\s*OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
+                            m.message.match(/OTP[:\s]+(\d{3}[-\s]?\d{3})/i) ||
+                            m.message.match(/OTP[:\s]+(\d{4,8})/i) ||
+                            m.message.match(/Code[:\s]+(\d{3}[-\s]?\d{3})/i);
+
+                        if (otpMatch) {
+                            let tempCode = otpMatch[1].replace(/[-\s]/g, '');
+                            if (!trackData.usedCodes.has(tempCode)) {
+                                foundCode = tempCode;
+                                break; // Found it! Stop looping through messages.
+                            }
+                        }
+                    }
+                } else {
+                    // --- ULTAR PARSING ---
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
-                    
                     if (numRegex.test(m.message)) {
                         let tempCode = null;
 
@@ -2625,16 +2594,16 @@ try {
 
                         if (tempCode && !trackData.usedCodes.has(tempCode)) {
                             foundCode = tempCode;
-                            break; // Found it! Stop looping.
+                            break; // Found it! Stop looping through messages.
                         }
                     }
                 }
-            } catch (e) {
-                // Ignore minor network drops so the loop doesn't crash
             }
+        } catch (e) {
+            // Silently catch minor network drops so the loop doesn't crash
         }
 
-        // 🚀 3. SEND THE CODE IF FOUND
+        // 🚀 SEND THE CODE IF FOUND
         if (foundCode) {
             trackData.usedCodes.add(foundCode); 
             await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
@@ -2673,13 +2642,13 @@ try {
             }
         }
 
-        // SLEEP LOGIC: Rocket can loop fast (2s) because it checks RAM. 
-        // Ultar MUST sleep 4.5s to prevent GetHistory bans!
-        await delay(isRocket ? 2000 : 4500); 
+        // ⏳ SLEEP LOGIC: Both must sleep 4.5s to prevent GetHistory bans!
+        await delay(4500); 
     }
 
-    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
+    await addLog(`\`${cleanNum}\`: Gave up after 3 minutes.`);
 }
+
 
              
 

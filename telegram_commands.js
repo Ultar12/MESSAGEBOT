@@ -83,6 +83,7 @@ export let spyFound = new Set();
 // ==========================================
 const wsotpQueue = {};
 const wsotpActive = {};
+const wsotpGlobalStats = {};
 let wsotpAccount = 'payme'; // Default: 'payme' or 'telegram2'
 let wsotpWarnedNoWa = false;
 let getnumSelectedBot = null; // 'ROCKETOTP_BOT', 'LolzFack_bot', etc.
@@ -2282,60 +2283,25 @@ try {
 
     wsotpWarnedNoWa = false; 
 
-    // --- LIVE DASHBOARD INITIALIZATION ---
-    let stats = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [] };
-    let statsMsg = await bot.sendMessage(chatId, `[INITIALIZING LIVE DASHBOARD...]`, { parse_mode: 'Markdown' });
+        // --- SILENT TRACKER INITIALIZATION ---
+    wsotpGlobalStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [], left: 0, activeCount: 0, bgCount: 0 };
+    let stats = wsotpGlobalStats[chatId];
 
     let activeTracker = {};     
     let backgroundTracker = {}; 
 
-    // 🛑 RATE LIMIT THROTTLE ENGINE 
-    let lastStatEdit = 0;
-    let editPending = false;
-
-    const forceUpdateStats = async () => {
-        const left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
-        const activeCount = Object.keys(activeTracker).length;
-        const bgCount = Object.keys(backgroundTracker).length;
-        const logsText = stats.logs.join('\n');
-        
-        const txt = 
-            `**[WSOTP LIVE DASHBOARD]**\n\n` +
-            `Queue Remaining: ${left}\n` +
-            `Active Window: ${activeCount} / 100\n` +
-            `Background Waiting: ${bgCount}\n` +
-            `Total Sent to Bot: ${stats.sent}\n` +
-            `Current In Progress (x2): ${stats.inProgress}\n` +
-            `Completed/Paid: ${stats.completed}\n` +
-            `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
-            `Trash (Deleted): ${stats.trash}\n\n` +
-            `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
-            `_Smart Retry Engine active..._`;
-        try {
-            await bot.editMessageText(txt, { chat_id: chatId, message_id: statsMsg.message_id, parse_mode: 'Markdown' });
-        } catch(e) {} 
-    };
-
+    // Silently updates variables in memory instead of editing a Telegram message
     const updateStats = async () => {
-        const now = Date.now();
-        if (now - lastStatEdit >= 5000) {
-            lastStatEdit = now;
-            await forceUpdateStats();
-        } else if (!editPending) {
-            editPending = true;
-            setTimeout(() => {
-                lastStatEdit = Date.now();
-                editPending = false;
-                forceUpdateStats();
-            }, 3000 - (now - lastStatEdit));
-        }
+        stats.left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+        stats.activeCount = Object.keys(activeTracker).length;
+        stats.bgCount = Object.keys(backgroundTracker).length;
     };
 
     const addLog = async (msg) => {
         stats.logs.unshift(msg);
         if (stats.logs.length > 6) stats.logs.pop(); 
-     
     };
+
 
     // 🧠 ULTIMATE DAEMON: Stays awake for all WSOTP modes
     while (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'].includes(userState[chatId])) {
@@ -7993,6 +7959,39 @@ const cleanNumbers = matches.map(n => {
                     } 
                 });
                 break;
+
+        
+            case "stats":
+                if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+                
+                // ONLY respond if the WSOTP/Getnu engine is actively running. 
+                // If it is off, break out silently so it ignores the word.
+                if (!wsotpActive[chatId] || !wsotpGlobalStats[chatId]) {
+                    break; 
+                }
+                
+                const stats = wsotpGlobalStats[chatId];
+                // Force a quick tally update before displaying
+                stats.left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+                
+                const logsText = stats.logs.join('\n');
+                
+                const txt = 
+                    `**[WSOTP LIVE DASHBOARD]**\n\n` +
+                    `Queue Remaining: ${stats.left}\n` +
+                    `Active Window: ${stats.activeCount} / 100\n` +
+                    `Background Waiting: ${stats.bgCount}\n` +
+                    `Total Sent to Bot: ${stats.sent}\n` +
+                    `Current In Progress (x2): ${stats.inProgress}\n` +
+                    `Completed/Paid: ${stats.completed}\n` +
+                    `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
+                    `Trash (Deleted): ${stats.trash}\n\n` +
+                    `**Recent Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
+                    `_Engine is running silently in the background..._`;
+                    
+                bot.sendMessage(chatId, txt, { parse_mode: 'Markdown' });
+                break;
+ 
 
             case "List All":
                 deleteUserCommand(bot, msg);

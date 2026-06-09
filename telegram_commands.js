@@ -2354,7 +2354,7 @@ try {
             if (isWaActive) {
                 stats.sent++;
                 try {
-                    
+                    await delay(Math.floor(Math.random() * 200) + 150);
                     const sentMsg = await activeWsotpBot.sendMessage(TARGET_BOT, { message: formattedNum });
                     
                     activeTracker[formattedNum] = {
@@ -2753,14 +2753,22 @@ try {
                 }
                 return; 
             }
-        } catch (e) {
-            console.error(`[HUNTER ERROR on ${cleanNum}]:`, e.message); 
-        }
+             } catch (e) {
+                    console.error(`[HUNTER SEND ERROR]:`, e.message);
+                    
+                    // 🛑 Catch the FloodWait error and pause
+                    if (e.message.includes('wait of')) {
+                        const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 60;
+                        await addLog(`RATE LIMITED: Hunter sleeping for ${waitSeconds}s...`);
+                        await delay((waitSeconds * 1000) + 2000); // Wait the penalty time + 2s buffer
+                    }
+                }
+
 
         await delay(2500);
     }
 
-    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
+    await addLog(`\`${cleanNum}\`: Gave up after 3 minutes.`);
 }
 
 

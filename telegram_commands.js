@@ -1940,32 +1940,29 @@ bot.on('callback_query', async (query) => {
             const targetBot = targetBotMap[action];
             if (!targetBot) return;
 
-            // Step B: Send Initial Trigger Commands (Dual)
+                        // Step B: Send Initial Trigger Commands (Telegram2 Only)
             if (action.startsWith('target_')) {
                 await bot.answerCallbackQuery(query.id);
                 const startCmd = targetBot === "LolzFack_bot" ? "Get Number" : "/start";
                 
-                // Fire Primary
-                await userBot.sendMessage(targetBot, { message: startCmd });
-                
-                // Fire Secondary
-                if (telegram2UserBot) {
-                    try {
-                        await ensureTelegram2Connected();
-                        await telegram2UserBot.sendMessage(targetBot, { message: startCmd });
-                    } catch(e) { console.log("Telegram2 Trigger Error:", e.message); }
+                try {
+                    await ensureTelegram2Connected();
+                    await telegram2UserBot.sendMessage(targetBot, { message: startCmd });
+                } catch(e) { 
+                    return bot.sendMessage(chatId, `[ERROR] Telegram2 Trigger Error: ${e.message}`); 
                 }
 
-                return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot} (Dual-Scraping Mode).\nSelect country/options on BOTH accounts if needed, then click below to start:`, {
+                return bot.sendMessage(chatId, `[SYSTEM] Trigger sent to ${targetBot} (Telegram2 Engine).\nSelect country/options on your Telegram2 account if needed, then click below to start:`, {
                     reply_markup: { inline_keyboard: [[{ text: `START EXTRACTION (${amount})`, callback_data: `start_scrape_${targetBot.toLowerCase().replace('_bot', '').replace('bot', '')}_${amount}` }]] }
                 });
             }
             
             // Step C: Run Scraper Loop
             await bot.answerCallbackQuery(query.id);
-            const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Dual-Scraping ${amount} numbers from ${targetBot}...`);
+            const statusMsg = await bot.sendMessage(chatId, `[LIVE ENGINE] Telegram2 Scraping ${amount} numbers from ${targetBot}...`);
 
             try {
+                await ensureTelegram2Connected(); // Guarantee T2 is alive before loop
                 const activeFolders = Object.keys(clients).filter(f => clients[f]);
                 const verifySock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
@@ -1996,7 +1993,6 @@ bot.on('callback_query', async (query) => {
                         
                         if (outMode === 'bot') {
                             const botPayload = raw.replace(/^0/, '');
-
                             getnumSelectedBot = targetBot;
                             
                             // INJECT DIRECTLY & INSTANTLY
@@ -2015,10 +2011,9 @@ bot.on('callback_query', async (query) => {
                             }
                         }
                         
-                        bot.editMessageText(`[DUAL ENGINE] Processed: ${verified}/${amount}${outMode === 'bot' ? '\nInjecting into Live Dashboard...' : ''}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
+                        bot.editMessageText(`[TELEGRAM2 ENGINE] Processed: ${verified}/${amount}${outMode === 'bot' ? '\nInjecting into Live Dashboard...' : ''}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(()=>{});
                     };
 
-                    // Execute without WA Check if no bot is connected
                     if (!verifySock) {
                         await executeOutput();
                     } else {
@@ -2033,14 +2028,8 @@ bot.on('callback_query', async (query) => {
                     attempts++;
                     let initialVerified = verified;
 
-                    // 🚀 PARALLEL FETCH: Pulling from both accounts concurrently
-                    const fetch1 = userBot.getMessages(targetBot, { limit: 3 }).catch(() => []);
-                    const fetch2 = (telegram2UserBot && telegram2UserBot.connected) 
-                        ? telegram2UserBot.getMessages(targetBot, { limit: 3 }).catch(() => []) 
-                        : Promise.resolve([]);
-
-                    const [msgs1, msgs2] = await Promise.all([fetch1, fetch2]);
-                    const allMsgs = [...msgs1, ...msgs2];
+                    // 🚀 PULL STRICTLY FROM TELEGRAM 2
+                    const allMsgs = await telegram2UserBot.getMessages(targetBot, { limit: 3 }).catch(() => []);
 
                     for (const msg of allMsgs) {
                         const text = msg.message || "";
@@ -2067,11 +2056,11 @@ bot.on('callback_query', async (query) => {
 
                     if (verified === initialVerified) emptyRefreshes++;
                     if (emptyRefreshes >= 15) {
-                        await bot.sendMessage(chatId, `⚠️ **Stopped:** No new numbers found after 15 refreshes. Bots may be empty.`);
+                        await bot.sendMessage(chatId, `⚠️ **Stopped:** No new numbers found after 15 refreshes. Bot may be empty.`);
                         break;
                     }
 
-                    // 🚀 PARALLEL CLICK: Clicks pagination on both bots simultaneously
+                    // 🚀 CLICK PAGINATION ON TELEGRAM 2
                     const clickPagination = async (client, msgs) => {
                         if (!client) return false;
                         for (const msg of msgs) {
@@ -2094,28 +2083,20 @@ bot.on('callback_query', async (query) => {
                         return false;
                     };
 
-                    const [clicked1, clicked2] = await Promise.all([
-                        clickPagination(userBot, msgs1),
-                        clickPagination(telegram2UserBot && telegram2UserBot.connected ? telegram2UserBot : null, msgs2)
-                    ]);
-
-                    // Faster cycle times since Rocket yields 2 numbers per scrape
-                    (clicked1 || clicked2) ? await delay(2500) : await delay(1500);
+                    const clicked = await clickPagination(telegram2UserBot, allMsgs);
+                    clicked ? await delay(2000) : await delay(1500);
                 }
                 
                 if (outMode === 'chat' && currentBatch.length > 0) {
                     await bot.sendMessage(chatId, `[BATCH - FINAL]\n${currentBatch.join('\n')}`, { parse_mode: 'Markdown' });
                 }
                 
-                bot.sendMessage(chatId, `[DONE] Dual-Extraction complete. Processed ${verified} numbers.`);
+                bot.sendMessage(chatId, `[DONE] Extraction complete. Processed ${verified} numbers.`);
                 try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch(e){}
                 
             } catch (e) { bot.sendMessage(chatId, "[ERROR] " + e.message); }
             return;
-        }
 
-     });
-        // --- END GETNU SYSTEM ---
 
 
     
@@ -2249,9 +2230,6 @@ bot.onText(/\/wsotp/, async (msg) => {
 
 
 
-// ==========================================
-// 1. THE CONTINUOUS STREAMING ENGINE
-// ==========================================
 async function processWsotpQueue(chatId) {
     if (wsotpActive[chatId]) return; 
     wsotpActive[chatId] = true;
@@ -2259,29 +2237,19 @@ async function processWsotpQueue(chatId) {
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
 
-    // Select which account to use based on /acc setting
-let activeWsotpBot = paymeUserBot;
+    // Lock to Payme Account exclusively
+    let activeWsotpBot = paymeUserBot;
 
-try {
-    if (wsotpAccount === 'telegram2') {
-        if (!telegram2UserBot) {
-            bot.sendMessage(chatId, `[ERROR] Telegram2 not configured. Falling back to Payme.`);
-            wsotpAccount = 'payme';
-        } else {
-            await ensureTelegram2Connected();
-            activeWsotpBot = telegram2UserBot;
-        }
-    } else {
+    try {
         await ensurePaymeConnected();
-        activeWsotpBot = paymeUserBot;
+    } catch (e) {
+        bot.sendMessage(chatId, `[ERROR] Failed to connect Payme account: ${e.message}`);
+        wsotpActive[chatId] = false;
+        return;
     }
-} catch (e) {
-    bot.sendMessage(chatId, `[ERROR] Failed to connect WSOTP account: ${e.message}`);
-    wsotpActive[chatId] = false;
-    return;
-}
 
     wsotpWarnedNoWa = false; 
+
 
         // --- SILENT TRACKER INITIALIZATION ---
     wsotpGlobalStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [], left: 0, activeCount: 0, bgCount: 0 };
@@ -3634,9 +3602,8 @@ try {
         }
     });
 
-
-    // ==========================================
-// RESTART DYNO COMMAND
+  // ==========================================
+// RESTART DYNO COMMAND (GRACEFUL)
 // ==========================================
 bot.onText(/\/re/, async (msg) => {
     if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
@@ -3650,104 +3617,38 @@ bot.onText(/\/re/, async (msg) => {
     if (!isUserAdmin && !isSubAdmin) return;
 
     try {
-        await bot.sendMessage(chatId, "[SYSTEM] Restart sequence initiated. The bot is shutting down and will be back online in ~15-30 seconds.");
-        
+        await bot.sendMessage(chatId, "[SYSTEM] Restart sequence initiated. Saving sessions and shutting down safely...");
         console.log("[SYSTEM] Admin triggered manual restart via /re command.");
 
-        // Wait 2 seconds to ensure the Telegram message sends before killing the process
+        // 1. Gracefully close Telegram Userbots
+        try {
+            if (typeof userBot !== 'undefined' && userBot?.connected) await userBot.disconnect();
+            if (typeof paymeUserBot !== 'undefined' && paymeUserBot?.connected) await paymeUserBot.disconnect();
+            if (typeof telegram2UserBot !== 'undefined' && telegram2UserBot?.connected) await telegram2UserBot.disconnect();
+        } catch (e) { console.log("Minor error closing Telegram bots:", e.message); }
+
+        // 2. Gracefully close WhatsApp Baileys sockets (prevents session corruption)
+        if (typeof clients !== 'undefined') {
+            for (const folder in clients) {
+                if (clients[folder]) {
+                    try {
+                        clients[folder].end(undefined); 
+                    } catch (e) {}
+                }
+            }
+        }
+
+        // 3. Exit with Code 0 (Clean Shutdown)
         setTimeout(() => {
-            process.exit(1); 
-        }, 2000);
+            console.log("[SYSTEM] Safely terminating process...");
+            process.exit(0); 
+        }, 2500);
 
     } catch (error) {
         console.error("[RESTART ERROR]", error.message);
         bot.sendMessage(chatId, "[ERROR] Failed to initiate restart: " + error.message);
     }
 });
-
-
-
-        // --- /remgrp [@username] : Force-remove a user from BOTH the Group and Channel ---
-    bot.onText(/\/remgrp\s+(.+)/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-
-        // Authorization check
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
-
-        let targetUser = match[1].trim();
-        
-        // Ensure the @ symbol is there for GramJS to resolve it properly
-        if (!targetUser.startsWith('@') && isNaN(targetUser)) {
-            targetUser = '@' + targetUser;
-        }
-
-        // --- CONFIGURATION ---
-        const TARGET_GROUP = "-1003645249777";   // Your ULTAR_OTP_GROUP_ID
-        const TARGET_CHANNEL = "-1003844497723"; // Your Main Channel ID
-
-        if (!userBot || !userBot.connected) {
-            return bot.sendMessage(chatId, "❌ [ERROR] UserBot is not connected. I need the UserBot active to execute this.");
-        }
-
-        let statusMsg = await bot.sendMessage(chatId, `⏳ Resolving ${targetUser} and executing removal protocol...`);
-
-        try {
-            // In the Telegram API, "kicking" a user means restricting their right to view messages.
-            const banPayload = new Api.ChatBannedRights({
-                untilDate: 0,
-                viewMessages: true // True means the right is RESTRICTED (they are kicked/banned)
-            });
-
-            let groupStatus = "Skipped";
-            let channelStatus = "Skipped";
-
-            // 1. Remove from Main Group
-            try {
-                await userBot.invoke(new Api.channels.EditBanned({
-                    channel: TARGET_GROUP,
-                    participant: targetUser,
-                    bannedRights: banPayload
-                }));
-                groupStatus = "Successfully Removed";
-            } catch (gErr) {
-                groupStatus = `Failed: _${gErr.message}_`;
-            }
-
-            // 2. Remove from Main Channel
-            try {
-                await userBot.invoke(new Api.channels.EditBanned({
-                    channel: TARGET_CHANNEL,
-                    participant: targetUser,
-                    bannedRights: banPayload
-                }));
-                channelStatus = "Successfully Removed";
-            } catch (cErr) {
-                channelStatus = `Failed: _${cErr.message}_`;
-            }
-
-            // Final Report
-            bot.editMessageText(
-                `**[REMOVAL REPORT: ${targetUser}]**\n\n` +
-                `**Main Group:**\n${groupStatus}\n\n` +
-                `**Main Channel:**\n${channelStatus}`, 
-                { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id,
-                    parse_mode: 'Markdown'
-                }
-            );
-
-        } catch (e) {
-            console.error("RemGrp Error:", e);
-            bot.editMessageText(`**[FATAL ERROR]** Failed to process ${targetUser}:\n_${e.message}_`, { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id,
-                parse_mode: 'Markdown'
-            });
-        }
-    });
 
     
 
@@ -7971,7 +7872,7 @@ const cleanNumbers = matches.map(n => {
                 break;
 
         
-            case "stats":
+            case "Stats":
                 if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
                 
                 // ONLY respond if the WSOTP/Getnu engine is actively running. 

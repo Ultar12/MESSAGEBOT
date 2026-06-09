@@ -2452,7 +2452,7 @@ try {
                     ) {
                         
                         const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
-                        try { await paymeUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+                        try { await activeWsotpBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
 
                         // 🧹 NUKE MANUAL TG MESSAGES
                         if (telegramCleanupMap[botNum]) {
@@ -2553,7 +2553,7 @@ try {
                             // ⚡ TRIGGER LOGIC: Auto scrapes group. Manual waits for user.
                             if (isErrorCode) {
                                 await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
-                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, getnumSelectedBot);
+                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, getnumSelectedBot, activeWsotpBot);
                             } else if (!trackData.hunterSpawned) {
                                 trackData.hunterSpawned = true;
                                 if (isAuto) {

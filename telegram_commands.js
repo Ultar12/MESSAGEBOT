@@ -2305,6 +2305,7 @@ try {
 
         // 🧠 ULTIMATE DAEMON: Stays awake for all WSOTP modes
     while (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'].includes(userState[chatId])) {
+        let instantNext = false;
         const currentMode = userState[chatId];
         const isAuto = (currentMode === 'WSOTP_AUTO_MODE' || currentMode === 'WSOTP_FILE_MODE');
 
@@ -2353,8 +2354,6 @@ try {
             if (isWaActive) {
                 stats.sent++;
                 try {
-                    await activeWsotpBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                    await delay(300); 
                     
                     const sentMsg = await activeWsotpBot.sendMessage(TARGET_BOT, { message: formattedNum });
                     
@@ -2430,6 +2429,7 @@ try {
 
                 if (isNewUpdate) {
                     trackData.seenUpdates.add(updateKey);
+                    instantNext = true;
                     
                     const textLower = text.toLowerCase();
                     const isErrorCode = text.includes("🔴") || textLower.includes("error code");
@@ -2571,7 +2571,7 @@ try {
             }
         } catch (readErr) {}
 
-        // --- 3. BACKGROUND MEMORY MANAGEMENT ---
+                // --- 3. BACKGROUND MEMORY MANAGEMENT ---
         const nowTime = Date.now();
         let stalledCount = 0;
         
@@ -2604,8 +2604,15 @@ try {
             }
         }
 
-        await delay(1500); 
-    }
+        // 🚀 4. THE DYNAMIC SLEEP (Replaces await delay(1500))
+        if (!instantNext) {
+            // The bot did NOT reply this cycle. Sleep briefly so we don't spam the Telegram API.
+            await delay(500); 
+        }
+        // If instantNext IS true, this does nothing and the loop restarts in 0ms!
+
+    } // <-- End of the while loop
+
 
     wsotpActive[chatId] = false;
     bot.sendMessage(chatId, `**[WSOTP DAEMON OFFLINE]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });

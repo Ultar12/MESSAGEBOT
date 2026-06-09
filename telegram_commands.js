@@ -3658,8 +3658,8 @@ try {
     });
 
 
-    // ==========================================
-// RESTART DYNO COMMAND
+// ==========================================
+// RESTART DYNO COMMAND (GRACEFUL)
 // ==========================================
 bot.onText(/\/re/, async (msg) => {
     if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
@@ -3673,14 +3673,32 @@ bot.onText(/\/re/, async (msg) => {
     if (!isUserAdmin && !isSubAdmin) return;
 
     try {
-        await bot.sendMessage(chatId, "[SYSTEM] Restart sequence initiated. The bot is shutting down and will be back online in ~15-30 seconds.");
-        
+        await bot.sendMessage(chatId, "[SYSTEM] Restart sequence initiated. Saving sessions and shutting down safely...");
         console.log("[SYSTEM] Admin triggered manual restart via /re command.");
 
-        // Wait 2 seconds to ensure the Telegram message sends before killing the process
+        // 1. Gracefully close Telegram Userbots
+        try {
+            if (typeof userBot !== 'undefined' && userBot?.connected) await userBot.disconnect();
+            if (typeof paymeUserBot !== 'undefined' && paymeUserBot?.connected) await paymeUserBot.disconnect();
+            if (typeof telegram2UserBot !== 'undefined' && telegram2UserBot?.connected) await telegram2UserBot.disconnect();
+        } catch (e) { console.log("Minor error closing Telegram bots:", e.message); }
+
+        // 2. Gracefully close WhatsApp Baileys sockets (prevents session corruption)
+        if (typeof clients !== 'undefined') {
+            for (const folder in clients) {
+                if (clients[folder]) {
+                    try {
+                        clients[folder].end(undefined); 
+                    } catch (e) {}
+                }
+            }
+        }
+
+        // 3. Exit with Code 0 (Clean Shutdown)
         setTimeout(() => {
-            process.exit(1); 
-        }, 2000);
+            console.log("[SYSTEM] Safely terminating process...");
+            process.exit(0); 
+        }, 2500);
 
     } catch (error) {
         console.error("[RESTART ERROR]", error.message);
@@ -3689,88 +3707,6 @@ bot.onText(/\/re/, async (msg) => {
 });
 
 
-
-        // --- /remgrp [@username] : Force-remove a user from BOTH the Group and Channel ---
-    bot.onText(/\/remgrp\s+(.+)/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-
-        // Authorization check
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
-
-        let targetUser = match[1].trim();
-        
-        // Ensure the @ symbol is there for GramJS to resolve it properly
-        if (!targetUser.startsWith('@') && isNaN(targetUser)) {
-            targetUser = '@' + targetUser;
-        }
-
-        // --- CONFIGURATION ---
-        const TARGET_GROUP = "-1003645249777";   // Your ULTAR_OTP_GROUP_ID
-        const TARGET_CHANNEL = "-1003844497723"; // Your Main Channel ID
-
-        if (!userBot || !userBot.connected) {
-            return bot.sendMessage(chatId, "❌ [ERROR] UserBot is not connected. I need the UserBot active to execute this.");
-        }
-
-        let statusMsg = await bot.sendMessage(chatId, `⏳ Resolving ${targetUser} and executing removal protocol...`);
-
-        try {
-            // In the Telegram API, "kicking" a user means restricting their right to view messages.
-            const banPayload = new Api.ChatBannedRights({
-                untilDate: 0,
-                viewMessages: true // True means the right is RESTRICTED (they are kicked/banned)
-            });
-
-            let groupStatus = "Skipped";
-            let channelStatus = "Skipped";
-
-            // 1. Remove from Main Group
-            try {
-                await userBot.invoke(new Api.channels.EditBanned({
-                    channel: TARGET_GROUP,
-                    participant: targetUser,
-                    bannedRights: banPayload
-                }));
-                groupStatus = "Successfully Removed";
-            } catch (gErr) {
-                groupStatus = `Failed: _${gErr.message}_`;
-            }
-
-            // 2. Remove from Main Channel
-            try {
-                await userBot.invoke(new Api.channels.EditBanned({
-                    channel: TARGET_CHANNEL,
-                    participant: targetUser,
-                    bannedRights: banPayload
-                }));
-                channelStatus = "Successfully Removed";
-            } catch (cErr) {
-                channelStatus = `Failed: _${cErr.message}_`;
-            }
-
-            // Final Report
-            bot.editMessageText(
-                `**[REMOVAL REPORT: ${targetUser}]**\n\n` +
-                `**Main Group:**\n${groupStatus}\n\n` +
-                `**Main Channel:**\n${channelStatus}`, 
-                { 
-                    chat_id: chatId, 
-                    message_id: statusMsg.message_id,
-                    parse_mode: 'Markdown'
-                }
-            );
-
-        } catch (e) {
-            console.error("RemGrp Error:", e);
-            bot.editMessageText(`**[FATAL ERROR]** Failed to process ${targetUser}:\n_${e.message}_`, { 
-                chat_id: chatId, 
-                message_id: statusMsg.message_id,
-                parse_mode: 'Markdown'
-            });
-        }
-    });
 
     
 
@@ -4146,83 +4082,7 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
     });
 
 
-    bot.onText(/^\/meta/i, async (msg) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
-
-        // 1. Identify which account to use (Payme or Main)
-        const sessionKey = (activeTaskAccount === 'payme') ? process.env.PAYME_SESSION_FOLDER : userId;
-        const activeSock = clients[sessionKey] || Object.values(clients)[0];
-
-        if (!activeSock) {
-            return bot.sendMessage(chatId, '[ERROR] No connected WhatsApp session found. Please login first.');
-        }
-
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, '[ERROR] Please reply to a .txt file with /meta');
-        }
-
-        const doc = msg.reply_to_message.document;
-        const fileLink = await bot.getFileLink(doc.file_id);
-        const response = await fetch(fileLink);
-        const rawText = await response.text();
-
-        const allNumbers = rawText.match(/\d{7,15}/g) || [];
-        const uniqueNumbers = [...new Set(allNumbers)];
-
-        if (uniqueNumbers.length === 0) return bot.sendMessage(chatId, '[ERROR] No numbers found in file.');
-
-        let statusMsg = await bot.sendMessage(chatId, `[INITIATING] Checking ${uniqueNumbers.length} numbers for Meta Verification...`);
-
-        let verifiedCount = 0;
-        let processedCount = 0;
-
-        for (let num of uniqueNumbers) {
-            try {
-                processedCount++;
-                let jid = num.replace(/\D/g, '');
-                if (!jid.includes('@s.whatsapp.net')) jid += '@s.whatsapp.net';
-
-                // 2. REAL METADATA CHECK
-                const [result] = await activeSock.onWhatsApp(jid);
-                
-                if (result && result.exists) {
-                    const profile = await activeSock.getBusinessProfile(jid);
-                    
-                    // If Meta has officially verified the business name
-                    if (profile && profile.verifiedName) {
-                        verifiedCount++;
-                        // ✅ INSTANT DELIVERY: Send the match immediately
-                        await bot.sendMessage(chatId, `**VERIFIED MATCH:** \`${num}\`\nName: ${profile.verifiedName}`, { parse_mode: 'Markdown' });
-                    }
-                }
-                
-                // 3. LIVE PROGRESS HEARTBEAT: Updates every 20 numbers
-                if (processedCount % 20 === 0 || processedCount === uniqueNumbers.length) {
-                    await bot.editMessageText(
-                        `[SCANNING] Progress: ${processedCount} / ${uniqueNumbers.length}\n` +
-                        `Verified Matches Found: ${verifiedCount}\n\n` +
-                        `Status: Processing 4k list safely...`, 
-                        { chat_id: chatId, message_id: statusMsg.message_id }
-                    ).catch(() => {}); 
-                }
-
-                // 4. MANDATORY ANTI-BAN DELAY (1.2s per check)
-                await new Promise(r => setTimeout(r, 1200)); 
-
-            } catch (e) {
-                console.log(`[META ERROR] ${num}:`, e.message);
-                // If connection drops, stop and notify
-                if (e.message.includes('close') || e.message.includes('connection')) {
-                    return bot.sendMessage(chatId, `[FATAL] WhatsApp connection lost. Stopped at ${processedCount}.`);
-                }
-                continue;
-            }
-        }
-
-        bot.sendMessage(chatId, `[FINISH] Scan complete.\nTotal Checked: ${uniqueNumbers.length}\nTotal Verified Found: ${verifiedCount}`);
-    });
+    
 
 
 
@@ -4261,142 +4121,12 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
 
         
 
-    // --- /sendgroup [message] | [bot_count] | [group_link] ---
-    // Executes a message send job across X bots with a 3-second delay between each bot.
-    bot.onText(/^\/sendgroup (.+?) \| (\d+) \| (.+)$/, async (msg, match) => {
-        deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const adminId = String(ADMIN_ID); 
-
-        // 1. Authorization Check (Only admin can run broadcast)
-        if (String(chatId) !== adminId) {
-            return bot.sendMessage(chatId, "Access Denied. This command is for the bot administrator only.");
-        }
-
-        const message = match[1].trim();
-        const botCount = parseInt(match[2].trim());
-        const groupLinkOrCode = match[3].trim();
-
-        if (botCount <= 0 || isNaN(botCount)) {
-            return bot.sendMessage(chatId, "Bot count must be a valid number greater than zero.");
-        }
-
-        // 2. Extract Group Code
-        let groupCode = '';
-        try {
-            groupCode = groupLinkOrCode.includes('chat.whatsapp.com/') 
-                ? groupLinkOrCode.split('chat.whatsapp.com/')[1].split(/[\s?#&]/)[0] 
-                : groupLinkOrCode;
-        } catch (e) {
-            return bot.sendMessage(chatId, 'Invalid group link format.', { parse_mode: 'Markdown' });
-        }
-        
-        // 3. Get Active Bots and Limit Count
-        const activeFolders = Object.keys(clients).filter(folder => clients[folder]);
-        const countToUse = Math.min(botCount, activeFolders.length);
-        
-        if (countToUse === 0) {
-            return bot.sendMessage(chatId, 'No active bots available to send the message.', { parse_mode: 'Markdown' });
-        }
-
-        // 4. Initial Report (using deleteOldMessagesAndSend is safer here)
-        const startingMsg = await bot.sendMessage(chatId, 
-            'Starting Group Broadcast Job...\n' +
-            'Bots Selected: ' + countToUse + '/' + activeFolders.length + '\n' +
-            'Target Group: ' + groupCode + '\n' +
-            'Interval: 3 seconds (to avoid rate limits)\n\n' +
-            '*Progress: 0/' + countToUse + '*', 
-            { parse_mode: 'Markdown' }
-        );
-        
-        // 5. Initialize Results
-        let successCount = 0;
-        let failCount = 0;
-        let alreadyInCount = 0;
-
-        // 6. Processing Loop (The core logic)
-        for (let i = 0; i < countToUse; i++) {
-            const folder = activeFolders[i];
-            const sock = clients[folder];
-            
-            const shortIdEntry = shortIdMap[Object.keys(shortIdMap).find(k => shortIdMap[k].folder === folder)];
-            const phoneNumber = shortIdEntry?.phone || folder;
-            
-            let statusText = 'Bot +' + phoneNumber + ' (`' + folder + '`): '; // Use folder as short ID may not be mapped yet
-
-            try {
-                let groupJid = null;
-                
-                // Step 6a: Attempt to join the group
-                await sock.groupAcceptInvite(groupCode);
-                await delay(1000); 
-                
-                // Step 6b: Find the Group JID (Required to send a message)
-                const metadata = await sock.groupGetInviteInfo(groupCode);
-                groupJid = metadata.id;
-
-                // Step 6c: Send the message
-                await sock.sendMessage(groupJid, { text: message });
-                successCount++;
-                statusText += 'Message Sent.';
-
-            } catch (e) {
-                const err = String(e.message) || String(e);
-                
-                // Check specific error codes for "Already in group"
-                if (err.includes('participant') || err.includes('exist') || err.includes('409')) {
-                    alreadyInCount++;
-                    statusText += 'Already in group, message assumed sent.';
-                } else {
-                    failCount++;
-                    statusText += 'Failed: ' + err.substring(0, 50) + '...';
-                    console.error('[BROADCAST FAIL] Bot ' + folder + ': ' + err);
-                }
-            }
-            
-            // 7. Update Progress Message
-            try {
-                await bot.editMessageText(
-                    'Group Broadcast Job In Progress...\n' +
-                    'Bots Selected: ' + countToUse + '/' + activeFolders.length + '\n' +
-                    'Target Group: ' + groupCode + '\n' +
-                    'Interval: 3 seconds\n\n' +
-                    '*Progress: ' + (i + 1) + '/' + countToUse + '* (Sent: ' + successCount + ', Failed: ' + failCount + ', In Group: ' + alreadyInCount + ')\n\n' +
-                    'Last Bot Status:\n`' + statusText + '`',
-                    {
-                        chat_id: chatId,
-                        message_id: startingMsg.message_id,
-                        parse_mode: 'Markdown'
-                    }
-                );
-            } catch (e) { /* Ignore edit errors */ }
-
-
-            // 8. DELAY: 3 Seconds between bots
-            if (i < countToUse - 1) await delay(3000);
-        }
-        
-        // 9. Final Report
-        const finalReport = 
-            '[JOB DONE] Group Broadcast Complete!\n\n' +
-            'Target Group: ' + groupCode + '\n' +
-            'Bots Used: ' + countToUse + '\n' +
-            'Successfully Sent: ' + successCount + '\n' +
-            'Already In Group: ' + alreadyInCount + '\n' +
-            'Failed: ' + failCount;
-
-        try {
-            // Send final message via sendMenu to clean up the chat
-            await sendMenu(bot, chatId, finalReport);
-        } catch(e) {}
-    });
-    // --- END /sendgroup ---
-
- 
-   // --- /stats Command ---
+    
+    // --- /stats Command ---
     bot.onText(/\/stats/, async (msg) => {
-        deleteUserCommand(bot, msg);
-        if (msg.chat.id.toString() !== ADMIN_ID) return;
+        if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        if (chatId.toString() !== ADMIN_ID) return;
         
         try {
             const onlineCount = Object.keys(clients).length;
@@ -4409,18 +4139,35 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
             // Build the per-group breakdown text
             let groupBreakdown = "";
             
-            // Define all sources (Telegram + Custom API)
+            // Cleaned sources array (Eden and Indonesia removed)
             const sources = [
                 { id: "-1003518737176", name: "Main Group" },
+                { id: "-1003645558504", name: "Main Group 2" },
                 { id: "-1003644661262", name: "Gina Group" },
-                { id: "Vipotpgrup2", name: "VIP Group" },
-                { id: "EDEN_API", name: "Eden API" } // <-- API Added here
+                { id: "Vipotpgrup2", name: "VIP Group" }
             ];
             
             sources.forEach(src => {
                 const count = todayStats.groups[src.id] || 0;
                 groupBreakdown += `┃ ❃ **${src.name}:** ${count} SMS\n`;
             });
+
+            // Inject the Live WSOTP Engine Stats directly into the dashboard
+            let wsotpStatus = `┃ ❃ **WSOTP Engine:** 🔴 Offline\n`;
+            
+            // Dynamically checks memory depending on if you renamed the variables for the Payme isolation
+            const isActive = (typeof paymeWsotpActive !== 'undefined' && paymeWsotpActive[chatId]) || (typeof wsotpActive !== 'undefined' && wsotpActive[chatId]);
+            const statsObj = (typeof paymeWsotpStats !== 'undefined' && paymeWsotpStats[chatId]) ? paymeWsotpStats[chatId] : ((typeof wsotpGlobalStats !== 'undefined' && wsotpGlobalStats[chatId]) ? wsotpGlobalStats[chatId] : null);
+            const queueObj = (typeof paymeWsotpQueue !== 'undefined' && paymeWsotpQueue[chatId]) ? paymeWsotpQueue[chatId] : ((typeof wsotpQueue !== 'undefined' && wsotpQueue[chatId]) ? wsotpQueue[chatId] : []);
+
+            if (isActive && statsObj) {
+                const leftInQueue = queueObj.length || 0;
+                wsotpStatus = 
+                    `┃ ❃ **WSOTP Engine:** 🟢 LIVE\n` +
+                    `┃ ❃ **Queue Left:** ${leftInQueue}\n` +
+                    `┃ ❃ **Paid / Completed:** ${statsObj.completed}\n` +
+                    `┃ ❃ **Total Earned:** $${statsObj.earned.toFixed(2)}\n`;
+            }
 
             const text = 
                 `╭═══ 𝚂𝚈𝚂𝚃𝙴𝙼 𝚂𝚃𝙰𝚃𝚂 ════⊷\n` +
@@ -4430,13 +4177,16 @@ bot.onText(/\/wstask\s+(\d+)/i, async (msg, match) => {
                 `┣━━━━━━━━━━━━━━━━\n` +
                 `┃ ❃ **Today's Breakdown:**\n` +
                 groupBreakdown +
+                `┣━━━━━━━━━━━━━━━━\n` +
+                wsotpStatus +
                 `╰═════════════════⊷`;
 
-            sendMenu(bot, msg.chat.id, text);
+            sendMenu(bot, chatId, text);
         } catch (e) {
-            bot.sendMessage(msg.chat.id, '[ERROR] Stats failed: ' + e.message);
+            bot.sendMessage(chatId, '[ERROR] Stats failed: ' + e.message);
         }
     });
+
 
 
 async function saveOtpNumber(phoneNumber) {

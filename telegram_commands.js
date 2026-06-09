@@ -2303,15 +2303,28 @@ try {
     };
 
 
-    // 🧠 ULTIMATE DAEMON: Stays awake for all WSOTP modes
+        // 🧠 ULTIMATE DAEMON: Stays awake for all WSOTP modes
     while (['WSOTP_MANUAL_MODE', 'WSOTP_FILE_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'].includes(userState[chatId])) {
         const currentMode = userState[chatId];
         const isAuto = (currentMode === 'WSOTP_AUTO_MODE' || currentMode === 'WSOTP_FILE_MODE');
 
-        // --- 1. REPLENISH THE WINDOW (Up to 25) ---
-        let replenishedThisTick = 0;
+        // --- 1. STRICT FEEDER (Wait for bot reply before sending next) ---
+        let unacknowledgedCount = 0;
+        const feedNowTime = Date.now();
         
-        while (Object.keys(activeTracker).length < 100 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0 && replenishedThisTick < 6) {
+        // Check if the previously sent number is STILL waiting for its first reply
+        for (const num in activeTracker) {
+            if (activeTracker[num].count === 0 && !activeTracker[num].hunterSpawned && !activeTracker[num].manualPromptSent) {
+                // If the bot ignores it for more than 45 seconds, assume it's a dead number and unlock the queue
+                if (feedNowTime - activeTracker[num].addedAt < 45000) {
+                    unacknowledgedCount++;
+                }
+            }
+        }
+
+        // ONLY send the next number if the bot has responded to the previous one
+        if (unacknowledgedCount === 0 && Object.keys(activeTracker).length < 80 && wsotpQueue[chatId] && wsotpQueue[chatId].length > 0) {
+            
             const rawNum = wsotpQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             
@@ -2336,39 +2349,36 @@ try {
                 }
             }
 
-            if (!isWaActive) continue; 
-
-            replenishedThisTick++;
-            stats.sent++;
-
-            try {
-                await activeWsotpBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                await delay(700); 
-                
-                const sentMsg = await activeWsotpBot.sendMessage(TARGET_BOT, { message: formattedNum });
-                
-                activeTracker[formattedNum] = {
-                    count: 0,
-                    seenUpdates: new Set(), 
-                    usedCodes: new Set(), 
-                    msgIdsToClean: [sentMsg.id], 
-                    addedAt: Date.now(),
-                    inProgressCounted: false,
-                    hunterSpawned: false,
-                    manualPromptSent: false 
-                };
-            } catch (e) {
-                stats.sent--;
-                replenishedThisTick--;
+            // Only send if it passed the WA Check (or if WA Check is skipped)
+            if (isWaActive) {
+                stats.sent++;
+                try {
+                    await activeWsotpBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                    await delay(300); 
+                    
+                    const sentMsg = await activeWsotpBot.sendMessage(TARGET_BOT, { message: formattedNum });
+                    
+                    activeTracker[formattedNum] = {
+                        count: 0,
+                        seenUpdates: new Set(), 
+                        usedCodes: new Set(), 
+                        msgIdsToClean: [sentMsg.id], 
+                        addedAt: Date.now(),
+                        inProgressCounted: false,
+                        hunterSpawned: false,
+                        manualPromptSent: false 
+                    };
+                } catch (e) {
+                    stats.sent--;
+                }
+                await updateStats();
             }
-            
-            await updateStats();
-            await delay(600); 
         }
 
         // --- 2. LISTEN FOR RESPONSES & REWARDS ---
         try {
             const msgs = await activeWsotpBot.getMessages(TARGET_BOT, { limit: 100 }); 
+
             
             for (const msg of msgs) {
                 const text = msg.message || "";

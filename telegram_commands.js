@@ -301,6 +301,26 @@ async function processWsQueue() {
 }
 
 
+// ==========================================
+// TELEGRAM REQUEST RATE LIMITER
+// ==========================================
+const tgRequestQueues = {}; // Per-account queues
+
+async function rateLimitedGetMessages(client, accountKey, peer, options) {
+    if (!tgRequestQueues[accountKey]) {
+        tgRequestQueues[accountKey] = Promise.resolve();
+    }
+    
+    // Chain requests so they execute one at a time per account
+    const result = tgRequestQueues[accountKey].then(async () => {
+        await new Promise(r => setTimeout(r, 1200)); // 1.2s between requests
+        return client.getMessages(peer, options);
+    });
+    
+    tgRequestQueues[accountKey] = result.catch(() => {});
+    return result;
+}
+
 
 
 async function executeWsTaskSteps(phoneStr) {
@@ -2260,8 +2280,8 @@ try {
 
         // --- 2. LISTEN FOR RESPONSES & REWARDS ---
         try {
-            const msgs = await activeWsotpBot.getMessages(TARGET_BOT, { limit: 60 }); 
-
+            const accountKey = wsotpAccount === 'telegram2' ? 'tg2_wsotp' : 'payme_wsotp';
+            const msgs = await rateLimitedGetMessages(activeWsotpBot, accountKey, TARGET_BOT, { limit: 100 }); 
             
             for (const msg of msgs) {
                 const text = msg.message || "";
@@ -2534,7 +2554,7 @@ try {
 
         try {
             // 🔍 LIVE FETCH: Fetch just 15 messages to prevent GetHistory spam!
-            const msgs = await userBot.getMessages(SCAN_GROUP, { limit: 15 });
+            const msgs = await rateLimitedGetMessages(userBot, 'userbot', SCAN_GROUP, { limit: 100 });
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
 
             for (const m of msgs) {

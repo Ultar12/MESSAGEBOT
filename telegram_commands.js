@@ -321,6 +321,21 @@ async function rateLimitedGetMessages(client, accountKey, peer, options) {
     return result;
 }
 
+async function rateLimitedSendMessage(client, accountKey, peer, options) {
+    const sendKey = accountKey + '_send';
+    if (!tgRequestQueues[sendKey]) {
+        tgRequestQueues[sendKey] = Promise.resolve();
+    }
+    
+    const result = tgRequestQueues[sendKey].then(async () => {
+        await new Promise(r => setTimeout(r, 2000)); // 2s between sends
+        return client.sendMessage(peer, options);
+    });
+    
+    tgRequestQueues[sendKey] = result.catch(() => {});
+    return result;
+}
+
 
 
 async function executeWsTaskSteps(phoneStr) {
@@ -2629,21 +2644,24 @@ try {
             await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
             
             try {
-                // 🛡️ ANTI-BAN MICRO-DELAY
-                await delay(Math.floor(Math.random() * 300) + 200); 
-                
-                let sentOtp;
-                try {
-                    sentOtp = await botToUse.sendMessage(TARGET_BOT, { 
-                        message: foundCode, 
-                        replyTo: botMsgIdToReply 
-                    });
-                } catch (replyErr) {
-                    sentOtp = await botToUse.sendMessage(TARGET_BOT, { message: foundCode });
-                }
-                
-                if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
-                return; // Success! Exit hunter.
+    // 🛡️ ANTI-BAN MICRO-DELAY
+    await delay(Math.floor(Math.random() * 300) + 200); 
+    
+    const sendKey = wsotpAccount === 'telegram2' ? 'tg2_wsotp' : 'payme_wsotp';
+    let sentOtp;
+    try {
+        sentOtp = await rateLimitedSendMessage(botToUse, sendKey, TARGET_BOT, { 
+            message: foundCode, 
+            replyTo: botMsgIdToReply 
+        });
+    } catch (replyErr) {
+        sentOtp = await rateLimitedSendMessage(botToUse, sendKey, TARGET_BOT, { 
+            message: foundCode 
+        });
+    }
+    
+    if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
+    return; // Success! Exit hunter.
                 
             } catch (e) {
                 console.error(`[HUNTER SEND ERROR on ${cleanNum}]:`, e.message);

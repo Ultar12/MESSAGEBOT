@@ -2574,7 +2574,8 @@ async function processWsotpQueue(chatId) {
     bot.sendMessage(chatId, `**[WSOTP DAEMON OFFLINE]**\nEngine shut down successfully.`, { parse_mode: 'Markdown' });
 }
 
-    async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null, activeWsotpBot = null) {
+    
+async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null, activeWsotpBot = null) {
     const botToUse = activeWsotpBot || paymeUserBot; 
     const TARGET_BOT = "wsotp200bot";
     
@@ -2586,11 +2587,15 @@ async function processWsotpQueue(chatId) {
     const MAX_TIME = 180000; // 3 minutes
 
     const isRocket = (sourceBot === 'ROCKETOTP_BOT' || getnumSelectedBot === 'ROCKETOTP_BOT');
+    const isNokosx = (sourceBot === 'NokosxBot' || getnumSelectedBot === 'NokosxBot');
     
     // Dynamically set the target group based on mode
-    const SCAN_GROUP = isRocket ? -1003573619278 : -1003645249777;
+    let SCAN_GROUP;
+    if (isRocket) SCAN_GROUP = -1003573619278;
+    else if (isNokosx) SCAN_GROUP = -1003633481131; // UXGROUP
+    else SCAN_GROUP = -1003645249777; // Ultar
 
-    await delay(isRocket ? 8000 : 3000);
+    await delay((isRocket || isNokosx) ? 8000 : 3000);
 
     while (Date.now() - startTime < MAX_TIME) {
         const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
@@ -2606,7 +2611,7 @@ async function processWsotpQueue(chatId) {
 
         try {
             // 🔍 LIVE FETCH: Fetch just 15 messages to prevent GetHistory spam!
-            const msgs = await rateLimitedGetMessages(userBot, 'userbot', SCAN_GROUP, { limit: 100 });
+            const msgs = await userBot.getMessages(SCAN_GROUP, { limit: 15 });
             const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
 
             for (const m of msgs) {
@@ -2617,12 +2622,11 @@ async function processWsotpQueue(chatId) {
                     const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
                     if (numRegex.test(m.message)) {
                         
-                        // Smart Service Filter (WhatsApp & LNST Allowed)
                         const serviceMatch = m.message.match(/Service:\s*([^\n]+)/i);
                         if (serviceMatch) {
                             const serviceName = serviceMatch[1].toLowerCase();
                             if (!serviceName.includes('whatsapp') && !serviceName.includes('wa') && !serviceName.includes('lnst')) {
-                                continue; // Skip Facebook/Instagram
+                                continue; 
                             }
                         }
 
@@ -2636,8 +2640,43 @@ async function processWsotpQueue(chatId) {
                             let tempCode = otpMatch[1].replace(/[-\s]/g, '');
                             if (!trackData.usedCodes.has(tempCode)) {
                                 foundCode = tempCode;
-                                break; // Found it! Stop looping through messages.
+                                break; 
                             }
+                        }
+                    }
+                } else if (isNokosx) {
+                    // --- NOKOSX PARSING ---
+                    // Example: 🆕 🇬🇭 GH | 233XXXXX5382 | 🟢 WA
+                    const numRegex = new RegExp(`(?:${search4}|${search3})`, 'i');
+                    if (numRegex.test(m.message)) {
+                        
+                        // Smart Service Filter (Must be WhatsApp)
+                        const msgLower = m.message.toLowerCase();
+                        if (!msgLower.includes('wa') && !msgLower.includes('whatsapp')) {
+                            continue; // Skip SMS or other services
+                        }
+
+                        let tempCode = null;
+
+                        // Grab the OTP code straight out of the inline buttons (e.g., 📜 659609)
+                        if (m.replyMarkup && m.replyMarkup.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                const btnArray = row.buttons || row; 
+                                for (const btn of btnArray) {
+                                    const btnText = btn.text || "";
+                                    const btnMatch = btnText.match(/(\d{4,8})/); // Extracts the digits
+                                    if (btnMatch) {
+                                        tempCode = btnMatch[1];
+                                        break;
+                                    }
+                                }
+                                if (tempCode) break;
+                            }
+                        }
+
+                        if (tempCode && !trackData.usedCodes.has(tempCode)) {
+                            foundCode = tempCode;
+                            break; // Found it! Stop looping through messages.
                         }
                     }
                 } else {
@@ -2646,7 +2685,6 @@ async function processWsotpQueue(chatId) {
                     if (numRegex.test(m.message)) {
                         let tempCode = null;
 
-                        // Check inline buttons first
                         if (m.replyMarkup && m.replyMarkup.rows) {
                             for (const row of m.replyMarkup.rows) {
                                 const btnArray = row.buttons || row; 
@@ -2658,7 +2696,6 @@ async function processWsotpQueue(chatId) {
                             }
                         }
 
-                        // Fallback to text body
                         if (!tempCode) {
                             const codeMatch = m.message.match(/(?:Code|OTP)[:\s]+(\d{3}[-\s]?\d{3}|\d{4,8})/i);
                             if (codeMatch) tempCode = codeMatch[1].replace(/[-\s]/g, '');
@@ -2666,7 +2703,7 @@ async function processWsotpQueue(chatId) {
 
                         if (tempCode && !trackData.usedCodes.has(tempCode)) {
                             foundCode = tempCode;
-                            break; // Found it! Stop looping through messages.
+                            break; 
                         }
                     }
                 }
@@ -2681,24 +2718,26 @@ async function processWsotpQueue(chatId) {
             await addLog(`✅ \`${cleanNum}\`: OTP Found (${foundCode}). Replying...`);
             
             try {
-    // 🛡️ ANTI-BAN MICRO-DELAY
-    await delay(Math.floor(Math.random() * 300) + 200); 
-    
-    const sendKey = wsotpAccount === 'telegram2' ? 'tg2_wsotp' : 'payme_wsotp';
-    let sentOtp;
-    try {
-        sentOtp = await rateLimitedSendMessage(botToUse, sendKey, TARGET_BOT, { 
-            message: foundCode, 
-            replyTo: botMsgIdToReply 
-        });
-    } catch (replyErr) {
-        sentOtp = await rateLimitedSendMessage(botToUse, sendKey, TARGET_BOT, { 
-            message: foundCode 
-        });
-    }
-    
-    if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
-    return; // Success! Exit hunter.
+                // 🛡️ ANTI-BAN MICRO-DELAY
+                await delay(Math.floor(Math.random() * 300) + 200); 
+                
+                let sentOtp;
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 5000));
+
+                try {
+                    // 🚀 ANTI-ZOMBIE TIMEOUT
+                    const replyPromise = botToUse.sendMessage(TARGET_BOT, { 
+                        message: foundCode, 
+                        replyTo: botMsgIdToReply 
+                    });
+                    sentOtp = await Promise.race([replyPromise, timeoutPromise]);
+                } catch (replyErr) {
+                    const sendPromise = botToUse.sendMessage(TARGET_BOT, { message: foundCode });
+                    sentOtp = await Promise.race([sendPromise, timeoutPromise]);
+                }
+                
+                if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
+                return; // Success! Exit hunter.
                 
             } catch (e) {
                 console.error(`[HUNTER SEND ERROR on ${cleanNum}]:`, e.message);
@@ -2709,24 +2748,27 @@ async function processWsotpQueue(chatId) {
                     await addLog(`🛑 RATE LIMITED: Hunter sleeping for ${waitSeconds}s...`);
                     await delay((waitSeconds * 1000) + 2000); 
                     
-                    // Unmark the code to try again when we wake up
                     trackData.usedCodes.delete(foundCode); 
                     continue; 
+                }
+
+                if (e.message === "TIMEOUT") {
+                    await addLog(`⚠️ \`${cleanNum}\`: Network timeout. Retrying...`);
+                    trackData.usedCodes.delete(foundCode);
+                    continue;
                 }
                 return; 
             }
         }
 
-        // ⏳ SLEEP LOGIC: Both must sleep 4.5s to prevent GetHistory bans!
+        // ⏳ SLEEP LOGIC: 4.5s to prevent GetHistory bans!
         await delay(4500); 
     }
 
-    await addLog(`\`${cleanNum}\`: Gave up after 3 minutes.`);
+    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
 
-
-             
-
+    
 
         // --- /validate command: Filter invalid numbers locally to protect IP Trust Score ---
     bot.onText(/\/validate/, async (msg) => {

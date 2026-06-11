@@ -1809,21 +1809,16 @@ bot.onText(/\/acc\s+(\d+)/, async (msg, match) => {
         wsotpAccount = 'payme';
         bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **PAYME UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
     } else if (choice === '2') {
-        if (!userBot || !userBot.connected) {
-            return bot.sendMessage(chatId, `[ERROR] Main UserBot is not connected!`);
-        }
-        wsotpAccount = 'user';
-        bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **MAIN UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
-    } else if (choice === '3') {
         if (!telegram3UserBot) {
             return bot.sendMessage(chatId, `[ERROR] Telegram3 account is not configured in Config Vars.`);
         }
         wsotpAccount = 'telegram3';
         bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **TELEGRAM3 UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
     } else {
-        bot.sendMessage(chatId, `**[ERROR] Invalid choice.**\nUse:\n/acc 1 (Payme)\n/acc 2 (Main)\n/acc 3 (Telegram3)`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `**[ERROR] Invalid choice.**\nUse:\n/acc 1 (Payme)\n/acc 2 (Telegram 3)`, { parse_mode: 'Markdown' });
     }
 });
+
 
 
 
@@ -2217,17 +2212,11 @@ async function processWsotpQueue(chatId) {
     const { Api } = await import("telegram");
     // Select which account to use based on /acc setting
         // Select which account to use based on /acc setting
+        // Select which account to use based on /acc setting
     let activeWsotpBot = paymeUserBot;
 
     try {
-        if (wsotpAccount === 'user') {
-            if (!userBot || !userBot.connected) {
-                bot.sendMessage(chatId, `[ERROR] Main UserBot not connected. Falling back to Payme.`);
-                wsotpAccount = 'payme';
-            } else {
-                activeWsotpBot = userBot;
-            }
-        } else if (wsotpAccount === 'telegram3') {
+        if (wsotpAccount === 'telegram3') {
             if (!telegram3UserBot) {
                 bot.sendMessage(chatId, `[ERROR] Telegram3 not configured. Falling back to Payme.`);
                 wsotpAccount = 'payme';
@@ -2244,6 +2233,7 @@ async function processWsotpQueue(chatId) {
         wsotpActive[chatId] = false;
         return;
     }
+
 
 
 

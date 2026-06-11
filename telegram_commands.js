@@ -143,6 +143,36 @@ async function ensureTelegram2Connected() {
 // ------------------------------------
 
 
+// 🚀 --- NEW TELEGRAM 3 SETUP --- 🚀
+const telegram3ApiId = parseInt(process.env.TELEGRAM3_API_ID || "0"); 
+const telegram3ApiHash = process.env.TELEGRAM3_API_HASH || "";
+const telegram3StringSession = new StringSession(process.env.TELEGRAM3_SESSION || ""); 
+
+let telegram3UserBot = null;
+if (telegram3ApiId && telegram3ApiHash) {
+    telegram3UserBot = new TelegramClient(telegram3StringSession, telegram3ApiId, telegram3ApiHash, { 
+        connectionRetries: 5,
+        useWSS: true 
+    });
+}
+
+async function ensureTelegram3Connected() {
+    if (!telegram3UserBot) throw new Error("Telegram3 UserBot credentials not set in Config Vars.");
+    if (!telegram3UserBot.connected) {
+        console.log("[TELEGRAM3 BOT] Connecting...");
+        await telegram3UserBot.connect();
+    }
+    try {
+        await telegram3UserBot.getMe(); 
+    } catch (e) {
+        console.log("[TELEGRAM3 BOT] Session might be invalid. Re-authorizing...");
+        await telegram3UserBot.connect();
+    }
+}
+// ------------------------------------
+
+
+
 
 
 // 🚀 --- NEW ROCKET BOT SETUP --- 🚀
@@ -1771,7 +1801,7 @@ bot.onText(/\/acc\s+(\d+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = chatId.toString();
     
-    if (userId !== ADMIN_ID && !SUBADMIN_IDS.includes(userId)) return;
+    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
     
     const choice = match[1];
     
@@ -1784,10 +1814,17 @@ bot.onText(/\/acc\s+(\d+)/, async (msg, match) => {
         }
         wsotpAccount = 'user';
         bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **MAIN UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
+    } else if (choice === '3') {
+        if (!telegram3UserBot) {
+            return bot.sendMessage(chatId, `[ERROR] Telegram3 account is not configured in Config Vars.`);
+        }
+        wsotpAccount = 'telegram3';
+        bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **TELEGRAM3 UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
     } else {
-        bot.sendMessage(chatId, `[ERROR] Invalid choice.\nUse /acc 1 (Payme) or /acc 2 (Main UserBot)`);
+        bot.sendMessage(chatId, `**[ERROR] Invalid choice.**\nUse:\n/acc 1 (Payme)\n/acc 2 (Main)\n/acc 3 (Telegram3)`, { parse_mode: 'Markdown' });
     }
 });
+
 
 
 
@@ -2179,6 +2216,7 @@ async function processWsotpQueue(chatId) {
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
     // Select which account to use based on /acc setting
+        // Select which account to use based on /acc setting
     let activeWsotpBot = paymeUserBot;
 
     try {
@@ -2189,6 +2227,14 @@ async function processWsotpQueue(chatId) {
             } else {
                 activeWsotpBot = userBot;
             }
+        } else if (wsotpAccount === 'telegram3') {
+            if (!telegram3UserBot) {
+                bot.sendMessage(chatId, `[ERROR] Telegram3 not configured. Falling back to Payme.`);
+                wsotpAccount = 'payme';
+            } else {
+                await ensureTelegram3Connected();
+                activeWsotpBot = telegram3UserBot;
+            }
         } else {
             await ensurePaymeConnected();
             activeWsotpBot = paymeUserBot;
@@ -2198,6 +2244,7 @@ async function processWsotpQueue(chatId) {
         wsotpActive[chatId] = false;
         return;
     }
+
 
 
     wsotpWarnedNoWa = false; 

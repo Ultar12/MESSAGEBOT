@@ -1779,15 +1779,16 @@ bot.onText(/\/acc\s+(\d+)/, async (msg, match) => {
         wsotpAccount = 'payme';
         bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **PAYME UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
     } else if (choice === '2') {
-        if (!telegram2UserBot) {
-            return bot.sendMessage(chatId, `[ERROR] Telegram2 account is not configured in Config Vars.`);
+        if (!userBot || !userBot.connected) {
+            return bot.sendMessage(chatId, `[ERROR] Main UserBot is not connected!`);
         }
-        wsotpAccount = 'telegram2';
-        bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **TELEGRAM2 UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
+        wsotpAccount = 'user';
+        bot.sendMessage(chatId, `**[WSOTP ACCOUNT]**\nSwitched to: **MAIN UserBot**\n_All new queue submissions will use this account._`, { parse_mode: 'Markdown' });
     } else {
-        bot.sendMessage(chatId, `[ERROR] Invalid choice.\nUse /acc 1 (Payme) or /acc 2 (Telegram2)`);
+        bot.sendMessage(chatId, `[ERROR] Invalid choice.\nUse /acc 1 (Payme) or /acc 2 (Main UserBot)`);
     }
 });
+
 
 
     
@@ -2177,28 +2178,27 @@ async function processWsotpQueue(chatId) {
 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
-
     // Select which account to use based on /acc setting
-let activeWsotpBot = paymeUserBot;
+    let activeWsotpBot = paymeUserBot;
 
-try {
-    if (wsotpAccount === 'telegram2') {
-        if (!telegram2UserBot) {
-            bot.sendMessage(chatId, `[ERROR] Telegram2 not configured. Falling back to Payme.`);
-            wsotpAccount = 'payme';
+    try {
+        if (wsotpAccount === 'user') {
+            if (!userBot || !userBot.connected) {
+                bot.sendMessage(chatId, `[ERROR] Main UserBot not connected. Falling back to Payme.`);
+                wsotpAccount = 'payme';
+            } else {
+                activeWsotpBot = userBot;
+            }
         } else {
-            await ensureTelegram2Connected();
-            activeWsotpBot = telegram2UserBot;
+            await ensurePaymeConnected();
+            activeWsotpBot = paymeUserBot;
         }
-    } else {
-        await ensurePaymeConnected();
-        activeWsotpBot = paymeUserBot;
+    } catch (e) {
+        bot.sendMessage(chatId, `[ERROR] Failed to connect WSOTP account: ${e.message}`);
+        wsotpActive[chatId] = false;
+        return;
     }
-} catch (e) {
-    bot.sendMessage(chatId, `[ERROR] Failed to connect WSOTP account: ${e.message}`);
-    wsotpActive[chatId] = false;
-    return;
-}
+
 
     wsotpWarnedNoWa = false; 
 

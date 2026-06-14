@@ -2641,11 +2641,13 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     const isRocket = (sourceBot === 'ROCKETOTP_BOT' || getnumSelectedBot === 'ROCKETOTP_BOT');
     const isNokosx = (sourceBot === 'NokosxBot' || getnumSelectedBot === 'NokosxBot');
+    const isHxotp = (sourceBot === 'hxotpbot' || getnumSelectedBot === 'hxotpbot');
     
     // Dynamically set the target group based on mode
     let SCAN_GROUP;
     if (isRocket) SCAN_GROUP = -1003573619278;
     else if (isNokosx) SCAN_GROUP = -1003633481131; // UXGROUP
+    else if (isHxotp) SCAN_GROUP = -1003871388849;
     else SCAN_GROUP = -1003645249777; // Ultar
 
     await delay((isRocket || isNokosx) ? 8000 : 3000);

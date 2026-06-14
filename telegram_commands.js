@@ -1852,7 +1852,8 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
 
             // --- GETNU SCRAPER SYSTEM (DUAL ENGINE) ---
-        if (data.startsWith('getnu_out_') || data.startsWith('target_rocket') || data.startsWith('target_lolzfack') || data.startsWith('target_nokosx') || data.startsWith('start_scrape_')) {
+          if (data.startsWith('getnu_out_') || data.startsWith('target_rocket') || data.startsWith('target_lolzfack') || data.startsWith('target_nokosx') || data.startsWith('target_hxotp') || data.startsWith('start_scrape_')) {
+
             
                         // Step A: Select Source Bot Menu
             if (data.startsWith('getnu_out_')) {

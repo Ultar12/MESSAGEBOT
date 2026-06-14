@@ -2238,6 +2238,7 @@ async function processWsotpQueue(chatId) {
 
 
     wsotpWarnedNoWa = false; 
+    
 
         // --- SILENT TRACKER INITIALIZATION ---
     wsotpGlobalStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [], left: 0, activeCount: 0, bgCount: 0 };
@@ -2245,6 +2246,8 @@ async function processWsotpQueue(chatId) {
 
     let activeTracker = {};     
     let backgroundTracker = {}; 
+    let consecutiveNoResponseCycles = 0;
+    const SWITCH_THRESHOLD = 8;
 
     // Silently updates variables in memory instead of editing a Telegram message
     const updateStats = async () => {
@@ -2559,6 +2562,50 @@ async function processWsotpQueue(chatId) {
                 delete backgroundTracker[num];
             }
         }
+
+// --- AUTO ACCOUNT SWITCHER ---
+const activeCount = Object.keys(activeTracker).length;
+const bgCount = Object.keys(backgroundTracker).length;
+const totalTracked = activeCount + bgCount;
+
+// Trigger: queue is active, but almost everything is stuck in background
+if (totalTracked > 5 && bgCount >= activeCount * 3) {
+    consecutiveNoResponseCycles++;
+    
+    if (consecutiveNoResponseCycles >= SWITCH_THRESHOLD) {
+        consecutiveNoResponseCycles = 0;
+        
+        // Determine which account to switch TO
+        const currentAccName = wsotpAccount;
+        const nextAcc = (wsotpAccount === 'payme') ? 'telegram3' : 'payme';
+        
+        // Verify the next account exists
+        const nextBot = (nextAcc === 'telegram3') ? telegram3UserBot : paymeUserBot;
+        if (!nextBot) {
+            await addLog(`Cannot switch: ${nextAcc} not configured.`);
+        } else {
+            wsotpAccount = nextAcc;
+            activeWsotpBot = nextBot; // Update the local reference too
+            
+            try {
+                if (nextAcc === 'telegram3') await ensureTelegram3Connected();
+                else await ensurePaymeConnected();
+                
+                await addLog(`Auto-switched: ${currentAccName} → ${nextAcc} (bot limit detected)`);
+                bot.sendMessage(chatId, 
+                    `**[AUTO SWITCH]**\n${currentAccName} → **${nextAcc}**\nReason: Bot rate limited (${bgCount} numbers stuck in background)`,
+                    { parse_mode: 'Markdown' }
+                );
+            } catch (switchErr) {
+                wsotpAccount = currentAccName; // Revert if connection fails
+                activeWsotpBot = (currentAccName === 'payme') ? paymeUserBot : telegram3UserBot;
+                await addLog(`Switch failed: ${switchErr.message}`);
+            }
+        }
+    }
+} else {
+    consecutiveNoResponseCycles = 0; // Reset if things are flowing normally
+}
 
         // 🚀 4. THE DYNAMIC SLEEP (Replaces await delay(1500))
         if (!instantNext) {

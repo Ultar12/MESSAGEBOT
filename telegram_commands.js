@@ -1854,7 +1854,7 @@ bot.on('callback_query', async (query) => {
             // --- GETNU SCRAPER SYSTEM (DUAL ENGINE) ---
         if (data.startsWith('getnu_out_') || data.startsWith('target_rocket') || data.startsWith('target_lolzfack') || data.startsWith('target_nokosx') || data.startsWith('start_scrape_')) {
             
-            // Step A: Select Source Bot Menu
+                        // Step A: Select Source Bot Menu
             if (data.startsWith('getnu_out_')) {
                 const parts = data.split('_');
                 const outMode = parts[2]; 
@@ -1867,7 +1867,8 @@ bot.on('callback_query', async (query) => {
                         inline_keyboard: [
                             [{ text: "Target: Rocket OTP", callback_data: `target_rocket_${amount}` }],
                             [{ text: "Target: LolzFack (SMS_Sp)", callback_data: `target_lolzfack_${amount}` }],
-                            [{ text: "Target: NokosX BOT", callback_data: `target_nokosx_${amount}` }]
+                            [{ text: "Target: NokosX BOT", callback_data: `target_nokosx_${amount}` }],
+                            [{ text: "Target: HX OTP", callback_data: `target_hxotp_${amount}` }]
                         ]
                     }
                 };
@@ -1878,7 +1879,8 @@ bot.on('callback_query', async (query) => {
                 return;
             }
 
-            const parts = data.split('_');
+
+                        const parts = data.split('_');
             const amount = parseInt(parts[parts.length - 1]) || 50;
             const action = data.replace(`_${amount}`, ''); 
             const outMode = userState[chatId + '_getnu_outmode'] || 'chat'; 
@@ -1886,11 +1888,13 @@ bot.on('callback_query', async (query) => {
             const targetBotMap = {
                 'target_lolzfack': 'LolzFack_bot', 'start_scrape_lolzfack': 'LolzFack_bot',
                 'target_rocket': 'ROCKETOTP_BOT', 'start_scrape_rocketotp': 'ROCKETOTP_BOT',
-                'target_nokosx': 'NokosxBot', 'start_scrape_nokosx': 'NokosxBot'
+                'target_nokosx': 'NokosxBot', 'start_scrape_nokosx': 'NokosxBot',
+                'target_hxotp': 'hxotpbot', 'start_scrape_hxotp': 'hxotpbot'
             };
 
             const targetBot = targetBotMap[action];
             if (!targetBot) return;
+
 
             // Step B: Send Initial Trigger Commands (Dual)
             if (action.startsWith('target_')) {
@@ -2023,7 +2027,7 @@ bot.on('callback_query', async (query) => {
                         break;
                     }
 
-                    // 🚀 PARALLEL CLICK: Clicks pagination on both bots simultaneously
+                                        // 🚀 CLICK PAGINATION STRICTLY ON TELEGRAM 2
                     const clickPagination = async (client, msgs) => {
                         if (!client) return false;
                         for (const msg of msgs) {
@@ -2031,7 +2035,7 @@ bot.on('callback_query', async (query) => {
                                 for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
                                     for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
                                         const bText = (msg.replyMarkup.rows[r].buttons[c].text || "").toLowerCase();
-                                        if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change") || bText.includes("new numbers")) {
+                                        if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change") || bText.includes("new numbers") || bText.includes("change number")) {
                                             try {
                                                 await client.invoke(new Api.messages.GetBotCallbackAnswer({ peer: targetBot, msgId: msg.id, data: msg.replyMarkup.rows[r].buttons[c].data }));
                                                 return true;
@@ -2045,6 +2049,7 @@ bot.on('callback_query', async (query) => {
                         }
                         return false;
                     };
+
 
                     const [clicked1, clicked2] = await Promise.all([
                         clickPagination(userBot, msgs1),
@@ -2726,6 +2731,50 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                             break; // Found it! Stop looping through messages.
                         }
                     }
+
+
+                                    } else if (isHxotp) {
+                    // --- HXOTP PARSING ---
+                    // Format: 🇻🇪 #VE | 584168••••3870 | #12 #English
+                    // Smart match: Looks for your last 3-4 digits right before the " | " separator
+                    const numRegex = new RegExp(`(?:${search4}|${search3})\\s*\\|`, 'i');
+                    const fallbackRegex = new RegExp(`(?:${search4}|${search3})`, 'i'); 
+                    
+                    if (numRegex.test(m.message) || fallbackRegex.test(m.message)) {
+                        
+                        let tempCode = null;
+
+                        // 1. Grab the OTP code straight out of the inline buttons (e.g., 🔑 912623)
+                        if (m.replyMarkup && m.replyMarkup.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                const btnArray = row.buttons || row; 
+                                for (const btn of btnArray) {
+                                    const btnText = btn.text || "";
+                                    
+                                    // STRICT 6-DIGIT WHATSAPP MATCHER
+                                    const btnMatch = btnText.match(/🔑\s*(\d{6})/) || btnText.match(/(?:\b|^)(\d{6})(?:\b|$)/);
+                                    if (btnMatch) {
+                                        tempCode = btnMatch[1];
+                                        break;
+                                    }
+                                }
+                                if (tempCode) break;
+                            }
+                        }
+
+                        // 2. Fallback to ripping it out of the text body (just in case the button fails)
+                        if (!tempCode) {
+                            const codeMatch = m.message.match(/🔑\s*(\d{6})/);
+                            if (codeMatch) tempCode = codeMatch[1];
+                        }
+
+                        if (tempCode && !trackData.usedCodes.has(tempCode)) {
+                            foundCode = tempCode;
+                            break; // Found it! Stop looping.
+                        }
+                    }
+
+                    
                 } else {
                     // --- ULTAR PARSING ---
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');

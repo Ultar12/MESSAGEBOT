@@ -3146,7 +3146,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
 
 
-// --- /zu : SMART ENGINE (ULTAR ACCOUNT) ---
+
 bot.onText(/^\/zu(?:\s+(\d+))?$/, async (msg, match) => {
     if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
     const chatId = msg.chat.id;
@@ -9475,7 +9475,8 @@ const cleanNumbers = matches.map(n => {
                         for (let raw of textMatches) {
                       raw = raw.replace('+', ''); // Strip the + sign
                       if (raw.length >= 9) await processNumber(raw);
-                }
+                      }
+                    }
 
                     if (verified >= amount || userState[chatId + '_zu_stop']) break;
 

@@ -1320,7 +1320,10 @@ export async function checkDetailedBanStatus(sock, phoneNumber) {
 // THE CONTINUOUS ZU ENGINE (ULTAR STRICT)
 // ==========================================
 async function processZuQueue(bot, chatId) {
-    if (zuActive[chatId]) return; 
+    if (zuActive[chatId]) {
+        console.log(`[ZU] Already active for ${chatId}, skipping re-entry.`); // ADD HERE
+        return; 
+    }
     zuActive[chatId] = true;
 
     const TARGET_BOT = "wsotp200bot";
@@ -1347,6 +1350,19 @@ async function processZuQueue(bot, chatId) {
 
         // 🚀 SAFELY ENSURE QUEUE EXISTS BEFORE LOOPING
     zuQueue[chatId] = zuQueue[chatId] || [];
+
+    // Wait up to 15 seconds for the queue to populate
+let waitCount = 0;
+while ((!zuQueue[chatId] || zuQueue[chatId].length === 0) && waitCount < 30) {
+    await delay(500);
+    waitCount++;
+}
+
+if (!zuQueue[chatId] || zuQueue[chatId].length === 0) {
+    zuActive[chatId] = false;
+    bot.sendMessage(chatId, `[ZU] No numbers received in queue. Aborting.`);
+    return;
+}
 
     // 🚀 WRAPPED zuQueue IN ( || [] ) TO PREVENT UNDEFINED CRASHES
     while ((zuQueue[chatId] || []).length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {

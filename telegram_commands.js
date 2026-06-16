@@ -9477,9 +9477,12 @@ const cleanNumbers = matches.map(n => {
                                 }
                             }
                         }
-                        const textMatches = text.match(/\d{9,15}/g) || [];
-                        for (let raw of textMatches) { await processNumber(raw); }
-                    }
+                        // After the button loop, add this:
+                        const textMatches = text.match(/\+?(\d{9,15})/g) || [];
+                        for (let raw of textMatches) {
+                      raw = raw.replace('+', ''); // Strip the + sign
+                      if (raw.length >= 9) await processNumber(raw);
+                }
 
                     if (verified >= amount || userState[chatId + '_zu_stop']) break;
 

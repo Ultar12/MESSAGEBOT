@@ -84,6 +84,7 @@ export let spyFound = new Set();
 const wsotpQueue = {};
 const wsotpActive = {};
 const wsotpGlobalStats = {};
+const sessionTargetBots = {};
 let wsotpAccount = 'payme'; // Default: 'payme' or 'telegram2'
 let wsotpWarnedNoWa = false;
 let getnumSelectedBot = null; // 'ROCKETOTP_BOT', 'LolzFack_bot', etc.

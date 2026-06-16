@@ -186,6 +186,36 @@ if (ultarApiId && ultarApiHash) {
     });
 }
 
+
+// 🚀 --- NEW ZU SCRAPER BOT SETUP (Grabber Account) --- 🚀
+const zuScraperApiId = parseInt(process.env.ZU_SCRAPER_API_ID || "0"); 
+const zuScraperApiHash = process.env.ZU_SCRAPER_API_HASH || "";
+const zuScraperStringSession = new StringSession(process.env.ZU_SCRAPER_SESSION || ""); 
+
+let zuScraperBot = null;
+if (zuScraperApiId && zuScraperApiHash) {
+    zuScraperBot = new TelegramClient(zuScraperStringSession, zuScraperApiId, zuScraperApiHash, { 
+        connectionRetries: 5,
+        useWSS: true 
+    });
+}
+
+async function ensureZuScraperConnected() {
+    if (!zuScraperBot) throw new Error("ZU Scraper Bot credentials not set in Config Vars.");
+    if (!zuScraperBot.connected) {
+        console.log("[ZU SCRAPER] Connecting...");
+        await zuScraperBot.connect();
+    }
+    try {
+        await zuScraperBot.getMe(); 
+    } catch (e) {
+        console.log("[ZU SCRAPER] Session might be invalid. Re-authorizing...");
+        await zuScraperBot.connect();
+    }
+}
+// ------------------------------------
+
+
 async function ensureUltarConnected() {
     if (!ultarUserBot) throw new Error("ULTAR UserBot credentials not set in Config Vars.");
     if (!ultarUserBot.connected) {
@@ -1273,6 +1303,184 @@ export async function checkDetailedBanStatus(sock, phoneNumber) {
         return { status: "ERROR", detail: e.message };
     }
 }
+
+
+// ==========================================
+// THE CONTINUOUS ZU ENGINE (ULTAR STRICT)
+// ==========================================
+async function processZuQueue(chatId) {
+    if (zuActive[chatId]) return; 
+    zuActive[chatId] = true;
+
+    const TARGET_BOT = "wsotp200bot";
+    const { Api } = await import("telegram");
+
+    try {
+        await ensureUltarConnected();
+    } catch (e) {
+        bot.sendMessage(chatId, `[ERROR] Failed to connect ULTAR account: ${e.message}`);
+        zuActive[chatId] = false;
+        return;
+    }
+
+    zuGlobalStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [], left: 0, activeCount: 0, bgCount: 0 };
+    let stats = zuGlobalStats[chatId];
+    let activeTracker = {};     
+    let backgroundTracker = {}; 
+    let lastZuFeed = 0; // Ensures the 2.5s pacing
+
+    const addLog = async (msg) => {
+        stats.logs.unshift(msg);
+        if (stats.logs.length > 6) stats.logs.pop(); 
+    };
+
+    while (zuQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {
+        if (userState[chatId + '_zu_stop']) break; // Kill switch
+        
+        const isAuto = (zuState[chatId] === 'auto');
+        const nowTime = Date.now();
+        let instantNext = false;
+
+        // --- 1. THE 2.5 SEC FEEDER ---
+        if (nowTime - lastZuFeed >= 2500 && zuQueue[chatId].length > 0 && Object.keys(activeTracker).length < 100) {
+            lastZuFeed = nowTime;
+            const rawNum = zuQueue[chatId].shift();
+            let formattedNum = rawNum.replace(/\D/g, '');
+            
+            if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
+            else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+            else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
+
+            stats.sent++;
+            try {
+                await ultarUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
+                await delay(300); 
+                const sentMsg = await ultarUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
+                
+                activeTracker[formattedNum] = {
+                    count: 0, seenUpdates: new Set(), usedCodes: new Set(), msgIdsToClean: [sentMsg.id], 
+                    addedAt: Date.now(), inProgressCounted: false, hunterSpawned: false, manualPromptSent: false 
+                };
+            } catch (e) { stats.sent--; }
+        }
+
+        // --- 2. LISTENER & HUNTER DISPATCHER ---
+        try {
+            const msgs = await ultarUserBot.getMessages(TARGET_BOT, { limit: 50 }); 
+            for (const msg of msgs) {
+                const text = msg.message || "";
+                if (!text) continue;
+
+                let trackData = null;
+                let isBackground = false;
+                let botNum = null;
+
+                const potentialNums = text.match(/\d{9,15}/g); 
+                if (potentialNums) {
+                    for (const n of potentialNums) {
+                        if (activeTracker[n]) { botNum = n; trackData = activeTracker[n]; break; }
+                        if (backgroundTracker[n]) { botNum = n; trackData = backgroundTracker[n]; isBackground = true; break; }
+                    }
+                }
+                if (!trackData) continue;
+
+                if (!trackData.seenUpdates) trackData.seenUpdates = new Set();
+                const updateKey = `${msg.id}_${msg.editDate || '0'}`;
+                
+                if (!trackData.seenUpdates.has(updateKey)) {
+                    trackData.seenUpdates.add(updateKey);
+                    instantNext = true;
+                    
+                    const textLower = text.toLowerCase();
+                    const isErrorCode = text.includes("🔴") || textLower.includes("error code");
+                    const isRewardOrWithdrawal = textLower.includes("reward") || textLower.includes("withdraw") || text.includes("💰");
+
+                    if (!isErrorCode && !isRewardOrWithdrawal) trackData.msgIdsToClean.push(msg.id); 
+
+                    // 🛑 TRASH
+                    if (textLower.includes("already registered") || text.includes("🟡") || text.includes("⚫️") || textLower.includes("badnum") || (textLower.includes("error") && !isErrorCode)) {
+                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
+                        try { await ultarUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+                        stats.trash++;
+                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
+                        if (isBackground) delete backgroundTracker[botNum]; else delete activeTracker[botNum];
+                    } 
+                    // 💰 PAID
+                    else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢")) {
+                        let amountStr = "0.00";
+                        const amountMatch = text.match(/Amount:\s*([\d.]+)/i);
+                        if (amountMatch) { stats.earned += parseFloat(amountMatch[1]); amountStr = parseFloat(amountMatch[1]).toFixed(2); }
+
+                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
+                        try { await ultarUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+                        stats.completed++;
+                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
+                        if (isBackground) delete backgroundTracker[botNum]; else delete activeTracker[botNum];
+                        await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
+                    }
+                    // 🔵 IN PROGRESS / ERROR
+                    else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
+                        if (!isErrorCode) trackData.count++;
+
+                        if (trackData.count === 2 || isErrorCode) {
+                            if (trackData.count === 2 && !isErrorCode && !trackData.inProgressCounted) {
+                                stats.inProgress++; trackData.inProgressCounted = true;
+                                if (!isBackground) { backgroundTracker[botNum] = activeTracker[botNum]; delete activeTracker[botNum]; isBackground = true; }
+                            }
+
+                            if (!trackData.manualPromptSent || isErrorCode) {
+                                let promptText = `🔔 **ZU: MANUAL OTP ENTRY**\nNumber: \`${botNum}\``;
+                                if (isErrorCode) promptText = `🔴 **ZU: WRONG CODE**\nNumber: \`${botNum}\``;
+                                
+                                try {
+                                    const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+                                    manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
+                                    trackData.manualPromptSent = true;
+                                } catch (spamErr) {}
+                            }
+
+                            if (isErrorCode) {
+                                await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next...`);
+                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
+                            } else if (!trackData.hunterSpawned) {
+                                trackData.hunterSpawned = true;
+                                if (isAuto) {
+                                    await addLog(`⚡ \`${botNum}\`: Hunter Deployed...`);
+                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
+                                } else {
+                                    await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for manual reply)...`);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // Memory Cleanup
+        for (const num in activeTracker) {
+            if (Date.now() - activeTracker[num].addedAt > 900000) { 
+                backgroundTracker[num] = activeTracker[num]; delete activeTracker[num]; 
+            }
+        }
+        for (const num in backgroundTracker) {
+            if (Date.now() - backgroundTracker[num].addedAt > 1800000) { 
+                if (backgroundTracker[num].inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
+                delete backgroundTracker[num];
+            }
+        }
+
+        stats.activeCount = Object.keys(activeTracker).length;
+        stats.bgCount = Object.keys(backgroundTracker).length;
+        stats.left = zuQueue[chatId] ? zuQueue[chatId].length : 0;
+
+        if (!instantNext) await delay(800); 
+    }
+
+    zuActive[chatId] = false;
+    bot.sendMessage(chatId, `**[ZU ENGINE OFFLINE]**\nQueue finished or halted.`, { parse_mode: 'Markdown' });
+}
+
 
 
 // --- Shared Filter and Batch Sender ---
@@ -2897,126 +3105,101 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 }
 
 
-            // --- /zu : RAW BLIND FEEDER (ULTAR ACCOUNT) ---
-    bot.onText(/\/zu/, async (msg) => {
-        if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
-        const chatId = msg.chat.id;
-        const userId = chatId.toString();
+        // ==========================================
+// ZU ENGINE GLOBAL STATE TRACKERS
+// ==========================================
+const zuQueue = {};
+const zuActive = {};
+const zuGlobalStats = {};
+const zuState = {}; // Tracks 'auto' or 'manual'
 
-        // Admin & Subadmin Authorization
-        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+// --- /zu : SMART ENGINE (ULTAR ACCOUNT) ---
+bot.onText(/^\/zu(?:\s+(\d+))?$/, async (msg, match) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
 
-        if (!msg.reply_to_message || !msg.reply_to_message.document) {
-            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /zu");
-        }
+    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
 
-        const doc = msg.reply_to_message.document;
-        if (!doc.file_name.endsWith('.txt')) {
-            return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for /zu.");
-        }
+    const amount = match[1] ? parseInt(match[1]) : null;
 
-        let statusMsg = await bot.sendMessage(chatId, "⏳ Downloading file and booting up ULTAR feeder...");
-
-        try {
-            // 1. Download and Parse File
-            const fileLink = await bot.getFileLink(doc.file_id);
-            const response = await fetch(fileLink);
-            const textData = await response.text();
-
-            const matches = textData.match(/\d{7,15}/g) || [];
-            if (matches.length === 0) {
-                return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+    // --- MODE 1: SCRAPE MODE (/zu 5000) ---
+    if (amount) {
+        const options = {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "Target: Rocket OTP", callback_data: `zu_target_ROCKETOTP_BOT_${amount}` }],
+                    [{ text: "Target: LolzFack (SMS_Sp)", callback_data: `zu_target_LolzFack_bot_${amount}` }],
+                    [{ text: "Target: NokosX BOT", callback_data: `zu_target_NokosxBot_${amount}` }],
+                    [{ text: "Target: HX OTP", callback_data: `zu_target_hxotpbot_${amount}` }]
+                ]
             }
+        };
+        return bot.sendMessage(chatId, `**[ZU SCRAPER ENGINE]**\nTarget: ${amount} numbers.\n\nSelect which bot the Grabber (Telegram2) should scrape from:`, { parse_mode: 'Markdown', reply_markup: options.reply_markup });
+    }
 
-            const uniqueNumbers = [...new Set(matches)];
+    // --- MODE 2: FILE MODE (Reply to .txt) ---
+    if (!msg.reply_to_message || !msg.reply_to_message.document) {
+        return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /zu, or use /zu [amount] to scrape.");
+    }
 
-            // 2. Connect the ULTAR Account
-            await ensureUltarConnected();
+    const doc = msg.reply_to_message.document;
+    if (!doc.file_name.endsWith('.txt')) {
+        return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for /zu.");
+    }
 
-            await bot.editMessageText(
-                `**[ULTAR FEEDER ACTIVE]** 🚀\n\n` +
-                `Loaded: ${uniqueNumbers.length} numbers.\n` +
-                `Rate: 1 every 2.5 seconds.\n\n` +
-                `_Feeding to @wsotp200bot blindly... You can safely ignore this chat._`, 
-                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
-            );
+    userState[chatId + '_zu_file'] = doc.file_id;
+    sessionTargetBots[chatId + '_zu'] = null; // Null means it uses the default Ultar group for hunting
 
-            const TARGET_BOT = "wsotp200bot";
-            let sentCount = 0;
-
-            // 3. The 2.5-Second Firing Loop
-            for (let i = 0; i < uniqueNumbers.length; i++) {
-                const rawNum = uniqueNumbers[i];
-                let formattedNum = rawNum.replace(/\D/g, '');
-
-                // Apply standard formatting before sending
-                if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
-                else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
-                else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
-
-                try {
-                    // Send the message using the dedicated ULTAR account
-                    await ultarUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
-                    sentCount++;
-                } catch (err) {
-                    const errorText = err.message || "";
-                    console.error(`[ULTAR FEEDER ERROR] on ${formattedNum}:`, errorText);
-                    
-                    // --- SMART FLOODWAIT HANDLER ---
-                    if (errorText.includes('wait of')) {
-                        // Extract the exact number of seconds Telegram wants us to wait
-                        const waitSeconds = parseInt(errorText.match(/\d+/)[0]) || 60;
-                        
-                        try {
-                            await bot.editMessageText(
-                                `**[ULTAR FEEDER PAUSED]** 🛑\n\n` +
-                                `Telegram Spam Filter Hit!\n` +
-                                `Sleeping for ${waitSeconds} seconds...\n` +
-                                `_Don't worry, it will auto-resume._\n\n` +
-                                `Progress: ${i} / ${uniqueNumbers.length}`, 
-                                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
-                            );
-                        } catch (e) {}
-
-                        // Sleep for the exact penalty time + a 2-second buffer
-                        await delay((waitSeconds * 1000) + 2000); 
-                        
-                        // Step back 1 index so we retry the exact number that failed
-                        i--; 
-                        continue; // Skip the standard delay and retry immediately
-                    }
-                }
-
-                // Progress Update: Every 20 numbers so we don't trigger Telegram rate limits on message edits
-                if ((i + 1) % 20 === 0) {
-                    try {
-                        await bot.editMessageText(
-                            `**[ULTAR FEEDER ACTIVE]** 🚀\n\n` +
-                            `Progress: ${i + 1} / ${uniqueNumbers.length}\n` +
-                            `Sent: ${sentCount}\n\n` +
-                            `_Feeding blindly..._`, 
-                            { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
-                        );
-                    } catch (editErr) {} // Silently ignore "message not modified" errors
-                }
-
-                // THE EXACT 2.5-SECOND DELAY
-                await delay(2500);
-            }
-
-            // 4. Final Completion Report
-            bot.editMessageText(
-                `**[ULTAR FEEDER FINISHED]** ✅\n\n` +
-                `Total Extracted: ${uniqueNumbers.length}\n` +
-                `Successfully Sent: ${sentCount}\n\n` +
-                `_Feeder task complete._`, 
-                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
-            );
-
-        } catch (err) {
-            bot.sendMessage(chatId, `[ERROR] Feeder failed: ${err.message}`);
+    bot.sendMessage(chatId, `**[ZU FILE ENGINE]**\nFile loaded.\n\nHow should I handle In Progress (2x) numbers?`, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Automatic (Hunt in Ultar Group)', callback_data: 'zu_file_mode_auto' }],
+                [{ text: 'Manual (Send me notifications)', callback_data: 'zu_file_mode_man' }]
+            ]
         }
     });
+});
+
+// --- /zustop : KILL SWITCH FOR THE ZU ENGINE ---
+bot.onText(/\/zustop/, async (msg) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    if (chatId.toString() !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(chatId.toString())) return;
+
+    userState[chatId + '_zu_stop'] = true;
+    zuQueue[chatId] = []; // Clear the queue immediately
+    bot.sendMessage(chatId, "🛑 **Stopping ZU Engine...**\n_Clearing queue and aborting loop safely._", { parse_mode: 'Markdown' });
+});
+
+// --- /zustats : LIVE DASHBOARD FOR ZU ENGINE ---
+bot.onText(/\/zustats/, async (msg) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    if (chatId.toString() !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(chatId.toString())) return;
+
+    if (!zuActive[chatId] || !zuGlobalStats[chatId]) return bot.sendMessage(chatId, "The ZU Engine is currently offline.");
+
+    const stats = zuGlobalStats[chatId];
+    stats.left = zuQueue[chatId] ? zuQueue[chatId].length : 0;
+    const logsText = stats.logs.join('\n');
+
+    const txt = 
+        `**[ZU ENGINE (ULTAR) DASHBOARD]** 🚀\n\n` +
+        `Queue Remaining: ${stats.left}\n` +
+        `Active Window: ${stats.activeCount}\n` +
+        `Background Waiting: ${stats.bgCount}\n` +
+        `Total Sent: ${stats.sent}\n` +
+        `In Progress (2x): ${stats.inProgress}\n` +
+        `Completed/Paid: ${stats.completed}\n` +
+        `Trash (Deleted): ${stats.trash}\n\n` +
+        `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
+        `_Type /zustop to abort._`;
+        
+    bot.sendMessage(chatId, txt, { parse_mode: 'Markdown' });
+});
+
 
 
     
@@ -9164,6 +9347,155 @@ const cleanNumbers = matches.map(n => {
                 bot.sendMessage(chatId, "[ERROR] " + err.message);
             }
         }
+
+
+                // --- ZU SCRAPE: BOT SELECTED ---
+        if (data.startsWith('zu_target_')) {
+            await bot.answerCallbackQuery(query.id);
+            const parts = data.split('_');
+            const targetBot = parts[2] + (parts[3] !== 'bot' && isNaN(parts[3]) ? '_' + parts[3] : ''); // Reconstruct bot name safely
+            const amount = parts[parts.length - 1];
+
+            sessionTargetBots[chatId + '_zu'] = targetBot;
+
+            return bot.editMessageText(
+                `**[ZU SCRAPER ENGINE]**\nTarget Bot: @${targetBot}\nAmount: ${amount}\n\nHow should I handle In Progress (2x) numbers?`, 
+                {
+                    chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: `Automatic (Hunt in @${targetBot})`, callback_data: `zu_scrape_mode_auto_${amount}` }],
+                            [{ text: `Manual (Send me notifications)`, callback_data: `zu_scrape_mode_man_${amount}` }]
+                        ]
+                    }
+                }
+            );
+        }
+
+        // --- ZU SCRAPE: START ENGINE ---
+        if (data.startsWith('zu_scrape_mode_')) {
+            await bot.answerCallbackQuery(query.id);
+            const mode = data.includes('auto') ? 'auto' : 'manual';
+            const amount = parseInt(data.split('_').pop());
+            const targetBot = sessionTargetBots[chatId + '_zu'];
+
+            zuState[chatId] = mode;
+            zuQueue[chatId] = zuQueue[chatId] || [];
+            userState[chatId + '_zu_stop'] = false;
+
+            const statusMsg = await bot.editMessageText(`🚀 **[ZU SCRAPER ACTIVE]**\n\nZU Grabber is now scraping @${targetBot} and injecting directly into the ULTAR feeder...\n\n_Type /zustats to view live progress._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+
+            // Start the Dedicated ZU Grabber
+            try {
+                await ensureZuScraperConnected(); // 🚀 Uses ZU Scraper
+                await zuScraperBot.sendMessage(targetBot, { message: targetBot === "LolzFack_bot" ? "Get Number" : "/start" });
+
+                let verified = 0;
+                let attempts = 0;
+                let emptyRefreshes = 0;
+                const seen = new Set();
+
+                const processNumber = async (raw) => {
+                    if (verified >= amount || userState[chatId + '_zu_stop']) return;
+                    if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
+                    else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
+                    
+                    if (seen.has(raw)) return;
+                    seen.add(raw);
+
+                    const botPayload = raw.replace(/^0/, '');
+                    zuQueue[chatId].push(botPayload);
+                    verified++;
+                    emptyRefreshes = 0;
+
+                    // Wake up the ZU Daemon if it's sleeping
+                    if (!zuActive[chatId]) processZuQueue(chatId);
+                };
+
+                while (verified < amount && attempts < (amount * 5) && !userState[chatId + '_zu_stop']) {
+                    attempts++;
+                    let initialVerified = verified;
+
+                    // 🚀 FETCH STRICTLY FROM ZU SCRAPER BOT
+                    const allMsgs = await zuScraperBot.getMessages(targetBot, { limit: 3 }).catch(() => []);
+                    for (const msg of allMsgs) {
+                        const text = msg.message || "";
+                        if (text.includes("Choose a country:") || text.includes("Select service")) continue;
+
+                        if (msg.replyMarkup?.rows) {
+                            for (const row of msg.replyMarkup.rows) {
+                                for (const btn of row.buttons) {
+                                    const bText = btn.text || "";
+                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
+                                    const match = bText.match(/\d{9,15}/);
+                                    if (match) await processNumber(match[0]);
+                                }
+                            }
+                        }
+                        const textMatches = text.match(/\d{9,15}/g) || [];
+                        for (let raw of textMatches) { await processNumber(raw); }
+                    }
+
+                    if (verified >= amount || userState[chatId + '_zu_stop']) break;
+
+                    if (verified === initialVerified) emptyRefreshes++;
+                    if (emptyRefreshes >= 15) break; // Bot empty
+
+                    let clicked = false;
+                    for (const msg of allMsgs) {
+                        if (msg.replyMarkup && msg.replyMarkup.rows) {
+                            for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
+                                for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
+                                    const bText = (msg.replyMarkup.rows[r].buttons[c].text || "").toLowerCase();
+                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change") || bText.includes("new numbers") || bText.includes("get number")) {
+                                        try {
+                                            // 🚀 CLICK WITH ZU SCRAPER BOT
+                                            await zuScraperBot.invoke(new Api.messages.GetBotCallbackAnswer({ peer: targetBot, msgId: msg.id, data: msg.replyMarkup.rows[r].buttons[c].data }));
+                                            clicked = true;
+                                        } catch(e) {
+                                            try { await msg.click({ text: msg.replyMarkup.rows[r].buttons[c].text }); clicked = true; } catch(err){}
+                                        }
+                                    }
+                                    if (clicked) break;
+                                }
+                                if (clicked) break;
+                            }
+                        }
+                        if (clicked) break;
+                    }
+                    await delay(clicked ? 2000 : 1500);
+                }
+            } catch (err) { bot.sendMessage(chatId, "[ERROR] ZU Scraper failed: " + err.message); }
+            return;
+        }
+
+        // --- ZU FILE: START ENGINE ---
+        if (data.startsWith('zu_file_mode_')) {
+            await bot.answerCallbackQuery(query.id);
+            const mode = data.includes('auto') ? 'auto' : 'manual';
+            const fileId = userState[chatId + '_zu_file'];
+
+            if (!fileId) return bot.sendMessage(chatId, "[ERROR] Session expired. Please reply to the file again.");
+            
+            try {
+                const fileLink = await bot.getFileLink(fileId);
+                const response = await fetch(fileLink);
+                const textData = await response.text();
+                const matches = textData.match(/\d{7,15}/g) || [];
+                const uniqueNumbers = [...new Set(matches)];
+
+                zuState[chatId] = mode;
+                zuQueue[chatId] = zuQueue[chatId] || [];
+                zuQueue[chatId].push(...uniqueNumbers);
+                userState[chatId + '_zu_stop'] = false;
+
+                bot.editMessageText(`🚀 **[ZU FILE ENGINE ACTIVE]**\n\nLoaded: ${uniqueNumbers.length} numbers.\nMode: ${mode.toUpperCase()}\n\n_Type /zustats to view live progress, or /zustop to abort._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+
+                if (!zuActive[chatId]) processZuQueue(chatId);
+            } catch (err) { bot.sendMessage(chatId, `[ERROR] Failed to load file: ${err.message}`); }
+            return;
+        }
+
 
 
         

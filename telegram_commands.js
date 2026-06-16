@@ -2897,7 +2897,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 }
 
 
-        // --- /zu : RAW BLIND FEEDER (ULTAR ACCOUNT) ---
+            // --- /zu : RAW BLIND FEEDER (ULTAR ACCOUNT) ---
     bot.onText(/\/zu/, async (msg) => {
         if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
         const chatId = msg.chat.id;
@@ -2936,7 +2936,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             await bot.editMessageText(
                 `**[ULTAR FEEDER ACTIVE]** 🚀\n\n` +
                 `Loaded: ${uniqueNumbers.length} numbers.\n` +
-                `Rate: 1 per second.\n\n` +
+                `Rate: 1 every 2.5 seconds.\n\n` +
                 `_Feeding to @wsotp200bot blindly... You can safely ignore this chat._`, 
                 { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
             );
@@ -2944,7 +2944,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             const TARGET_BOT = "wsotp200bot";
             let sentCount = 0;
 
-            // 3. The 1-Second Firing Loop
+            // 3. The 2.5-Second Firing Loop
             for (let i = 0; i < uniqueNumbers.length; i++) {
                 const rawNum = uniqueNumbers[i];
                 let formattedNum = rawNum.replace(/\D/g, '');
@@ -2959,7 +2959,32 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                     await ultarUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
                     sentCount++;
                 } catch (err) {
-                    console.error(`[ULTAR FEEDER ERROR] on ${formattedNum}:`, err.message);
+                    const errorText = err.message || "";
+                    console.error(`[ULTAR FEEDER ERROR] on ${formattedNum}:`, errorText);
+                    
+                    // --- SMART FLOODWAIT HANDLER ---
+                    if (errorText.includes('wait of')) {
+                        // Extract the exact number of seconds Telegram wants us to wait
+                        const waitSeconds = parseInt(errorText.match(/\d+/)[0]) || 60;
+                        
+                        try {
+                            await bot.editMessageText(
+                                `**[ULTAR FEEDER PAUSED]** 🛑\n\n` +
+                                `Telegram Spam Filter Hit!\n` +
+                                `Sleeping for ${waitSeconds} seconds...\n` +
+                                `_Don't worry, it will auto-resume._\n\n` +
+                                `Progress: ${i} / ${uniqueNumbers.length}`, 
+                                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                            );
+                        } catch (e) {}
+
+                        // Sleep for the exact penalty time + a 2-second buffer
+                        await delay((waitSeconds * 1000) + 2000); 
+                        
+                        // Step back 1 index so we retry the exact number that failed
+                        i--; 
+                        continue; // Skip the standard delay and retry immediately
+                    }
                 }
 
                 // Progress Update: Every 20 numbers so we don't trigger Telegram rate limits on message edits
@@ -2975,8 +3000,8 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                     } catch (editErr) {} // Silently ignore "message not modified" errors
                 }
 
-                // THE EXACT 1-SECOND DELAY
-                await delay(1000);
+                // THE EXACT 2.5-SECOND DELAY
+                await delay(2500);
             }
 
             // 4. Final Completion Report

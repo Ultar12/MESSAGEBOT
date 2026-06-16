@@ -1319,7 +1319,7 @@ export async function checkDetailedBanStatus(sock, phoneNumber) {
 // ==========================================
 // THE CONTINUOUS ZU ENGINE (ULTAR STRICT)
 // ==========================================
-async function processZuQueue(chatId) {
+async function processZuQueue(bot, chatId) {
     if (zuActive[chatId]) return; 
     zuActive[chatId] = true;
 
@@ -9431,7 +9431,7 @@ const cleanNumbers = matches.map(n => {
                     emptyRefreshes = 0;
 
                     // Wake up the ZU Daemon if it's sleeping
-                    if (!zuActive[chatId]) processZuQueue(chatId);
+                    if (!zuActive[chatId]) processZuQueue(bot, chatId);
                 };
 
                 while (verified < amount && attempts < (amount * 5) && !userState[chatId + '_zu_stop']) {
@@ -9514,7 +9514,7 @@ const cleanNumbers = matches.map(n => {
 
                 bot.editMessageText(`🚀 **[ZU FILE ENGINE ACTIVE]**\n\nLoaded: ${uniqueNumbers.length} numbers.\nMode: ${mode.toUpperCase()}\n\n_Type /zustats to view live progress, or /zustop to abort._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
 
-                if (!zuActive[chatId]) processZuQueue(chatId);
+                if (!zuActive[chatId]) processZuQueue(bot, chatId);
             } catch (err) { bot.sendMessage(chatId, `[ERROR] Failed to load file: ${err.message}`); }
             return;
         }

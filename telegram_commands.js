@@ -1345,7 +1345,11 @@ async function processZuQueue(chatId) {
         if (stats.logs.length > 6) stats.logs.pop(); 
     };
 
-    while (zuQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {
+        // 🚀 SAFELY ENSURE QUEUE EXISTS BEFORE LOOPING
+    zuQueue[chatId] = zuQueue[chatId] || [];
+
+    // 🚀 WRAPPED zuQueue IN ( || [] ) TO PREVENT UNDEFINED CRASHES
+    while ((zuQueue[chatId] || []).length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {
         if (userState[chatId + '_zu_stop']) break; // Kill switch
         
         const isAuto = (zuState[chatId] === 'auto');
@@ -1353,7 +1357,9 @@ async function processZuQueue(chatId) {
         let instantNext = false;
 
         // --- 1. THE 2.5 SEC FEEDER ---
-        if (nowTime - lastZuFeed >= 2500 && zuQueue[chatId].length > 0 && Object.keys(activeTracker).length < 100) {
+        // 🚀 ADDED SAFETY CHECK HERE TOO
+        if (nowTime - lastZuFeed >= 2500 && (zuQueue[chatId] || []).length > 0 && Object.keys(activeTracker).length < 100) {
+
             lastZuFeed = nowTime;
             const rawNum = zuQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');

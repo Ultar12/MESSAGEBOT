@@ -61,14 +61,14 @@ const userBot = new TelegramClient(stringSession, apiId, apiHash, {
 // 🔄 Helper function to guarantee connection before any action
 async function ensureConnected() {
     if (!userBot.connected) {
-        console.log("[USERBOT] 🔌 Reconnecting...");
+        console.log("[USERBOT] Reconnecting...");
         await userBot.connect();
     }
     // Double check authorization status
     try {
         await userBot.getMe(); 
     } catch (e) {
-        console.log("[USERBOT] 🔑 Session might be invalid or disconnected. Re-authorizing...");
+        console.log("[USERBOT] Session might be invalid or disconnected. Re-authorizing...");
         await userBot.connect();
     }
 }
@@ -171,6 +171,35 @@ async function ensureTelegram3Connected() {
 }
 // ------------------------------------
 
+
+
+// 🚀 --- NEW ULTAR BOT SETUP (For /zu Feeder) --- 🚀
+const ultarApiId = parseInt(process.env.ULTAR_API_ID || "0"); 
+const ultarApiHash = process.env.ULTAR_API_HASH || "";
+const ultarStringSession = new StringSession(process.env.ULTAR_SESSION || ""); 
+
+let ultarUserBot = null;
+if (ultarApiId && ultarApiHash) {
+    ultarUserBot = new TelegramClient(ultarStringSession, ultarApiId, ultarApiHash, { 
+        connectionRetries: 5,
+        useWSS: true 
+    });
+}
+
+async function ensureUltarConnected() {
+    if (!ultarUserBot) throw new Error("ULTAR UserBot credentials not set in Config Vars.");
+    if (!ultarUserBot.connected) {
+        console.log("[ULTAR BOT] Connecting...");
+        await ultarUserBot.connect();
+    }
+    try {
+        await ultarUserBot.getMe(); 
+    } catch (e) {
+        console.log("[ULTAR BOT] Session might be invalid. Re-authorizing...");
+        await ultarUserBot.connect();
+    }
+}
+// ------------------------------------
 
 
 
@@ -2866,6 +2895,104 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
+
+
+        // --- /zu : RAW BLIND FEEDER (ULTAR ACCOUNT) ---
+    bot.onText(/\/zu/, async (msg) => {
+        if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+        const chatId = msg.chat.id;
+        const userId = chatId.toString();
+
+        // Admin & Subadmin Authorization
+        if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+        if (!msg.reply_to_message || !msg.reply_to_message.document) {
+            return bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /zu");
+        }
+
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) {
+            return bot.sendMessage(chatId, "[ERROR] I can only process .txt files for /zu.");
+        }
+
+        let statusMsg = await bot.sendMessage(chatId, "⏳ Downloading file and booting up ULTAR feeder...");
+
+        try {
+            // 1. Download and Parse File
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+
+            const matches = textData.match(/\d{7,15}/g) || [];
+            if (matches.length === 0) {
+                return bot.editMessageText("[ERROR] No valid numbers found in the file.", { chat_id: chatId, message_id: statusMsg.message_id });
+            }
+
+            const uniqueNumbers = [...new Set(matches)];
+
+            // 2. Connect the ULTAR Account
+            await ensureUltarConnected();
+
+            await bot.editMessageText(
+                `**[ULTAR FEEDER ACTIVE]** 🚀\n\n` +
+                `Loaded: ${uniqueNumbers.length} numbers.\n` +
+                `Rate: 1 per second.\n\n` +
+                `_Feeding to @wsotp200bot blindly... You can safely ignore this chat._`, 
+                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+            );
+
+            const TARGET_BOT = "wsotp200bot";
+            let sentCount = 0;
+
+            // 3. The 1-Second Firing Loop
+            for (let i = 0; i < uniqueNumbers.length; i++) {
+                const rawNum = uniqueNumbers[i];
+                let formattedNum = rawNum.replace(/\D/g, '');
+
+                // Apply standard formatting before sending
+                if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
+                else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+                else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
+
+                try {
+                    // Send the message using the dedicated ULTAR account
+                    await ultarUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
+                    sentCount++;
+                } catch (err) {
+                    console.error(`[ULTAR FEEDER ERROR] on ${formattedNum}:`, err.message);
+                }
+
+                // Progress Update: Every 20 numbers so we don't trigger Telegram rate limits on message edits
+                if ((i + 1) % 20 === 0) {
+                    try {
+                        await bot.editMessageText(
+                            `**[ULTAR FEEDER ACTIVE]** 🚀\n\n` +
+                            `Progress: ${i + 1} / ${uniqueNumbers.length}\n` +
+                            `Sent: ${sentCount}\n\n` +
+                            `_Feeding blindly..._`, 
+                            { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                        );
+                    } catch (editErr) {} // Silently ignore "message not modified" errors
+                }
+
+                // THE EXACT 1-SECOND DELAY
+                await delay(1000);
+            }
+
+            // 4. Final Completion Report
+            bot.editMessageText(
+                `**[ULTAR FEEDER FINISHED]** ✅\n\n` +
+                `Total Extracted: ${uniqueNumbers.length}\n` +
+                `Successfully Sent: ${sentCount}\n\n` +
+                `_Feeder task complete._`, 
+                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+            );
+
+        } catch (err) {
+            bot.sendMessage(chatId, `[ERROR] Feeder failed: ${err.message}`);
+        }
+    });
+
 
     
 

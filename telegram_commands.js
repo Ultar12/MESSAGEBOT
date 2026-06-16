@@ -3145,13 +3145,6 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 }
 
 
-        // ==========================================
-// ZU ENGINE GLOBAL STATE TRACKERS
-// ==========================================
-const zuQueue = {};
-const zuActive = {};
-const zuGlobalStats = {};
-const zuState = {}; // Tracks 'auto' or 'manual'
 
 // --- /zu : SMART ENGINE (ULTAR ACCOUNT) ---
 bot.onText(/^\/zu(?:\s+(\d+))?$/, async (msg, match) => {

@@ -9350,17 +9350,21 @@ const cleanNumbers = matches.map(n => {
         }
 
 
+                
                 // --- ZU SCRAPE: BOT SELECTED ---
         if (data.startsWith('zu_target_')) {
             await bot.answerCallbackQuery(query.id);
             const parts = data.split('_');
-            const targetBot = parts[2] + (parts[3] !== 'bot' && isNaN(parts[3]) ? '_' + parts[3] : ''); // Reconstruct bot name safely
             const amount = parts[parts.length - 1];
+            
+            // 🚀 FIX 1: Perfectly extract the bot name without breaking underscores
+            const targetBot = data.replace('zu_target_', '').replace(`_${amount}`, ''); 
 
             sessionTargetBots[chatId + '_zu'] = targetBot;
 
             return bot.editMessageText(
-                `**[ZU SCRAPER ENGINE]**\nTarget Bot: @${targetBot}\nAmount: ${amount}\n\nHow should I handle In Progress (2x) numbers?`, 
+                // 🚀 FIX 2: Wrapped the bot name in backticks so the underscore doesn't crash Telegram
+                `**[ZU SCRAPER ENGINE]**\nTarget Bot: \`@${targetBot}\`\nAmount: ${amount}\n\nHow should I handle In Progress (2x) numbers?`, 
                 {
                     chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown',
                     reply_markup: {
@@ -9384,7 +9388,8 @@ const cleanNumbers = matches.map(n => {
             zuQueue[chatId] = zuQueue[chatId] || [];
             userState[chatId + '_zu_stop'] = false;
 
-            const statusMsg = await bot.editMessageText(`🚀 **[ZU SCRAPER ACTIVE]**\n\nZU Grabber is now scraping @${targetBot} and injecting directly into the ULTAR feeder...\n\n_Type /zustats to view live progress._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+            // 🚀 FIX 3: Wrapped it in backticks here as well!
+            const statusMsg = await bot.editMessageText(`🚀 **[ZU SCRAPER ACTIVE]**\n\nZU Grabber is now scraping \`@${targetBot}\` and injecting directly into the ULTAR feeder...\n\n_Type /zustats to view live progress._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
 
             // Start the Dedicated ZU Grabber
             try {
@@ -9469,6 +9474,7 @@ const cleanNumbers = matches.map(n => {
             } catch (err) { bot.sendMessage(chatId, "[ERROR] ZU Scraper failed: " + err.message); }
             return;
         }
+
 
         // --- ZU FILE: START ENGINE ---
         if (data.startsWith('zu_file_mode_')) {

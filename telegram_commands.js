@@ -90,6 +90,16 @@ let wsotpWarnedNoWa = false;
 let getnumSelectedBot = null; // 'ROCKETOTP_BOT', 'LolzFack_bot', etc.
 
 
+// ==========================================
+// ZU ENGINE GLOBAL STATE TRACKERS
+// ==========================================
+const zuQueue = {};
+const zuActive = {};
+const zuGlobalStats = {};
+const zuState = {}; // Tracks 'auto' or 'manual'
+
+
+
 
 // Add this at the top of your file with your other variables
 const failedAccounts = new Set();

@@ -1368,18 +1368,25 @@ async function processZuQueue(bot, chatId) {
             else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
             else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
 
-            stats.sent++;
+          stats.sent++;
             try {
-                await ultarUserBot.invoke(new Api.messages.SetTyping({ peer: TARGET_BOT, action: new Api.SendMessageTypingAction() }));
-                await delay(300); 
+                // 🚀 REMOVED the fragile "SetTyping" animation that was crashing the queue
                 const sentMsg = await ultarUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
                 
                 activeTracker[formattedNum] = {
                     count: 0, seenUpdates: new Set(), usedCodes: new Set(), msgIdsToClean: [sentMsg.id], 
                     addedAt: Date.now(), inProgressCounted: false, hunterSpawned: false, manualPromptSent: false 
                 };
-            } catch (e) { stats.sent--; }
+            } catch (e) { 
+                stats.sent--; 
+                // 🚀 Added a live error alert so it never fails silently again!
+                console.error(`[ULTAR FEEDER ERROR] on ${formattedNum}:`, e.message);
+                
+                // If it fails to send, pause for 3 seconds so we don't spam errors
+                await delay(3000);
+            }
         }
+
 
         // --- 2. LISTENER & HUNTER DISPATCHER ---
         try {

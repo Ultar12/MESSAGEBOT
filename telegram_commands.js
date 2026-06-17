@@ -9435,7 +9435,8 @@ const cleanNumbers = matches.map(n => {
             );
         }
 
-        // --- ZU SCRAPE: START ENGINE ---
+        
+                // --- ZU SCRAPE: START ENGINE ---
         if (data.startsWith('zu_scrape_mode_')) {
             await bot.answerCallbackQuery(query.id);
             const mode = data.includes('auto') ? 'auto' : 'manual';
@@ -9446,34 +9447,84 @@ const cleanNumbers = matches.map(n => {
             zuQueue[chatId] = zuQueue[chatId] || [];
             userState[chatId + '_zu_stop'] = false;
 
-            // 🚀 FIX 3: Wrapped it in backticks here as well!
-            const statusMsg = await bot.editMessageText(`🚀 **[ZU SCRAPER ACTIVE]**\n\nZU Grabber is now scraping \`@${targetBot}\` and injecting directly into the ULTAR feeder...\n\n_Type /zustats to view live progress._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+            const statusMsg = await bot.editMessageText(`🚀 **[ZU SCRAPER ACTIVE]**\n\nZU Grabber is now scraping \`@${targetBot}\`...\n\n_Waking up verification engine..._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
 
             // Start the Dedicated ZU Grabber
             try {
-                await ensureZuScraperConnected(); // 🚀 Uses ZU Scraper
+                await ensureZuScraperConnected(); 
+                
+                // 🚀 FORCED ENTITY SYNC: Prevents the scraper from crashing on unknown bots
+                try {
+                    await zuScraperBot.getEntity(targetBot);
+                } catch(syncErr) {
+                    await zuScraperBot.getDialogs(); 
+                }
+
                 await zuScraperBot.sendMessage(targetBot, { message: targetBot === "LolzFack_bot" ? "Get Number" : "/start" });
+
+                // 🚀 GET ACTIVE WHATSAPP SOCKET FOR VERIFICATION
+                const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                const verifySock = activeFolders.length > 0 ? clients[activeFolders[0]] : null;
 
                 let verified = 0;
                 let attempts = 0;
                 let emptyRefreshes = 0;
                 const seen = new Set();
+                let currentScreenBatch = []; // Limits the screen output to 100 numbers
 
                 const processNumber = async (raw) => {
                     if (verified >= amount || userState[chatId + '_zu_stop']) return;
+                    
+                    // Zambia Normalizer Fix
                     if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
                     else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
                     
                     if (seen.has(raw)) return;
                     seen.add(raw);
 
-                    const botPayload = raw.replace(/^0/, '');
-                    zuQueue[chatId].push(botPayload);
-                    verified++;
-                    emptyRefreshes = 0;
+                    const res = normalizeWithCountry(raw);
+                    if (!res) return;
 
-                    // Wake up the ZU Daemon if it's sleeping
-                    if (!zuActive[chatId]) processZuQueue(bot, chatId);
+                    const jid = `${res.code}${res.num.replace(/^0/, '')}@s.whatsapp.net`;
+                    const botPayload = raw.replace(/^0/, '');
+
+                    const executeOutput = async () => {
+                        zuQueue[chatId].push(botPayload);
+                        verified++;
+                        emptyRefreshes = 0;
+
+                        // Limit the screen array to the latest 100 valid numbers
+                        currentScreenBatch.push(`\`${res.num}\``);
+                        if (currentScreenBatch.length > 100) currentScreenBatch.shift();
+
+                        // Fast live update every 3 numbers to prevent Telegram API lag
+                        if (verified % 3 === 0 || verified === amount) {
+                            bot.editMessageText(
+                                `🚀 **[ZU SCRAPER ACTIVE]**\n\n` +
+                                `Target Bot: \`@${targetBot}\`\n` +
+                                `Verified & Injected: **${verified}** / ${amount}\n` +
+                                `WA Check: ${verifySock ? '✅ ENABLED' : '⚠️ OFFLINE (Blind)'}\n\n` +
+                                `**Latest Valid Numbers:**\n${currentScreenBatch.join(', ')}\n\n` +
+                                `_Type /zustats for live feeder info._`, 
+                                { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                            ).catch(()=>{});
+                        }
+
+                        // Wake up the ZU Daemon if it's sleeping
+                        if (!zuActive[chatId]) processZuQueue(bot, chatId);
+                    };
+
+                    // 🚀 LIVE WHATSAPP VERIFICATION
+                    if (!verifySock) {
+                        await executeOutput(); // Fallback to blind processing if WA disconnected
+                    } else {
+                        try {
+                            const [check] = await verifySock.onWhatsApp(jid);
+                            if (check && check.exists) {
+                                await executeOutput();
+                            }
+                        } catch(e) {}
+                    }
                 };
 
                 while (verified < amount && attempts < (amount * 5) && !userState[chatId + '_zu_stop']) {
@@ -9496,12 +9547,11 @@ const cleanNumbers = matches.map(n => {
                                 }
                             }
                         }
-                        // After the button loop, add this:
                         const textMatches = text.match(/\+?(\d{9,15})/g) || [];
                         for (let raw of textMatches) {
-                      raw = raw.replace('+', ''); // Strip the + sign
-                      if (raw.length >= 9) await processNumber(raw);
-                      }
+                            raw = raw.replace('+', ''); // Strip the + sign
+                            if (raw.length >= 9) await processNumber(raw);
+                        }
                     }
 
                     if (verified >= amount || userState[chatId + '_zu_stop']) break;
@@ -9533,9 +9583,14 @@ const cleanNumbers = matches.map(n => {
                     }
                     await delay(clicked ? 2000 : 1500);
                 }
+                
+                // Final Completion message
+                bot.sendMessage(chatId, `✅ **[ZU SCRAPE COMPLETE]**\nFinished verifying and injecting ${verified} active numbers!`, { parse_mode: 'Markdown' });
+                
             } catch (err) { bot.sendMessage(chatId, "[ERROR] ZU Scraper failed: " + err.message); }
             return;
         }
+
 
 
         // --- ZU FILE: START ENGINE ---

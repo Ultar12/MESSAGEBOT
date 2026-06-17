@@ -2945,8 +2945,12 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     await delay((isRocket || isNokosx) ? 8000 : 3000);
 
     while (Date.now() - startTime < MAX_TIME) {
-        const validModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
-        if (!validModes.includes(userState[chatId])) return;
+          const wsotpModes = ['WSOTP_FILE_MODE', 'WSOTP_MANUAL_MODE', 'WSOTP_AUTO_MODE', 'WSOTP_MAN_MODE'];
+        const isWsotpCaller = wsotpModes.includes(userState[chatId]);
+        const isZuCaller = zuActive[chatId]; // ZU engine is running
+        
+        if (!isWsotpCaller && !isZuCaller) return; // Neither engine is active, abort
+        if (userState[chatId + '_zu_stop']) return;  
         
         if (typeof manualOverrideMap !== 'undefined' && manualOverrideMap.has(cleanNum)) {
             await addLog(`[ABORT] \`${cleanNum}\`: Manual code entered. Hunter stopped.`);

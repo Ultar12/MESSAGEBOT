@@ -1488,7 +1488,7 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
             
             try {
                 const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
-                manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: 'ultar };
+                manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: 'ultar' };
                 trackData.manualPromptSent = true;
             } catch (spamErr) {}
         }

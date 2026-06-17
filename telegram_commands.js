@@ -1438,13 +1438,21 @@ if (!zuQueue[chatId] || zuQueue[chatId].length === 0) {
                     if (!isErrorCode && !isRewardOrWithdrawal) trackData.msgIdsToClean.push(msg.id); 
 
                     // 🛑 TRASH
-                    if (textLower.includes("already registered") || text.includes("🟡") || text.includes("⚫️") || textLower.includes("badnum") || (textLower.includes("error") && !isErrorCode)) {
-                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
-                        try { await ultarUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
-                        stats.trash++;
-                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
-                        if (isBackground) delete backgroundTracker[botNum]; else delete activeTracker[botNum];
-                    } 
+     if (textLower.includes("already registered") || text.includes("🟡") || text.includes("⚫️") || 
+    textLower.includes("badnum") || textLower.includes("blocked") ||
+    textLower.includes("please submit this number again") ||
+    textLower.includes("try later") ||
+    (textLower.includes("error") && !isErrorCode)) {
+    
+    // ✅ DELETE FROM BOT CHAT
+    const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
+    try { await ultarUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+    
+    stats.trash++;
+    if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
+    if (isBackground) delete backgroundTracker[botNum]; 
+    else delete activeTracker[botNum];
+}
                     // 💰 PAID
                     else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢")) {
                         let amountStr = "0.00";
@@ -1458,41 +1466,48 @@ if (!zuQueue[chatId] || zuQueue[chatId].length === 0) {
                         if (isBackground) delete backgroundTracker[botNum]; else delete activeTracker[botNum];
                         await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
                     }
+            
                     // 🔵 IN PROGRESS / ERROR
-                    else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
-                        if (!isErrorCode) trackData.count++;
+else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
+    if (!isErrorCode) trackData.count++;
 
-                        if (trackData.count === 2 || isErrorCode) {
-                            if (trackData.count === 2 && !isErrorCode && !trackData.inProgressCounted) {
-                                stats.inProgress++; trackData.inProgressCounted = true;
-                                if (!isBackground) { backgroundTracker[botNum] = activeTracker[botNum]; delete activeTracker[botNum]; isBackground = true; }
-                            }
+    if (trackData.count === 2 || isErrorCode) {
+        if (trackData.count === 2 && !isErrorCode && !trackData.inProgressCounted) {
+            stats.inProgress++; 
+            trackData.inProgressCounted = true;
+            if (!isBackground) { 
+                backgroundTracker[botNum] = activeTracker[botNum]; 
+                delete activeTracker[botNum]; 
+                isBackground = true; 
+            }
+        }
 
-                            if (!trackData.manualPromptSent || isErrorCode) {
-                                let promptText = `🔔 **ZU: MANUAL OTP ENTRY**\nNumber: \`${botNum}\``;
-                                if (isErrorCode) promptText = `🔴 **ZU: WRONG CODE**\nNumber: \`${botNum}\``;
-                                
-                                try {
-                                    const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
-                                    manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
-                                    trackData.manualPromptSent = true;
-                                } catch (spamErr) {}
-                            }
+        if (!trackData.manualPromptSent || isErrorCode) {
+            let promptText = `🔔 **ZU: MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
+            if (isErrorCode) promptText = `🔴 **ZU: WRONG CODE**\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
+            
+            try {
+                const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+                manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
+                trackData.manualPromptSent = true;
+            } catch (spamErr) {}
+        }
 
-                            if (isErrorCode) {
-                                await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next...`);
-                                if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
-                            } else if (!trackData.hunterSpawned) {
-                                trackData.hunterSpawned = true;
-                                if (isAuto) {
-                                    await addLog(`⚡ \`${botNum}\`: Hunter Deployed...`);
-                                    huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
-                                } else {
-                                    await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for manual reply)...`);
-                                }
-                            }
-                        }
-                    }
+        if (isErrorCode) {
+            await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next...`);
+            if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
+        } else if (!trackData.hunterSpawned) {
+            trackData.hunterSpawned = true;
+            if (isAuto) {
+                await addLog(`⚡ \`${botNum}\`: Hunter Deployed...`);
+                // ✅ FIX: Pass ultarUserBot AND the correct source bot
+                huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
+            } else {
+                await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for manual reply)...`);
+            }
+        }
+    }
+}
                 }
             }
         } catch (e) {}

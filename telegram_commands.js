@@ -1488,7 +1488,7 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
             
             try {
                 const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
-                manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
+                manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: 'ultar };
                 trackData.manualPromptSent = true;
             } catch (spamErr) {}
         }
@@ -7532,7 +7532,8 @@ bot.onText(/\/pdf/, async (msg) => {
 
                 try {
                     // Send directly to the WSOTP bot via Payme Userbot
-                    await paymeUserBot.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
+                    const botToUse = otpData.useBot === 'ultar' ? ultarUserBot : paymeUserBot;
+                    await botToUse.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
                 } catch (e) {
                     bot.sendMessage(chatId, `Failed to forward OTP: ${e.message}`);
                 }

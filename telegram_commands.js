@@ -1482,6 +1482,7 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
             }
         }
 
+        // ✅ ALWAYS send manual prompt (for error retries too)
         if (!trackData.manualPromptSent || isErrorCode) {
             let promptText = `🔔 **ZU: MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
             if (isErrorCode) promptText = `🔴 **ZU: WRONG CODE**\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
@@ -1495,13 +1496,22 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
 
         if (isErrorCode) {
             await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next...`);
-            if (isAuto) huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
+            // ✅ Reset so hunter can fire again on error
+            trackData.hunterSpawned = false;
+            if (isAuto) huntOtpAsync(
+                chatId, botNum, msg.id, trackData, addLog, 
+                sessionTargetBots[chatId + '_zu'],  // Rocket/HX/Nokosx/null(Ultar)
+                ultarUserBot                         // Always ultarUserBot for ZU
+            );
         } else if (!trackData.hunterSpawned) {
             trackData.hunterSpawned = true;
             if (isAuto) {
                 await addLog(`⚡ \`${botNum}\`: Hunter Deployed...`);
-                // ✅ FIX: Pass ultarUserBot AND the correct source bot
-                huntOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu'], ultarUserBot);
+                huntOtpAsync(
+                    chatId, botNum, msg.id, trackData, addLog,
+                    sessionTargetBots[chatId + '_zu'],  // Rocket/HX/Nokosx/null(Ultar)
+                    ultarUserBot                         // Always ultarUserBot for ZU
+                );
             } else {
                 await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for manual reply)...`);
             }

@@ -1494,28 +1494,21 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
             } catch (spamErr) {}
         }
 
-        if (isErrorCode) {
+                if (isErrorCode) {
             await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next...`);
             // ✅ Reset so hunter can fire again on error
             trackData.hunterSpawned = false;
-            if (isAuto) huntOtpAsync(
-                chatId, botNum, msg.id, trackData, addLog, 
-                sessionTargetBots[chatId + '_zu'],  // Rocket/HX/Nokosx/null(Ultar)
-                ultarUserBot                         // Always ultarUserBot for ZU
-            );
+            if (isAuto) huntZuOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu']);
         } else if (!trackData.hunterSpawned) {
             trackData.hunterSpawned = true;
             if (isAuto) {
-                await addLog(`⚡ \`${botNum}\`: Hunter Deployed...`);
-                huntOtpAsync(
-                    chatId, botNum, msg.id, trackData, addLog,
-                    sessionTargetBots[chatId + '_zu'],  // Rocket/HX/Nokosx/null(Ultar)
-                    ultarUserBot                         // Always ultarUserBot for ZU
-                );
+                await addLog(`⚡ \`${botNum}\`: ZU Hunter Deployed...`);
+                huntZuOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu']);
             } else {
                 await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for manual reply)...`);
             }
         }
+
     }
 }
                 }
@@ -1545,6 +1538,186 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
     zuActive[chatId] = false;
     bot.sendMessage(chatId, `**[ZU ENGINE OFFLINE]**\nQueue finished or halted.`, { parse_mode: 'Markdown' });
 }
+
+
+
+// ==========================================
+// DEDICATED ZU ENGINE OTP HUNTER
+// Uses zuScraperBot (Grabber) to scan, and ultarUserBot to send!
+// ==========================================
+async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null) {
+    const TARGET_BOT = "wsotp200bot";
+    
+    // Resolve which bot we are targeting
+    let effectiveSource = sourceBot;
+    if (!effectiveSource && typeof sessionTargetBots !== 'undefined') {
+        effectiveSource = sessionTargetBots[chatId + '_zu'];
+    }
+
+    const cleanNum = formattedNum.replace(/\D/g, '');
+    const search4 = cleanNum.slice(-4);
+    const search3 = cleanNum.slice(-3);
+
+    const startTime = Date.now();
+    const MAX_TIME = 180000; // 3 minutes
+
+    const isRocket = (effectiveSource === 'ROCKETOTP_BOT');
+    const isNokosx = (effectiveSource === 'NokosxBot');
+    const isHxotp = (effectiveSource === 'hxotpbot');
+    
+    // Dynamically set the target group based on mode
+    let SCAN_GROUP;
+    if (isRocket) SCAN_GROUP = -1003573619278;
+    else if (isNokosx) SCAN_GROUP = -1003633481131; // UXGROUP
+    else if (isHxotp) SCAN_GROUP = -1003871388849;
+    else SCAN_GROUP = -1003645249777; // Ultar
+
+    await addLog(`⚡ \`${cleanNum}\`: ZU Hunter scanning group ${SCAN_GROUP}...`);
+
+    // Ensure the grabber bot has the group cached
+    try { await zuScraperBot.getEntity(SCAN_GROUP); } catch(e) {}
+
+    await delay((isRocket || isNokosx) ? 8000 : 3000);
+
+    while (Date.now() - startTime < MAX_TIME) {
+        if (typeof userState !== 'undefined' && userState[chatId + '_zu_stop']) return;  
+        
+        if (typeof manualOverrideMap !== 'undefined' && manualOverrideMap.has(cleanNum)) {
+            await addLog(`[ABORT] \`${cleanNum}\`: Manual code entered. ZU Hunter stopped.`);
+            manualOverrideMap.delete(cleanNum); 
+            return; 
+        }
+
+        let foundCode = null;
+
+        try {
+            // 🔍 LIVE FETCH: Strictly uses zuScraperBot (The Grabber Account)
+            const msgs = await zuScraperBot.getMessages(SCAN_GROUP, { limit: 15 });
+            const tenMinsAgo = Math.floor(Date.now() / 1000) - 600;
+
+            for (const m of msgs) {
+                if (!m.message || m.date < tenMinsAgo) continue;
+
+                if (isRocket) {
+                    const numRegex = new RegExp(`Number[^\\n]*(?:${search4}|${search3})`, 'i');
+                    if (numRegex.test(m.message)) {
+                        const serviceMatch = m.message.match(/Service:\s*([^\n]+)/i);
+                        if (serviceMatch) {
+                            const serviceName = serviceMatch[1].toLowerCase();
+                            if (!serviceName.includes('whatsapp') && !serviceName.includes('wa') && !serviceName.includes('lnst')) continue; 
+                        }
+                        const otpMatch = m.message.match(/🔐\s*OTP[:\s]+(\d{3}[-\s]?\d{3})/i) || m.message.match(/OTP[:\s]+(\d{3}[-\s]?\d{3})/i) || m.message.match(/OTP[:\s]+(\d{4,8})/i) || m.message.match(/Code[:\s]+(\d{3}[-\s]?\d{3})/i);
+                        if (otpMatch) {
+                            let tempCode = otpMatch[1].replace(/[-\s]/g, '');
+                            if (!trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
+                        }
+                    }
+                } else if (isNokosx) {
+                    const numRegex = new RegExp(`(?:${search4}|${search3})`, 'i');
+                    if (numRegex.test(m.message)) {
+                        const msgLower = m.message.toLowerCase();
+                        if (!msgLower.includes('wa') && !msgLower.includes('whatsapp')) continue;
+                        let tempCode = null;
+                        if (m.replyMarkup && m.replyMarkup.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                const btnArray = row.buttons || row; 
+                                for (const btn of btnArray) {
+                                    const btnMatch = (btn.text || "").match(/(\d{4,8})/); 
+                                    if (btnMatch) { tempCode = btnMatch[1]; break; }
+                                }
+                                if (tempCode) break;
+                            }
+                        }
+                        if (tempCode && !trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
+                    }
+                } else if (isHxotp) {
+                    const numRegex = new RegExp(`(?:${search4}|${search3})\\s*\\|`, 'i');
+                    const fallbackRegex = new RegExp(`(?:${search4}|${search3})`, 'i'); 
+                    if (numRegex.test(m.message) || fallbackRegex.test(m.message)) {
+                        let tempCode = null;
+                        if (m.replyMarkup && m.replyMarkup.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                const btnArray = row.buttons || row; 
+                                for (const btn of btnArray) {
+                                    const btnMatch = (btn.text || "").match(/🔑\s*(\d{6})/) || (btn.text || "").match(/(?:\b|^)(\d{6})(?:\b|$)/);
+                                    if (btnMatch) { tempCode = btnMatch[1]; break; }
+                                }
+                                if (tempCode) break;
+                            }
+                        }
+                        if (!tempCode) {
+                            const codeMatch = m.message.match(/🔑\s*(\d{6})/);
+                            if (codeMatch) tempCode = codeMatch[1];
+                        }
+                        if (tempCode && !trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
+                    }
+                } else {
+                    const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
+                    if (numRegex.test(m.message)) {
+                        let tempCode = null;
+                        if (m.replyMarkup && m.replyMarkup.rows) {
+                            for (const row of m.replyMarkup.rows) {
+                                const btnArray = row.buttons || row; 
+                                for (const btn of btnArray) {
+                                    const btnMatch = (btn.text || "").match(/(?:Copy|OTP|Code).*?(\d{4,8})/i);
+                                    if (btnMatch) tempCode = btnMatch[1];
+                                }
+                                if (tempCode) break;
+                            }
+                        }
+                        if (!tempCode) {
+                            const codeMatch = m.message.match(/(?:Code|OTP)[:\s]+(\d{3}[-\s]?\d{3}|\d{4,8})/i);
+                            if (codeMatch) tempCode = codeMatch[1].replace(/[-\s]/g, '');
+                        }
+                        if (tempCode && !trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // 🚀 SEND THE CODE IF FOUND
+        if (foundCode) {
+            trackData.usedCodes.add(foundCode); 
+            await addLog(`✅ \`${cleanNum}\`: ZU OTP Found (${foundCode}). Replying...`);
+            
+            try {
+                await delay(Math.floor(Math.random() * 300) + 200); 
+                let sentOtp;
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 5000));
+
+                try {
+                    // 🚀 SENDS OTP USING ULTAR ACCOUNT
+                    const replyPromise = ultarUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
+                    sentOtp = await Promise.race([replyPromise, timeoutPromise]);
+                } catch (replyErr) {
+                    const sendPromise = ultarUserBot.sendMessage(TARGET_BOT, { message: foundCode });
+                    sentOtp = await Promise.race([sendPromise, timeoutPromise]);
+                }
+                
+                if (sentOtp && sentOtp.id) trackData.msgIdsToClean.push(sentOtp.id);
+                return; 
+            } catch (e) {
+                const errorText = e.message || "";
+                if (errorText.includes('wait of')) {
+                    const waitSeconds = parseInt(errorText.match(/\d+/)[0]) || 60;
+                    await addLog(`🛑 RATE LIMITED: ZU Hunter sleeping for ${waitSeconds}s...`);
+                    await delay((waitSeconds * 1000) + 2000); 
+                    trackData.usedCodes.delete(foundCode); 
+                    continue; 
+                }
+                if (errorText.includes("TIMEOUT")) {
+                    await addLog(`⚠️ \`${cleanNum}\`: Network timeout. Retrying...`);
+                    trackData.usedCodes.delete(foundCode);
+                    continue;
+                }
+                return; 
+            }
+        }
+        await delay(4500); 
+    }
+    await addLog(`❌ \`${cleanNum}\`: ZU Hunter gave up after 3 minutes.`);
+}
+
 
 
 

@@ -9687,16 +9687,27 @@ const cleanNumbers = matches.map(n => {
                         if (!zuActive[chatId]) processZuQueue(bot, chatId);
                     };
 
-                    // 🚀 LIVE WHATSAPP VERIFICATION
+                    // 🚀 LIVE WHATSAPP VERIFICATION (WITH ANTI-FREEZE & RATE LIMIT PROTECTION)
                     if (!verifySock) {
                         await executeOutput(); // Fallback to blind processing if WA disconnected
                     } else {
                         try {
-                            const [check] = await verifySock.onWhatsApp(jid);
+                            const checkPromise = verifySock.onWhatsApp(jid);
+                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 6000));
+                            
+                            // If WA takes longer than 6 seconds, it throws an error and skips the number!
+                            const [check] = await Promise.race([checkPromise, timeoutPromise]);
+                            
                             if (check && check.exists) {
                                 await executeOutput();
                             }
-                        } catch(e) {}
+                        } catch(e) {
+                            // Silent catch - if WA times out or number is invalid, skip it and keep scraping!
+                        }
+                        
+                        // 🚀 CRITICAL: The reason getnu works and ZU doesn't is this delay!
+                        // Without it, ZU blasts WhatsApp with 15 requests instantly, crashing the socket.
+                        await delay(2000); 
                     }
                 };
 
@@ -9720,6 +9731,7 @@ const cleanNumbers = matches.map(n => {
                                 }
                             }
                         }
+                        // After the button loop, check the text body:
                         const textMatches = text.match(/\+?(\d{9,15})/g) || [];
                         for (let raw of textMatches) {
                             raw = raw.replace('+', ''); // Strip the + sign
@@ -9758,11 +9770,14 @@ const cleanNumbers = matches.map(n => {
                 }
                 
                 // Final Completion message
-                bot.sendMessage(chatId, `✅ **[ZU SCRAPE COMPLETE]**\nFinished verifying and injecting ${verified} active numbers!`, { parse_mode: 'Markdown' });
+                if (!userState[chatId + '_zu_stop']) {
+                    bot.sendMessage(chatId, `✅ **[ZU SCRAPE COMPLETE]**\nFinished verifying and injecting ${verified} active numbers!`, { parse_mode: 'Markdown' });
+                }
                 
             } catch (err) { bot.sendMessage(chatId, "[ERROR] ZU Scraper failed: " + err.message); }
             return;
         }
+
 
 
 

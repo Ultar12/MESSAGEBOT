@@ -100,6 +100,15 @@ const zuGlobalStats = {};
 const zuState = {}; // Tracks 'auto' or 'manual'
 
 
+// ==========================================
+// MASTER ENGINE GLOBAL STATE TRACKERS
+// ==========================================
+const masterQueue = {};
+const masterState = {};
+const masterStats = {};
+
+
+
 
 
 // Add this at the top of your file with your other variables
@@ -1541,6 +1550,202 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
 }
 
 
+// ==========================================
+// MASTER SWARM ENGINE (MULTI-THREADED)
+// ==========================================
+async function startMasterEngine(chatId) {
+    const TARGET_BOT = "wsotp200bot";
+    let masterWarnedNoWa = false;
+    
+    // 1. Gather all online accounts
+    const activeClients = [];
+    if (typeof userBot !== 'undefined' && userBot.connected) activeClients.push({ name: 'Main', client: userBot });
+    if (typeof paymeUserBot !== 'undefined' && paymeUserBot.connected) activeClients.push({ name: 'Payme', client: paymeUserBot });
+    if (typeof telegram2UserBot !== 'undefined' && telegram2UserBot.connected) activeClients.push({ name: 'TG2', client: telegram2UserBot });
+    if (typeof telegram3UserBot !== 'undefined' && telegram3UserBot.connected) activeClients.push({ name: 'TG3', client: telegram3UserBot });
+
+    if (activeClients.length === 0) {
+        return bot.sendMessage(chatId, "[MASTER ENGINE ABORTED] No Telegram accounts are connected.");
+    }
+
+    bot.sendMessage(chatId, `[SWARM DEPLOYED]\nAccounts running: ${activeClients.length}\n(${activeClients.map(c => c.name).join(', ')})`, { parse_mode: 'Markdown' });
+
+    masterStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00 };
+
+    // 2. The Independent Worker Loop
+    const runWorker = async (workerName, client) => {
+        let activeTracker = {};
+        let lastFeedTime = 0;
+
+        while ((masterQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0) && !masterState[chatId].stopFlag) {
+            const nowTime = Date.now();
+            let instantNext = false;
+
+            // A. PULL FROM MASTER QUEUE (If under limit & cooled down)
+            if (masterQueue[chatId].length > 0 && Object.keys(activeTracker).length < 60 && (nowTime - lastFeedTime > 2500)) {
+                lastFeedTime = nowTime;
+                
+                // Pop the next number safely
+                const rawNum = masterQueue[chatId].shift();
+                let formattedNum = rawNum.replace(/\D/g, '');
+                
+                // Format prefixes based on length
+                if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
+                else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+                else if (formattedNum.length === 9) formattedNum = '48' + formattedNum;
+
+                // --- LIVE WHATSAPP VERIFICATION ---
+                let isWaActive = true;
+                const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                
+                if (activeFolders.length > 0) {
+                    const sock = clients[activeFolders[0]];
+                    const jid = `${formattedNum}@s.whatsapp.net`;
+                    try {
+                        const checkPromise = sock.onWhatsApp(jid);
+                        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
+                        const [waCheck] = await Promise.race([checkPromise, timeoutPromise]);
+                        if (!waCheck?.exists) isWaActive = false; 
+                    } catch (e) {
+                        if (!masterWarnedNoWa) {
+                            bot.sendMessage(chatId, `[ALERT] WA Checker Bot Offline or Timeout! Continuing blindly.`, { parse_mode: 'Markdown' });
+                            masterWarnedNoWa = true;
+                        }
+                    }
+                }
+
+                if (isWaActive) {
+                    try {
+                        const sentMsg = await client.sendMessage(TARGET_BOT, { message: formattedNum });
+                        activeTracker[formattedNum] = {
+                            count: 0, seenUpdates: new Set(), msgIdsToClean: [sentMsg.id], 
+                            addedAt: Date.now(), hunterSpawned: false, manualPromptSent: false
+                        };
+                        masterStats[chatId].sent++;
+                    } catch (e) {
+                        const errorText = e.message || "";
+                        // 🛡️ SMART RATE LIMIT CATCHER
+                        if (errorText.includes('wait of')) {
+                            const waitSeconds = parseInt(errorText.match(/\d+/)[0]) || 60;
+                            console.log(`[MASTER - ${workerName}] Rate limited. Sleeping for ${waitSeconds}s...`);
+                            
+                            // Put the number back at the front of the queue so it isn't lost!
+                            masterQueue[chatId].unshift(rawNum); 
+                            
+                            // Sleep this specific thread only
+                            await delay((waitSeconds * 1000) + 2000); 
+                        } else {
+                            console.error(`[MASTER - ${workerName}] Send Error:`, errorText);
+                            await delay(3000);
+                        }
+                    }
+                }
+            }
+
+            // B. LISTEN FOR REPLIES
+            try {
+                const msgs = await client.getMessages(TARGET_BOT, { limit: 50 });
+                for (const msg of msgs) {
+                    const text = msg.message || "";
+                    if (!text) continue;
+
+                    let trackData = null;
+                    let botNum = null;
+
+                    const potentialNums = text.match(/\d{9,15}/g); 
+                    if (potentialNums) {
+                        for (const n of potentialNums) {
+                            if (activeTracker[n]) { botNum = n; trackData = activeTracker[n]; break; }
+                        }
+                    }
+                    if (!trackData) continue;
+
+                    const updateKey = `${msg.id}_${msg.editDate || '0'}`;
+                    if (!trackData.seenUpdates.has(updateKey)) {
+                        trackData.seenUpdates.add(updateKey);
+                        instantNext = true;
+                        
+                        const textLower = text.toLowerCase();
+                        // Parse emojis safely ONLY because they are generated by the TARGET_BOT, not us
+                        const isErrorCode = text.includes("🔴") || textLower.includes("error code");
+                        
+                        if (!isErrorCode && !textLower.includes("reward")) trackData.msgIdsToClean.push(msg.id);
+
+                        // TRASH
+                        if (textLower.includes("already registered") || text.includes("🟡") || text.includes("⚫️") || textLower.includes("badnum")) {
+                            try { await client.deleteMessages(TARGET_BOT, trackData.msgIdsToClean, { revoke: true }); } catch (e) {}
+                            delete activeTracker[botNum];
+                            masterStats[chatId].trash++;
+                        }
+                        // PAID
+                        else if (text.includes("💰") || text.includes("🟢")) {
+                            const match = text.match(/Amount:\s*([\d.]+)/i);
+                            if (match) masterStats[chatId].earned += parseFloat(match[1]);
+                            try { await client.deleteMessages(TARGET_BOT, trackData.msgIdsToClean, { revoke: true }); } catch (e) {}
+                            delete activeTracker[botNum];
+                            masterStats[chatId].completed++;
+                        }
+                        // IN PROGRESS
+                        else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
+                            if (!isErrorCode) trackData.count++;
+
+                            if (trackData.count === 2 || isErrorCode) {
+                                if (trackData.count === 2 && !isErrorCode) masterStats[chatId].inProgress++;
+
+                                // NOTIFY (No Emojis)
+                                if (!trackData.manualPromptSent || isErrorCode) {
+                                    let promptText = `[MASTER: MANUAL ENTRY REQUIRED] Worker: ${workerName}\nNumber: \`${botNum}\`\n\nReply with code.`;
+                                    if (isErrorCode) promptText = `[MASTER: WRONG CODE] Worker: ${workerName}\nNumber: \`${botNum}\`\n\nReply with CORRECT code!`;
+                                    
+                                    try {
+                                        const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+                                        manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: workerName };
+                                        trackData.manualPromptSent = true;
+                                    } catch (e) {}
+                                }
+
+                                // HUNT
+                                if (!trackData.hunterSpawned || isErrorCode) {
+                                    trackData.hunterSpawned = true;
+                                    if (masterState[chatId].mode === 'auto') {
+                                        // Trigger existing robust hunter, passing the client and the saved source bot!
+                                        huntOtpAsync(chatId, botNum, msg.id, trackData, async ()=>{}, masterState[chatId].sourceBot, client);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                if (e.message.includes('wait of')) {
+                    const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 60;
+                    await delay((waitSeconds * 1000) + 1000); 
+                }
+            }
+
+            // C. MEMORY CLEANUP
+            for (const num in activeTracker) {
+                if (Date.now() - activeTracker[num].addedAt > 1800000) { // 30 mins max wait
+                    delete activeTracker[num];
+                }
+            }
+
+            if (!instantNext) await delay(1000); // Thread breath
+        }
+        console.log(`[MASTER] Worker ${workerName} finished or aborted.`);
+    };
+
+    // 3. LAUNCH THE SWARM!
+    const workerPromises = activeClients.map(c => runWorker(c.name, c.client));
+    
+    // 4. Wait for all to finish
+    await Promise.all(workerPromises);
+
+    bot.sendMessage(chatId, `[MASTER SWARM COMPLETE]\n\nTotal Sent: ${masterStats[chatId].sent}\nTotal Paid: ${masterStats[chatId].completed}\nTotal Earned: $${masterStats[chatId].earned.toFixed(2)}\nTotal Trash: ${masterStats[chatId].trash}`, { parse_mode: 'Markdown' });
+}
+
+
+
 
 // ==========================================
 // DEDICATED ZU ENGINE OTP HUNTER
@@ -2293,6 +2498,81 @@ bot.onText(/\/acc\s+(\d+)/, async (msg, match) => {
     } else {
         bot.sendMessage(chatId, `**[ERROR] Invalid choice.**\nUse:\n/acc 1 (Payme)\n/acc 2 (Telegram 3)`, { parse_mode: 'Markdown' });
     }
+});
+
+
+
+
+    // --- /mastertask : Multi-Threaded Swarm Engine ---
+bot.onText(/\/mastertask(?:\s+(\d+))?/, async (msg, match) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+
+    if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+    const amount = match[1] ? parseInt(match[1]) : null;
+
+    // Reset Master State for this chat
+    masterQueue[chatId] = [];
+    masterState[chatId] = { stopFlag: false, sourceBot: null, mode: 'auto' };
+
+    // MODE 1: FILE UPLOADED
+    if (msg.reply_to_message && msg.reply_to_message.document) {
+        const doc = msg.reply_to_message.document;
+        if (!doc.file_name.endsWith('.txt')) return bot.sendMessage(chatId, "[ERROR] I only accept .txt files for Master Task.");
+
+        let statusMsg = await bot.sendMessage(chatId, "[WAIT] Loading Master File...");
+
+        try {
+            const fileLink = await bot.getFileLink(doc.file_id);
+            const response = await fetch(fileLink);
+            const textData = await response.text();
+            
+            const matches = textData.match(/\d{7,15}/g) || [];
+            if (matches.length === 0) return bot.editMessageText("[ERROR] No valid numbers found.", { chat_id: chatId, message_id: statusMsg.message_id });
+
+            const uniqueNumbers = [...new Set(matches)];
+            masterQueue[chatId] = uniqueNumbers;
+
+            const opts = {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Target: Rocket OTP", callback_data: `master_src_ROCKETOTP_BOT` }],
+                        [{ text: "Target: LolzFack", callback_data: `master_src_LolzFack_bot` }],
+                        [{ text: "Target: NokosX BOT", callback_data: `master_src_NokosxBot` }],
+                        [{ text: "Target: HX OTP", callback_data: `master_src_hxotpbot` }],
+                        [{ text: "Target: ULTAR (Default)", callback_data: `master_src_ULTAR` }]
+                    ]
+                }
+            };
+            
+            return bot.editMessageText(`[FILE LOADED] ${uniqueNumbers.length} numbers.\n\nWhich group should the Hunter monitor for OTPs?`, { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown', reply_markup: opts.reply_markup });
+
+        } catch (e) {
+            return bot.editMessageText(`[ERROR] Failed to load file: ${e.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
+        }
+    }
+
+    // MODE 2: STANDALONE WITH AMOUNT (SCRAPE MODE)
+    if (amount) {
+        userState[chatId + '_master_amount'] = amount;
+        
+        const opts = {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "Scrape: Rocket OTP", callback_data: `master_scrape_ROCKETOTP_BOT` }],
+                    [{ text: "Scrape: LolzFack", callback_data: `master_scrape_LolzFack_bot` }],
+                    [{ text: "Scrape: NokosX BOT", callback_data: `master_scrape_NokosxBot` }],
+                    [{ text: "Scrape: HX OTP", callback_data: `master_scrape_hxotpbot` }]
+                ]
+            }
+        };
+        return bot.sendMessage(chatId, `[MASTER SWARM ENGINE]\nAmount: ${amount}\n\nSelect the bot to scrape numbers from:`, { parse_mode: 'Markdown', reply_markup: opts.reply_markup });
+    }
+
+    // FALLBACK
+    bot.sendMessage(chatId, "[ERROR] Please reply to a .txt file with /mastertask, or type /mastertask [amount] to scrape.");
 });
 
 
@@ -7756,24 +8036,31 @@ bot.onText(/\/pdf/, async (msg) => {
         userState[chatId + '_lastMsgId'] = msg.message_id;
 
 
-                                // --- LISTEN FOR MANUAL OTP REPLIES ---
+        // --- LISTEN FOR MANUAL OTP REPLIES ---
         if (msg.reply_to_message && manualOtpPrompts[msg.reply_to_message.message_id]) {
             const otpData = manualOtpPrompts[msg.reply_to_message.message_id];
             const cleanOtp = text.replace(/\D/g, ''); // Extract just the digits
 
             if (cleanOtp.length >= 3) {
                 // 1. CAPTURE THE CONFIRMATION MESSAGE
-                const confirmMsg = await bot.sendMessage(chatId, `**Manual OTP Accepted:** \`${cleanOtp}\` for \`${otpData.botNum}\`. Forwarding to bot...`, { parse_mode: 'Markdown' });
+                const confirmMsg = await bot.sendMessage(chatId, `[MANUAL OTP ACCEPTED] \`${cleanOtp}\` for \`${otpData.botNum}\`. Forwarding to bot...`, { parse_mode: 'Markdown' });
 
                 // Engage the manual override kill switch so the auto-hunter drops it
                 manualOverrideMap.add(otpData.botNum);
 
                 try {
-                    // Send directly to the WSOTP bot via Payme Userbot
-                    const botToUse = otpData.useBot === 'ultar' ? ultarUserBot : paymeUserBot;
+                    // Match the worker string name to the actual object
+                    let botToUse;
+                    if (otpData.useBot === 'Main') botToUse = userBot;
+                    else if (otpData.useBot === 'Payme') botToUse = paymeUserBot;
+                    else if (otpData.useBot === 'TG2') botToUse = telegram2UserBot;
+                    else if (otpData.useBot === 'TG3') botToUse = telegram3UserBot;
+                    else if (otpData.useBot === 'ultar') botToUse = ultarUserBot;
+                    else botToUse = paymeUserBot; // Fallback
+
                     await botToUse.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
                 } catch (e) {
-                    bot.sendMessage(chatId, `Failed to forward OTP: ${e.message}`);
+                    bot.sendMessage(chatId, `[ERROR] Failed to forward OTP: ${e.message}`);
                 }
 
                 // Cleanup prompt memory to prevent duplicate firing
@@ -7790,6 +8077,7 @@ bot.onText(/\/pdf/, async (msg) => {
                 return; // Stop processing this message
             }
         }
+
 
 
 
@@ -9638,6 +9926,135 @@ const cleanNumbers = matches.map(n => {
                 bot.sendMessage(chatId, "[ERROR] " + err.message);
             }
         }
+
+
+                // --- MASTER TASK: FILE SOURCE SELECTED ---
+        if (data.startsWith('master_src_')) {
+            await bot.answerCallbackQuery(query.id);
+            const sourceBot = data.replace('master_src_', '');
+            masterState[chatId].sourceBot = sourceBot;
+
+            return bot.editMessageText(`[TARGET LOCKED] ${sourceBot}\n\nChoose Processing Mode:`, {
+                chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Auto Mode (Auto-Hunt OTPs)", callback_data: `master_start_auto` }],
+                        [{ text: "Manual Mode (Notify Me)", callback_data: `master_start_man` }]
+                    ]
+                }
+            });
+        }
+
+        // --- MASTER TASK: FILE START ---
+        if (data.startsWith('master_start_')) {
+            await bot.answerCallbackQuery(query.id);
+            const mode = data.replace('master_start_', '');
+            masterState[chatId].mode = (mode === 'auto') ? 'auto' : 'manual';
+
+            bot.editMessageText(`[MASTER SWARM ENGAGED]\n\nMode: ${mode.toUpperCase()}\nQueue: ${masterQueue[chatId].length}\nOTP Target: ${masterState[chatId].sourceBot}\n\nWaking up all available Telegram accounts...`, {
+                chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'
+            });
+
+            startMasterEngine(chatId);
+            return;
+        }
+
+        // --- MASTER TASK: FAST SCRAPE & START ---
+        if (data.startsWith('master_scrape_')) {
+            await bot.answerCallbackQuery(query.id);
+            const sourceBot = data.replace('master_scrape_', '');
+            const amount = userState[chatId + '_master_amount'];
+            
+            masterState[chatId].sourceBot = sourceBot;
+            masterState[chatId].mode = 'auto'; // Default to auto for scraping
+
+            let statusMsg = await bot.editMessageText(`[SCRAPING] Target: ${amount} numbers from ${sourceBot}...\nBuilding master queue...`, {
+                chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'
+            });
+
+            try {
+                if (typeof ensureZuScraperConnected === 'function') await ensureZuScraperConnected();
+                await zuScraperBot.sendMessage(sourceBot, { message: sourceBot === "LolzFack_bot" ? "Get Number" : "/start" });
+
+                let scrapedCount = 0;
+                let attempts = 0;
+                const seen = new Set();
+
+                while (scrapedCount < amount && attempts < (amount * 5)) {
+                    attempts++;
+                    const allMsgs = await zuScraperBot.getMessages(sourceBot, { limit: 3 }).catch(() => []);
+                    
+                    for (const msg of allMsgs) {
+                        const text = msg.message || "";
+                        if (text.includes("Choose a country:") || text.includes("Select service")) continue;
+
+                        if (msg.replyMarkup?.rows) {
+                            for (const row of msg.replyMarkup.rows) {
+                                for (const btn of row.buttons) {
+                                    const bText = btn.text || "";
+                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
+                                    
+                                    const match = bText.match(/\+?\d{1,4}[-\s]?\d{6,14}/);
+                                    if (match) {
+                                        let raw = match[0].replace(/\D/g, '');
+                                        if (raw.length >= 9 && !seen.has(raw)) {
+                                            seen.add(raw);
+                                            masterQueue[chatId].push(raw);
+                                            scrapedCount++;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        const textMatches = text.match(/\+?\d{1,4}[-\s]?\d{6,14}/g) || [];
+                        for (let match of textMatches) {
+                            let raw = match.replace(/\D/g, '');
+                            if (raw.length >= 9 && !seen.has(raw)) {
+                                seen.add(raw);
+                                masterQueue[chatId].push(raw);
+                                scrapedCount++;
+                            }
+                        }
+                    }
+
+                    if (scrapedCount >= amount) break;
+
+                    let clicked = false;
+                    for (const msg of allMsgs) {
+                        if (msg.replyMarkup && msg.replyMarkup.rows) {
+                            for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
+                                for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
+                                    const bText = (msg.replyMarkup.rows[r].buttons[c].text || "").toLowerCase();
+                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change") || bText.includes("new numbers") || bText.includes("get number")) {
+                                        try {
+                                            await zuScraperBot.invoke(new Api.messages.GetBotCallbackAnswer({ peer: sourceBot, msgId: msg.id, data: msg.replyMarkup.rows[r].buttons[c].data }));
+                                            clicked = true;
+                                        } catch(e) {
+                                            try { await msg.click({ text: msg.replyMarkup.rows[r].buttons[c].text }); clicked = true; } catch(err){}
+                                        }
+                                    }
+                                    if (clicked) break;
+                                }
+                                if (clicked) break;
+                            }
+                        }
+                        if (clicked) break;
+                    }
+                    await delay(clicked ? 2000 : 1500);
+                }
+
+                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
+                bot.sendMessage(chatId, `[MASTER SWARM ENGAGED]\n\nMode: AUTO\nScraped & Queued: ${masterQueue[chatId].length}\nOTP Target: ${masterState[chatId].sourceBot}\n\nWaking up all available Telegram accounts...`, { parse_mode: 'Markdown' });
+                
+                startMasterEngine(chatId);
+
+            } catch (err) {
+                bot.sendMessage(chatId, "[ERROR] Scrape setup failed: " + err.message);
+            }
+            return;
+        }
+
 
 
                 

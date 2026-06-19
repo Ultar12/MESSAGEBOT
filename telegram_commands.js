@@ -1550,202 +1550,6 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
 }
 
 
-// ==========================================
-// MASTER SWARM ENGINE (MULTI-THREADED)
-// ==========================================
-async function startMasterEngine(bot, chatId) {
-    const TARGET_BOT = "wsotp200bot";
-    let masterWarnedNoWa = false;
-    
-    // 1. Gather all online accounts
-    const activeClients = [];
-    if (typeof userBot !== 'undefined' && userBot.connected) activeClients.push({ name: 'Main', client: userBot });
-    if (typeof paymeUserBot !== 'undefined' && paymeUserBot.connected) activeClients.push({ name: 'Payme', client: paymeUserBot });
-    if (typeof telegram2UserBot !== 'undefined' && telegram2UserBot.connected) activeClients.push({ name: 'TG2', client: telegram2UserBot });
-    if (typeof telegram3UserBot !== 'undefined' && telegram3UserBot.connected) activeClients.push({ name: 'TG3', client: telegram3UserBot });
-
-    if (activeClients.length === 0) {
-        return bot.sendMessage(chatId, "[MASTER ENGINE ABORTED] No Telegram accounts are connected.");
-    }
-
-    bot.sendMessage(chatId, `[SWARM DEPLOYED]\nAccounts running: ${activeClients.length}\n(${activeClients.map(c => c.name).join(', ')})`, { parse_mode: 'Markdown' });
-
-    masterStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00 };
-
-    // 2. The Independent Worker Loop
-    const runWorker = async (workerName, client) => {
-        let activeTracker = {};
-        let lastFeedTime = 0;
-
-        while ((masterQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || masterState[chatId].isScraping) && !masterState[chatId].stopFlag) {
-
-            const nowTime = Date.now();
-            let instantNext = false;
-
-            // A. PULL FROM MASTER QUEUE (If under limit & cooled down)
-            if (masterQueue[chatId].length > 0 && Object.keys(activeTracker).length < 60 && (nowTime - lastFeedTime > 2500)) {
-                lastFeedTime = nowTime;
-                
-                // Pop the next number safely
-                const rawNum = masterQueue[chatId].shift();
-                let formattedNum = rawNum.replace(/\D/g, '');
-                
-                // Format prefixes based on length
-                if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
-                else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
-                else if (formattedNum.length === 9) formattedNum = '48' + formattedNum;
-
-                // --- LIVE WHATSAPP VERIFICATION ---
-                let isWaActive = true;
-                const activeFolders = Object.keys(clients).filter(f => clients[f]);
-                
-                if (activeFolders.length > 0) {
-                    const sock = clients[activeFolders[0]];
-                    const jid = `${formattedNum}@s.whatsapp.net`;
-                    try {
-                        const checkPromise = sock.onWhatsApp(jid);
-                        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
-                        const [waCheck] = await Promise.race([checkPromise, timeoutPromise]);
-                        if (!waCheck?.exists) isWaActive = false; 
-                    } catch (e) {
-                        if (!masterWarnedNoWa) {
-                            bot.sendMessage(chatId, `[ALERT] WA Checker Bot Offline or Timeout! Continuing blindly.`, { parse_mode: 'Markdown' });
-                            masterWarnedNoWa = true;
-                        }
-                    }
-                }
-
-                if (isWaActive) {
-                    try {
-                        const sentMsg = await client.sendMessage(TARGET_BOT, { message: formattedNum });
-                        activeTracker[formattedNum] = {
-                            count: 0, seenUpdates: new Set(), msgIdsToClean: [sentMsg.id], 
-                            addedAt: Date.now(), hunterSpawned: false, manualPromptSent: false
-                        };
-                        masterStats[chatId].sent++;
-                    } catch (e) {
-                        const errorText = e.message || "";
-                        // 🛡️ SMART RATE LIMIT CATCHER
-                        if (errorText.includes('wait of')) {
-                            const waitSeconds = parseInt(errorText.match(/\d+/)[0]) || 60;
-                            console.log(`[MASTER - ${workerName}] Rate limited. Sleeping for ${waitSeconds}s...`);
-                            
-                            // Put the number back at the front of the queue so it isn't lost!
-                            masterQueue[chatId].unshift(rawNum); 
-                            
-                            // Sleep this specific thread only
-                            await delay((waitSeconds * 1000) + 2000); 
-                        } else {
-                            console.error(`[MASTER - ${workerName}] Send Error:`, errorText);
-                            await delay(3000);
-                        }
-                    }
-                }
-            }
-
-            // B. LISTEN FOR REPLIES
-            try {
-                const msgs = await client.getMessages(TARGET_BOT, { limit: 50 });
-                for (const msg of msgs) {
-                    const text = msg.message || "";
-                    if (!text) continue;
-
-                    let trackData = null;
-                    let botNum = null;
-
-                    const potentialNums = text.match(/\d{9,15}/g); 
-                    if (potentialNums) {
-                        for (const n of potentialNums) {
-                            if (activeTracker[n]) { botNum = n; trackData = activeTracker[n]; break; }
-                        }
-                    }
-                    if (!trackData) continue;
-
-                    const updateKey = `${msg.id}_${msg.editDate || '0'}`;
-                    if (!trackData.seenUpdates.has(updateKey)) {
-                        trackData.seenUpdates.add(updateKey);
-                        instantNext = true;
-                        
-                        const textLower = text.toLowerCase();
-                        // Parse emojis safely ONLY because they are generated by the TARGET_BOT, not us
-                        const isErrorCode = text.includes("🔴") || textLower.includes("error code");
-                        
-                        if (!isErrorCode && !textLower.includes("reward")) trackData.msgIdsToClean.push(msg.id);
-
-                        // TRASH
-                        if (textLower.includes("already registered") || text.includes("🟡") || text.includes("⚫️") || textLower.includes("badnum")) {
-                            try { await client.deleteMessages(TARGET_BOT, trackData.msgIdsToClean, { revoke: true }); } catch (e) {}
-                            delete activeTracker[botNum];
-                            masterStats[chatId].trash++;
-                        }
-                        // PAID
-                        else if (text.includes("💰") || text.includes("🟢")) {
-                            const match = text.match(/Amount:\s*([\d.]+)/i);
-                            if (match) masterStats[chatId].earned += parseFloat(match[1]);
-                            try { await client.deleteMessages(TARGET_BOT, trackData.msgIdsToClean, { revoke: true }); } catch (e) {}
-                            delete activeTracker[botNum];
-                            masterStats[chatId].completed++;
-                        }
-                        // IN PROGRESS
-                        else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
-                            if (!isErrorCode) trackData.count++;
-
-                            if (trackData.count === 2 || isErrorCode) {
-                                if (trackData.count === 2 && !isErrorCode) masterStats[chatId].inProgress++;
-
-                                // NOTIFY (No Emojis)
-                                if (!trackData.manualPromptSent || isErrorCode) {
-                                    let promptText = `[MASTER: MANUAL ENTRY REQUIRED] Worker: ${workerName}\nNumber: \`${botNum}\`\n\nReply with code.`;
-                                    if (isErrorCode) promptText = `[MASTER: WRONG CODE] Worker: ${workerName}\nNumber: \`${botNum}\`\n\nReply with CORRECT code!`;
-                                    
-                                    try {
-                                        const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
-                                        manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: workerName };
-                                        trackData.manualPromptSent = true;
-                                    } catch (e) {}
-                                }
-
-                                // HUNT
-                                if (!trackData.hunterSpawned || isErrorCode) {
-                                    trackData.hunterSpawned = true;
-                                    if (masterState[chatId].mode === 'auto') {
-                                        // Trigger existing robust hunter, passing the client and the saved source bot!
-                                        huntOtpAsync(chatId, botNum, msg.id, trackData, async ()=>{}, masterState[chatId].sourceBot, client);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e) {
-                if (e.message.includes('wait of')) {
-                    const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 60;
-                    await delay((waitSeconds * 1000) + 1000); 
-                }
-            }
-
-            // C. MEMORY CLEANUP
-            for (const num in activeTracker) {
-                if (Date.now() - activeTracker[num].addedAt > 1800000) { // 30 mins max wait
-                    delete activeTracker[num];
-                }
-            }
-
-            if (!instantNext) await delay(1000); // Thread breath
-        }
-        console.log(`[MASTER] Worker ${workerName} finished or aborted.`);
-    };
-
-    // 3. LAUNCH THE SWARM!
-    const workerPromises = activeClients.map(c => runWorker(c.name, c.client));
-    
-    // 4. Wait for all to finish
-    await Promise.all(workerPromises);
-
-    bot.sendMessage(chatId, `[MASTER SWARM COMPLETE]\n\nTotal Sent: ${masterStats[chatId].sent}\nTotal Paid: ${masterStats[chatId].completed}\nTotal Earned: $${masterStats[chatId].earned.toFixed(2)}\nTotal Trash: ${masterStats[chatId].trash}`, { parse_mode: 'Markdown' });
-}
-
-
 
 
 // ==========================================
@@ -2961,6 +2765,187 @@ bot.onText(/\/wsotp/, async (msg) => {
     );
 });
 
+
+
+
+// ==========================================
+// MASTER SWARM ENGINE (MULTI-THREADED)
+// ==========================================
+async function startMasterEngine(bot, chatId) {
+    const TARGET_BOT = "wsotp200bot";
+    let masterWarnedNoWa = false;
+    
+    // Gather ALL possible online accounts in your code
+    const activeClients = [];
+    if (typeof userBot !== 'undefined' && userBot.connected) activeClients.push({ name: 'Main', client: userBot });
+    if (typeof paymeUserBot !== 'undefined' && paymeUserBot.connected) activeClients.push({ name: 'Payme', client: paymeUserBot });
+    if (typeof telegram2UserBot !== 'undefined' && telegram2UserBot.connected) activeClients.push({ name: 'TG2', client: telegram2UserBot });
+    if (typeof telegram3UserBot !== 'undefined' && telegram3UserBot.connected) activeClients.push({ name: 'TG3', client: telegram3UserBot });
+    if (typeof ultarUserBot !== 'undefined' && ultarUserBot.connected) activeClients.push({ name: 'Ultar', client: ultarUserBot });
+    if (typeof zuScraperBot !== 'undefined' && zuScraperBot.connected) activeClients.push({ name: 'ZuScrape', client: zuScraperBot });
+    if (typeof rocketUserBot !== 'undefined' && rocketUserBot.connected) activeClients.push({ name: 'Rocket', client: rocketUserBot });
+    if (typeof getnumUserBot !== 'undefined' && getnumUserBot.connected) activeClients.push({ name: 'GetNum', client: getnumUserBot });
+
+    if (activeClients.length === 0) {
+        return bot.sendMessage(chatId, "[MASTER ENGINE ABORTED] No Telegram accounts are connected.");
+    }
+
+    bot.sendMessage(chatId, `[SWARM DEPLOYED]\nAccounts running: ${activeClients.length}\n(${activeClients.map(c => c.name).join(', ')})`, { parse_mode: 'Markdown' });
+
+    masterStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00 };
+
+    // The Independent Worker Loop
+    const runWorker = async (workerName, client) => {
+        let activeTracker = {};
+        let lastFeedTime = 0;
+
+        while ((masterQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || masterState[chatId].isScraping) && !masterState[chatId].stopFlag) {
+
+            const nowTime = Date.now();
+            let instantNext = false;
+
+            if (masterQueue[chatId].length > 0 && Object.keys(activeTracker).length < 60 && (nowTime - lastFeedTime > 2500)) {
+                lastFeedTime = nowTime;
+                
+                const rawNum = masterQueue[chatId].shift();
+                let formattedNum = rawNum.replace(/\D/g, '');
+                
+                if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
+                else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+                else if (formattedNum.length === 9) formattedNum = '48' + formattedNum;
+
+                let isWaActive = true;
+                const activeFolders = Object.keys(clients).filter(f => clients[f]);
+                
+                if (activeFolders.length > 0) {
+                    const sock = clients[activeFolders[0]];
+                    const jid = `${formattedNum}@s.whatsapp.net`;
+                    try {
+                        const checkPromise = sock.onWhatsApp(jid);
+                        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("WA_TIMEOUT")), 5000));
+                        const [waCheck] = await Promise.race([checkPromise, timeoutPromise]);
+                        if (!waCheck?.exists) isWaActive = false; 
+                    } catch (e) {
+                        if (!masterWarnedNoWa) {
+                            bot.sendMessage(chatId, `[ALERT] WA Checker Bot Offline or Timeout! Continuing blindly.`, { parse_mode: 'Markdown' });
+                            masterWarnedNoWa = true;
+                        }
+                    }
+                }
+
+                if (isWaActive) {
+                    try {
+                        const sentMsg = await client.sendMessage(TARGET_BOT, { message: formattedNum });
+                        activeTracker[formattedNum] = {
+                            count: 0, seenUpdates: new Set(), msgIdsToClean: [sentMsg.id], 
+                            addedAt: Date.now(), hunterSpawned: false, manualPromptSent: false
+                        };
+                        masterStats[chatId].sent++;
+                    } catch (e) {
+                        const errorText = e.message || "";
+                        if (errorText.includes('wait of')) {
+                            const waitSeconds = parseInt(errorText.match(/\d+/)[0]) || 60;
+                            console.log(`[MASTER - ${workerName}] Rate limited. Sleeping for ${waitSeconds}s...`);
+                            
+                            masterQueue[chatId].unshift(rawNum); 
+                            await delay((waitSeconds * 1000) + 2000); 
+                        } else {
+                            console.error(`[MASTER - ${workerName}] Send Error:`, errorText);
+                            await delay(3000);
+                        }
+                    }
+                }
+            }
+
+            try {
+                const msgs = await client.getMessages(TARGET_BOT, { limit: 50 });
+                for (const msg of msgs) {
+                    const text = msg.message || "";
+                    if (!text) continue;
+
+                    let trackData = null;
+                    let botNum = null;
+
+                    const potentialNums = text.match(/\d{9,15}/g); 
+                    if (potentialNums) {
+                        for (const n of potentialNums) {
+                            if (activeTracker[n]) { botNum = n; trackData = activeTracker[n]; break; }
+                        }
+                    }
+                    if (!trackData) continue;
+
+                    const updateKey = `${msg.id}_${msg.editDate || '0'}`;
+                    if (!trackData.seenUpdates.has(updateKey)) {
+                        trackData.seenUpdates.add(updateKey);
+                        instantNext = true;
+                        
+                        const textLower = text.toLowerCase();
+                        const isErrorCode = text.includes("🔴") || textLower.includes("error code");
+                        
+                        if (!isErrorCode && !textLower.includes("reward")) trackData.msgIdsToClean.push(msg.id);
+
+                        if (textLower.includes("already registered") || text.includes("🟡") || text.includes("⚫️") || textLower.includes("badnum")) {
+                            try { await client.deleteMessages(TARGET_BOT, trackData.msgIdsToClean, { revoke: true }); } catch (e) {}
+                            delete activeTracker[botNum];
+                            masterStats[chatId].trash++;
+                        }
+                        else if (text.includes("💰") || text.includes("🟢")) {
+                            const match = text.match(/Amount:\s*([\d.]+)/i);
+                            if (match) masterStats[chatId].earned += parseFloat(match[1]);
+                            try { await client.deleteMessages(TARGET_BOT, trackData.msgIdsToClean, { revoke: true }); } catch (e) {}
+                            delete activeTracker[botNum];
+                            masterStats[chatId].completed++;
+                        }
+                        else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
+                            if (!isErrorCode) trackData.count++;
+
+                            if (trackData.count === 2 || isErrorCode) {
+                                if (trackData.count === 2 && !isErrorCode) masterStats[chatId].inProgress++;
+
+                                if (!trackData.manualPromptSent || isErrorCode) {
+                                    let promptText = `[MASTER: MANUAL ENTRY REQUIRED] Worker: ${workerName}\nNumber: \`${botNum}\`\n\nReply with code.`;
+                                    if (isErrorCode) promptText = `[MASTER: WRONG CODE] Worker: ${workerName}\nNumber: \`${botNum}\`\n\nReply with CORRECT code!`;
+                                    
+                                    try {
+                                        const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+                                        manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: workerName };
+                                        trackData.manualPromptSent = true;
+                                    } catch (e) {}
+                                }
+
+                                if (!trackData.hunterSpawned || isErrorCode) {
+                                    trackData.hunterSpawned = true;
+                                    if (masterState[chatId].mode === 'auto') {
+                                        huntOtpAsync(chatId, botNum, msg.id, trackData, async ()=>{}, masterState[chatId].sourceBot, client);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                if (e.message.includes('wait of')) {
+                    const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 60;
+                    await delay((waitSeconds * 1000) + 1000); 
+                }
+            }
+
+            for (const num in activeTracker) {
+                if (Date.now() - activeTracker[num].addedAt > 1800000) { 
+                    delete activeTracker[num];
+                }
+            }
+
+            if (!instantNext) await delay(1000); 
+        }
+        console.log(`[MASTER] Worker ${workerName} finished or aborted.`);
+    };
+
+    const workerPromises = activeClients.map(c => runWorker(c.name, c.client));
+    await Promise.all(workerPromises);
+
+    bot.sendMessage(chatId, `[MASTER SWARM COMPLETE]\n\nTotal Sent: ${masterStats[chatId].sent}\nTotal Paid: ${masterStats[chatId].completed}\nTotal Earned: $${masterStats[chatId].earned.toFixed(2)}\nTotal Trash: ${masterStats[chatId].trash}`, { parse_mode: 'Markdown' });
+}
 
 
 
@@ -8050,19 +8035,23 @@ bot.onText(/\/pdf/, async (msg) => {
                 manualOverrideMap.add(otpData.botNum);
 
                 try {
-                    // Match the worker string name to the actual object
+                    // Match the worker string name back to the exact client instance
                     let botToUse;
                     if (otpData.useBot === 'Main') botToUse = userBot;
                     else if (otpData.useBot === 'Payme') botToUse = paymeUserBot;
                     else if (otpData.useBot === 'TG2') botToUse = telegram2UserBot;
                     else if (otpData.useBot === 'TG3') botToUse = telegram3UserBot;
-                    else if (otpData.useBot === 'ultar') botToUse = ultarUserBot;
-                    else botToUse = paymeUserBot; // Fallback
+                    else if (otpData.useBot === 'Ultar') botToUse = ultarUserBot;
+                    else if (otpData.useBot === 'ZuScrape') botToUse = zuScraperBot;
+                    else if (otpData.useBot === 'Rocket') botToUse = rocketUserBot;
+                    else if (otpData.useBot === 'GetNum') botToUse = getnumUserBot;
+                    else botToUse = paymeUserBot; // Safe fallback
 
                     await botToUse.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
                 } catch (e) {
                     bot.sendMessage(chatId, `[ERROR] Failed to forward OTP: ${e.message}`);
                 }
+
 
                 // Cleanup prompt memory to prevent duplicate firing
                 delete manualOtpPrompts[msg.reply_to_message.message_id];
@@ -9929,26 +9918,22 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                // --- MASTER TASK: FILE SOURCE SELECTED ---
-        if (data.startsWith('master_src_')) {
+                
+                // --- MASTER TASK: FILE START ---
+        if (data.startsWith('master_start_')) {
             await bot.answerCallbackQuery(query.id);
-            const sourceBot = data.replace('master_src_', '');
-            masterState[chatId].sourceBot = sourceBot;
+            const mode = data.replace('master_start_', '');
+            masterState[chatId].mode = (mode === 'auto') ? 'auto' : 'manual';
 
-            return bot.editMessageText(`[TARGET LOCKED] ${sourceBot}\n\nChoose Processing Mode:`, {
-                chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "Auto Mode (Auto-Hunt OTPs)", callback_data: `master_start_auto` }],
-                        [{ text: "Manual Mode (Notify Me)", callback_data: `master_start_man` }]
-                    ]
-                }
+            bot.editMessageText(`[MASTER SWARM ENGAGED]\n\nMode: ${mode.toUpperCase()}\nQueue: ${masterQueue[chatId].length}\nOTP Target: ${masterState[chatId].sourceBot}\n\nWaking up all available Telegram accounts...`, {
+                chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'
             });
+
+            startMasterEngine(chatId);
+            return;
         }
 
-        
-
-                // --- MASTER TASK: FAST SCRAPE & START ---
+        // --- MASTER TASK: FAST SCRAPE & START ---
         if (data.startsWith('master_scrape_')) {
             await bot.answerCallbackQuery(query.id);
             const sourceBot = data.replace('master_scrape_', '');
@@ -9956,19 +9941,17 @@ const cleanNumbers = matches.map(n => {
             
             masterState[chatId].sourceBot = sourceBot;
             masterState[chatId].mode = 'auto'; 
-            masterState[chatId].isActive = false; // Tracker to start engine once
-            masterState[chatId].isScraping = true; // Tells the engine to stay awake if the queue temporarily empties
+            masterState[chatId].isActive = false; 
+            masterState[chatId].isScraping = true; 
 
             let statusMsg = await bot.editMessageText(`[DUAL-SCRAPING] Target: ${amount} numbers from ${sourceBot}...\nWaking up Swarm Engine...`, {
                 chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'
             });
 
             try {
-                // Ensure bots are connected
                 if (typeof ensureZuScraperConnected === 'function') await ensureZuScraperConnected();
                 if (telegram2UserBot && typeof ensureTelegram2Connected === 'function') await ensureTelegram2Connected();
 
-                // Fire triggers
                 const startCmd = sourceBot === "LolzFack_bot" ? "Get Number" : "/start";
                 await zuScraperBot.sendMessage(sourceBot, { message: startCmd }).catch(()=>{});
                 if (telegram2UserBot && telegram2UserBot.connected) {
@@ -9984,7 +9967,6 @@ const cleanNumbers = matches.map(n => {
                     if (masterState[chatId].stopFlag) break;
                     attempts++;
                     
-                    // DUAL SCRAPE LOGIC
                     const fetch1 = zuScraperBot.getMessages(sourceBot, { limit: 3 }).catch(() => []);
                     const fetch2 = (telegram2UserBot && telegram2UserBot.connected) 
                         ? telegram2UserBot.getMessages(sourceBot, { limit: 3 }).catch(() => []) 
@@ -10031,13 +10013,11 @@ const cleanNumbers = matches.map(n => {
                         }
                     }
 
-                    // INSTANTLY START ENGINE IF NOT RUNNING
                     if (newNumsAdded && !masterState[chatId].isActive) {
                         masterState[chatId].isActive = true;
-                        startMasterEngine(bot, chatId); // Starts feeding the bot immediately
+                        startMasterEngine(chatId); 
                     }
 
-                    // Live Progress Update (Paced to avoid Telegram API lag)
                     if (Date.now() - lastStatusUpdate > 3000) {
                         lastStatusUpdate = Date.now();
                         bot.editMessageText(`[DUAL-SCRAPING IN PROGRESS]\n\nTarget: ${amount}\nScraped & Queued: ${scrapedCount}\nOTP Target: ${sourceBot}\n\n[Master Swarm Engine is currently feeding numbers...]`, {
@@ -10047,7 +10027,6 @@ const cleanNumbers = matches.map(n => {
 
                     if (scrapedCount >= amount) break;
 
-                    // Click Buttons (Dual Pagination)
                     const clickPagination = async (client, msgs) => {
                         if (!client) return false;
                         for (const msg of msgs) {
@@ -10078,7 +10057,7 @@ const cleanNumbers = matches.map(n => {
                     await delay((clicked1 || clicked2) ? 2500 : 1500);
                 }
 
-                masterState[chatId].isScraping = false; // Let the engine know scraping is done
+                masterState[chatId].isScraping = false; 
                 bot.sendMessage(chatId, `[DUAL-SCRAPE COMPLETE]\nSuccessfully scraped ${scrapedCount} numbers into the Master Queue!`, { parse_mode: 'Markdown' });
 
             } catch (err) {
@@ -10086,6 +10065,7 @@ const cleanNumbers = matches.map(n => {
             }
             return;
         }
+
 
 
                 

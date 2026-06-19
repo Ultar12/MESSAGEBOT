@@ -1577,7 +1577,8 @@ async function startMasterEngine(chatId) {
         let activeTracker = {};
         let lastFeedTime = 0;
 
-        while ((masterQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0) && !masterState[chatId].stopFlag) {
+        while ((masterQueue[chatId].length > 0 || Object.keys(activeTracker).length > 0 || masterState[chatId].isScraping) && !masterState[chatId].stopFlag) {
+
             const nowTime = Date.now();
             let instantNext = false;
 
@@ -9945,45 +9946,55 @@ const cleanNumbers = matches.map(n => {
             });
         }
 
-        // --- MASTER TASK: FILE START ---
-        if (data.startsWith('master_start_')) {
-            await bot.answerCallbackQuery(query.id);
-            const mode = data.replace('master_start_', '');
-            masterState[chatId].mode = (mode === 'auto') ? 'auto' : 'manual';
+        
 
-            bot.editMessageText(`[MASTER SWARM ENGAGED]\n\nMode: ${mode.toUpperCase()}\nQueue: ${masterQueue[chatId].length}\nOTP Target: ${masterState[chatId].sourceBot}\n\nWaking up all available Telegram accounts...`, {
-                chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'
-            });
-
-            startMasterEngine(chatId);
-            return;
-        }
-
-        // --- MASTER TASK: FAST SCRAPE & START ---
+                // --- MASTER TASK: FAST SCRAPE & START ---
         if (data.startsWith('master_scrape_')) {
             await bot.answerCallbackQuery(query.id);
             const sourceBot = data.replace('master_scrape_', '');
             const amount = userState[chatId + '_master_amount'];
             
             masterState[chatId].sourceBot = sourceBot;
-            masterState[chatId].mode = 'auto'; // Default to auto for scraping
+            masterState[chatId].mode = 'auto'; 
+            masterState[chatId].isActive = false; // Tracker to start engine once
+            masterState[chatId].isScraping = true; // Tells the engine to stay awake if the queue temporarily empties
 
-            let statusMsg = await bot.editMessageText(`[SCRAPING] Target: ${amount} numbers from ${sourceBot}...\nBuilding master queue...`, {
+            let statusMsg = await bot.editMessageText(`[DUAL-SCRAPING] Target: ${amount} numbers from ${sourceBot}...\nWaking up Swarm Engine...`, {
                 chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'
             });
 
             try {
+                // Ensure bots are connected
                 if (typeof ensureZuScraperConnected === 'function') await ensureZuScraperConnected();
-                await zuScraperBot.sendMessage(sourceBot, { message: sourceBot === "LolzFack_bot" ? "Get Number" : "/start" });
+                if (telegram2UserBot && typeof ensureTelegram2Connected === 'function') await ensureTelegram2Connected();
+
+                // Fire triggers
+                const startCmd = sourceBot === "LolzFack_bot" ? "Get Number" : "/start";
+                await zuScraperBot.sendMessage(sourceBot, { message: startCmd }).catch(()=>{});
+                if (telegram2UserBot && telegram2UserBot.connected) {
+                    await telegram2UserBot.sendMessage(sourceBot, { message: startCmd }).catch(()=>{});
+                }
 
                 let scrapedCount = 0;
                 let attempts = 0;
                 const seen = new Set();
+                let lastStatusUpdate = 0;
 
                 while (scrapedCount < amount && attempts < (amount * 5)) {
+                    if (masterState[chatId].stopFlag) break;
                     attempts++;
-                    const allMsgs = await zuScraperBot.getMessages(sourceBot, { limit: 3 }).catch(() => []);
                     
+                    // DUAL SCRAPE LOGIC
+                    const fetch1 = zuScraperBot.getMessages(sourceBot, { limit: 3 }).catch(() => []);
+                    const fetch2 = (telegram2UserBot && telegram2UserBot.connected) 
+                        ? telegram2UserBot.getMessages(sourceBot, { limit: 3 }).catch(() => []) 
+                        : Promise.resolve([]);
+
+                    const [msgs1, msgs2] = await Promise.all([fetch1, fetch2]);
+                    const allMsgs = [...msgs1, ...msgs2];
+                    
+                    let newNumsAdded = false;
+
                     for (const msg of allMsgs) {
                         const text = msg.message || "";
                         if (text.includes("Choose a country:") || text.includes("Select service")) continue;
@@ -10001,6 +10012,7 @@ const cleanNumbers = matches.map(n => {
                                             seen.add(raw);
                                             masterQueue[chatId].push(raw);
                                             scrapedCount++;
+                                            newNumsAdded = true;
                                         }
                                     }
                                 }
@@ -10014,47 +10026,66 @@ const cleanNumbers = matches.map(n => {
                                 seen.add(raw);
                                 masterQueue[chatId].push(raw);
                                 scrapedCount++;
+                                newNumsAdded = true;
                             }
                         }
+                    }
+
+                    // INSTANTLY START ENGINE IF NOT RUNNING
+                    if (newNumsAdded && !masterState[chatId].isActive) {
+                        masterState[chatId].isActive = true;
+                        startMasterEngine(chatId); // Starts feeding the bot immediately
+                    }
+
+                    // Live Progress Update (Paced to avoid Telegram API lag)
+                    if (Date.now() - lastStatusUpdate > 3000) {
+                        lastStatusUpdate = Date.now();
+                        bot.editMessageText(`[DUAL-SCRAPING IN PROGRESS]\n\nTarget: ${amount}\nScraped & Queued: ${scrapedCount}\nOTP Target: ${sourceBot}\n\n[Master Swarm Engine is currently feeding numbers...]`, {
+                            chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown'
+                        }).catch(()=>{});
                     }
 
                     if (scrapedCount >= amount) break;
 
-                    let clicked = false;
-                    for (const msg of allMsgs) {
-                        if (msg.replyMarkup && msg.replyMarkup.rows) {
-                            for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
-                                for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
-                                    const bText = (msg.replyMarkup.rows[r].buttons[c].text || "").toLowerCase();
-                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change") || bText.includes("new numbers") || bText.includes("get number")) {
-                                        try {
-                                            await zuScraperBot.invoke(new Api.messages.GetBotCallbackAnswer({ peer: sourceBot, msgId: msg.id, data: msg.replyMarkup.rows[r].buttons[c].data }));
-                                            clicked = true;
-                                        } catch(e) {
-                                            try { await msg.click({ text: msg.replyMarkup.rows[r].buttons[c].text }); clicked = true; } catch(err){}
+                    // Click Buttons (Dual Pagination)
+                    const clickPagination = async (client, msgs) => {
+                        if (!client) return false;
+                        for (const msg of msgs) {
+                            if (msg.replyMarkup && msg.replyMarkup.rows) {
+                                for (let r = 0; r < msg.replyMarkup.rows.length; r++) {
+                                    for (let c = 0; c < msg.replyMarkup.rows[r].buttons.length; c++) {
+                                        const bText = (msg.replyMarkup.rows[r].buttons[c].text || "").toLowerCase();
+                                        if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("change") || bText.includes("new numbers") || bText.includes("change number")) {
+                                            try {
+                                                await client.invoke(new Api.messages.GetBotCallbackAnswer({ peer: sourceBot, msgId: msg.id, data: msg.replyMarkup.rows[r].buttons[c].data }));
+                                                return true;
+                                            } catch(e) {
+                                                try { await msg.click({ text: msg.replyMarkup.rows[r].buttons[c].text }); return true; } catch(err){}
+                                            }
                                         }
                                     }
-                                    if (clicked) break;
                                 }
-                                if (clicked) break;
                             }
                         }
-                        if (clicked) break;
-                    }
-                    await delay(clicked ? 2000 : 1500);
+                        return false;
+                    };
+
+                    const [clicked1, clicked2] = await Promise.all([
+                        clickPagination(zuScraperBot, msgs1),
+                        clickPagination(telegram2UserBot && telegram2UserBot.connected ? telegram2UserBot : null, msgs2)
+                    ]);
+
+                    await delay((clicked1 || clicked2) ? 2500 : 1500);
                 }
 
-                await bot.deleteMessage(chatId, statusMsg.message_id).catch(()=>{});
-                bot.sendMessage(chatId, `[MASTER SWARM ENGAGED]\n\nMode: AUTO\nScraped & Queued: ${masterQueue[chatId].length}\nOTP Target: ${masterState[chatId].sourceBot}\n\nWaking up all available Telegram accounts...`, { parse_mode: 'Markdown' });
-                
-                startMasterEngine(chatId);
+                masterState[chatId].isScraping = false; // Let the engine know scraping is done
+                bot.sendMessage(chatId, `[DUAL-SCRAPE COMPLETE]\nSuccessfully scraped ${scrapedCount} numbers into the Master Queue!`, { parse_mode: 'Markdown' });
 
             } catch (err) {
                 bot.sendMessage(chatId, "[ERROR] Scrape setup failed: " + err.message);
             }
             return;
         }
-
 
 
                 

@@ -9704,7 +9704,8 @@ const cleanNumbers = matches.map(n => {
                 const seen = new Set();
                 let currentScreenBatch = []; // Limits the screen output to 100 numbers
 
-                const processNumber = async (raw) => {
+
+                                const processNumber = async (raw) => {
                     if (verified >= amount || userState[chatId + '_zu_stop']) return;
                     
                     // Zambia Normalizer Fix
@@ -9735,7 +9736,7 @@ const cleanNumbers = matches.map(n => {
                                 `🚀 **[ZU SCRAPER ACTIVE]**\n\n` +
                                 `Target Bot: \`@${targetBot}\`\n` +
                                 `Verified & Injected: **${verified}** / ${amount}\n` +
-                                `WA Check: ${verifySock ? '✅ ENABLED' : '⚠️ OFFLINE (Blind)'}\n\n` +
+                                `WA Check: ${verifySock ? 'ENABLED' : 'OFFLINE (Blind)'}\n\n` +
                                 `**Latest Valid Numbers:**\n${currentScreenBatch.join(', ')}\n\n` +
                                 `_Type /zustats for live feeder info._`, 
                                 { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
@@ -9746,29 +9747,32 @@ const cleanNumbers = matches.map(n => {
                         if (!zuActive[chatId]) processZuQueue(bot, chatId);
                     };
 
-                    // 🚀 LIVE WHATSAPP VERIFICATION (WITH ANTI-FREEZE & RATE LIMIT PROTECTION)
-                    if (!verifySock) {
-                        await executeOutput(); // Fallback to blind processing if WA disconnected
-                    } else {
+                    // --- YOUR WSOTP VERIFICATION LOGIC ---
+                    let isWaActive = true;
+
+                    if (verifySock) {
                         try {
-                            const checkPromise = verifySock.onWhatsApp(jid);
-                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 6000));
-                            
-                            // If WA takes longer than 6 seconds, it throws an error and skips the number!
-                            const [check] = await Promise.race([checkPromise, timeoutPromise]);
-                            
-                            if (check && check.exists) {
-                                await executeOutput();
+                            const [waCheck] = await verifySock.onWhatsApp(jid);
+                            if (!waCheck?.exists) isWaActive = false; 
+                        } catch (e) {
+                            // If WA drops the connection, alert once and switch to blind mode!
+                            if (!wsotpWarnedNoWa) {
+                                bot.sendMessage(chatId, `[ALERT] WA Checker Socket Error! Continuing blindly to prevent freeze.`, { parse_mode: 'Markdown' });
+                                wsotpWarnedNoWa = true;
                             }
-                        } catch(e) {
-                            // Silent catch - if WA times out or number is invalid, skip it and keep scraping!
                         }
-                        
-                        // 🚀 CRITICAL: The reason getnu works and ZU doesn't is this delay!
-                        // Without it, ZU blasts WhatsApp with 15 requests instantly, crashing the socket.
-                        await delay(2000); 
                     }
+
+                    // Only inject if it passed the WA Check (or if we fell back to blind mode)
+                    if (isWaActive) {
+                        await executeOutput();
+                    }
+                    
+                    // 🚀 CRITICAL PACING: Let the WhatsApp socket breathe!
+                    // This prevents ZU from blasting WhatsApp with 15 requests instantly and crashing the socket.
+                    await delay(2000); 
                 };
+
 
                 while (verified < amount && attempts < (amount * 5) && !userState[chatId + '_zu_stop']) {
                     attempts++;

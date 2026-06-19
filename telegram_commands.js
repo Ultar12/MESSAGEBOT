@@ -9778,7 +9778,7 @@ const cleanNumbers = matches.map(n => {
                     attempts++;
                     let initialVerified = verified;
 
-                    // 🚀 FETCH STRICTLY FROM ZU SCRAPER BOT
+                                        // 🚀 FETCH STRICTLY FROM ZU SCRAPER BOT
                     const allMsgs = await zuScraperBot.getMessages(targetBot, { limit: 3 }).catch(() => []);
                     for (const msg of allMsgs) {
                         const text = msg.message || "";
@@ -9789,18 +9789,22 @@ const cleanNumbers = matches.map(n => {
                                 for (const btn of row.buttons) {
                                     const bText = btn.text || "";
                                     if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
-                                    const match = bText.match(/\d{9,15}/);
-                                    if (match) await processNumber(match[0]);
+                                    
+                                    // ⚡️ UPGRADED REGEX: Catches country codes separated by spaces
+                                    const match = bText.match(/\+?\d{1,4}[-\s]?\d{6,14}/);
+                                    if (match) await processNumber(match[0].replace(/\D/g, ''));
                                 }
                             }
                         }
                         // After the button loop, check the text body:
-                        const textMatches = text.match(/\+?(\d{9,15})/g) || [];
+                        // ⚡️ UPGRADED REGEX: Catches "+992 074264444" cleanly
+                        const textMatches = text.match(/\+?\d{1,4}[-\s]?\d{6,14}/g) || [];
                         for (let raw of textMatches) {
-                            raw = raw.replace('+', ''); // Strip the + sign
+                            raw = raw.replace(/\D/g, ''); // Strip the + sign and space perfectly
                             if (raw.length >= 9) await processNumber(raw);
                         }
                     }
+
 
                     if (verified >= amount || userState[chatId + '_zu_stop']) break;
 

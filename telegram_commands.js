@@ -2775,16 +2775,16 @@ async function startMasterEngine(bot, chatId) {
     const TARGET_BOT = "wsotp200bot";
     let masterWarnedNoWa = false;
     
-    // Gather ALL possible online accounts in your code
+  // 1. Gather all online accounts (Safely checking for null to prevent crashes)
     const activeClients = [];
-    if (typeof userBot !== 'undefined' && userBot.connected) activeClients.push({ name: 'Main', client: userBot });
-    if (typeof paymeUserBot !== 'undefined' && paymeUserBot.connected) activeClients.push({ name: 'Payme', client: paymeUserBot });
-    if (typeof telegram2UserBot !== 'undefined' && telegram2UserBot.connected) activeClients.push({ name: 'TG2', client: telegram2UserBot });
-    if (typeof telegram3UserBot !== 'undefined' && telegram3UserBot.connected) activeClients.push({ name: 'TG3', client: telegram3UserBot });
-    if (typeof ultarUserBot !== 'undefined' && ultarUserBot.connected) activeClients.push({ name: 'Ultar', client: ultarUserBot });
-    if (typeof zuScraperBot !== 'undefined' && zuScraperBot.connected) activeClients.push({ name: 'ZuScrape', client: zuScraperBot });
-    if (typeof rocketUserBot !== 'undefined' && rocketUserBot.connected) activeClients.push({ name: 'Rocket', client: rocketUserBot });
-    if (typeof getnumUserBot !== 'undefined' && getnumUserBot.connected) activeClients.push({ name: 'GetNum', client: getnumUserBot });
+    if (userBot && userBot.connected) activeClients.push({ name: 'Main', client: userBot });
+    if (paymeUserBot && paymeUserBot.connected) activeClients.push({ name: 'Payme', client: paymeUserBot });
+    if (telegram2UserBot && telegram2UserBot.connected) activeClients.push({ name: 'TG2', client: telegram2UserBot });
+    if (telegram3UserBot && telegram3UserBot.connected) activeClients.push({ name: 'TG3', client: telegram3UserBot });
+    if (ultarUserBot && ultarUserBot.connected) activeClients.push({ name: 'Ultar', client: ultarUserBot });
+    if (zuScraperBot && zuScraperBot.connected) activeClients.push({ name: 'ZuScrape', client: zuScraperBot });
+    if (rocketUserBot && rocketUserBot.connected) activeClients.push({ name: 'Rocket', client: rocketUserBot });
+    if (getnumUserBot && getnumUserBot.connected) activeClients.push({ name: 'GetNum', client: getnumUserBot });
 
     if (activeClients.length === 0) {
         return bot.sendMessage(chatId, "[MASTER ENGINE ABORTED] No Telegram accounts are connected.");

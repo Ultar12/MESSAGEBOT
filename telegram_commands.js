@@ -9929,7 +9929,7 @@ const cleanNumbers = matches.map(n => {
                 chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown'
             });
 
-            startMasterEngine(chatId);
+            startMasterEngine(bot, chatId);
             return;
         }
 
@@ -10015,7 +10015,7 @@ const cleanNumbers = matches.map(n => {
 
                     if (newNumsAdded && !masterState[chatId].isActive) {
                         masterState[chatId].isActive = true;
-                        startMasterEngine(chatId); 
+                        startMasterEngine(bot, chatId); 
                     }
 
                     if (Date.now() - lastStatusUpdate > 3000) {

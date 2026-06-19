@@ -1553,7 +1553,7 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
 // ==========================================
 // MASTER SWARM ENGINE (MULTI-THREADED)
 // ==========================================
-async function startMasterEngine(chatId) {
+async function startMasterEngine(bot, chatId) {
     const TARGET_BOT = "wsotp200bot";
     let masterWarnedNoWa = false;
     
@@ -10034,7 +10034,7 @@ const cleanNumbers = matches.map(n => {
                     // INSTANTLY START ENGINE IF NOT RUNNING
                     if (newNumsAdded && !masterState[chatId].isActive) {
                         masterState[chatId].isActive = true;
-                        startMasterEngine(chatId); // Starts feeding the bot immediately
+                        startMasterEngine(bot, chatId); // Starts feeding the bot immediately
                     }
 
                     // Live Progress Update (Paced to avoid Telegram API lag)

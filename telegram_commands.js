@@ -12,6 +12,7 @@ import {
 import { delay } from '@whiskeysockets/baileys';
 import * as mammoth from 'mammoth';
 import path from 'path';
+import { Spotify } from 'spotifydl-x';
 import docxConverter from 'docx-pdf';
 import ExcelJS from 'exceljs';
 import sharp from 'sharp';
@@ -3431,7 +3432,65 @@ bot.onText(/\/zustats/, async (msg) => {
     bot.sendMessage(chatId, txt, { parse_mode: 'Markdown' });
 });
 
+    
+// Initialize the Spotify downloader
+const spotify = new Spotify();
 
+// --- /spotify [link] : Downloads audio via metadata matching ---
+bot.onText(/\/spotify\s+(.+)/, async (msg, match) => {
+    // Clean up the user's command message if you have that helper active
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    
+    const chatId = msg.chat.id;
+    const userId = chatId.toString();
+    
+    // Optional: Add your Admin/Subadmin lock if you want to restrict it
+    // if (userId !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(userId)) return;
+
+    const url = match[1].trim();
+
+    // Validate the link
+    if (!url.includes('spotify.com/track')) {
+        return bot.sendMessage(chatId, "**Invalid Link**\nPlease provide a valid Spotify Track URL.", { parse_mode: 'Markdown' });
+    }
+
+    let statusMsg = await bot.sendMessage(chatId, "**Searching...**\nExtracting track metadata...", { parse_mode: 'Markdown' });
+
+    try {
+        // 1. Fetch Track Metadata
+        const trackData = await spotify.getTrack(url);
+        const title = trackData.name;
+        const artist = trackData.artists.join(', ');
+        
+        await bot.editMessageText(`**Downloading...**\nFound: \`${title} - ${artist}\`\n_Processing audio buffer, please wait..._`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown' 
+        });
+
+        // 2. Fetch the Audio Buffer directly into RAM (No local files saved)
+        const audioBuffer = await spotify.downloadTrack(url);
+
+        // 3. Send the Audio to Telegram
+        await bot.sendAudio(chatId, audioBuffer, {
+            caption: `*${title}*\n${artist}\n\n_Downloaded via Ultarbot_`,
+            title: title,
+            performer: artist,
+            parse_mode: 'Markdown'
+        });
+
+        // 4. Clean up the status message
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+
+    } catch (error) {
+        console.error("[SPOTIFY ERROR]", error);
+        bot.editMessageText(`**Download Failed:**\n_${error.message}_`, { 
+            chat_id: chatId, 
+            message_id: statusMsg.message_id, 
+            parse_mode: 'Markdown' 
+        });
+    }
+});
 
     
 

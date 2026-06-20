@@ -1326,15 +1326,15 @@ export async function checkDetailedBanStatus(sock, phoneNumber) {
 }
 
 
-// ==========================================
-// THE CONTINUOUS ZU ENGINE (ULTAR STRICT)
-// ==========================================
+
+                
 async function processZuQueue(bot, chatId) {
     if (zuActive[chatId]) {
-        console.log(`[ZU] Already active for ${chatId}, skipping re-entry.`); // ADD HERE
+        console.log(`[ZU] Already active for ${chatId}, skipping re-entry.`);
         return; 
     }
     zuActive[chatId] = true;
+    userState[chatId + '_zu_active'] = true;
 
     const TARGET_BOT = "wsotp200bot";
     const { Api } = await import("telegram");
@@ -1344,49 +1344,77 @@ async function processZuQueue(bot, chatId) {
     } catch (e) {
         bot.sendMessage(chatId, `[ERROR] Failed to connect ULTAR account: ${e.message}`);
         zuActive[chatId] = false;
+        userState[chatId + '_zu_active'] = false;
         return;
     }
 
-    zuGlobalStats[chatId] = { sent: 0, inProgress: 0, completed: 0, trash: 0, earned: 0.00, logs: [], left: 0, activeCount: 0, bgCount: 0 };
+    zuGlobalStats[chatId] = { 
+        sent: 0, inProgress: 0, completed: 0, trash: 0, 
+        earned: 0.00, logs: [], left: 0, activeCount: 0, bgCount: 0 
+    };
     let stats = zuGlobalStats[chatId];
     let activeTracker = {};     
     let backgroundTracker = {}; 
-    let lastZuFeed = 0; // Ensures the 2.5s pacing
+    let lastZuFeed = 0;
 
     const addLog = async (msg) => {
         stats.logs.unshift(msg);
         if (stats.logs.length > 6) stats.logs.pop(); 
     };
 
-        // 🚀 SAFELY ENSURE QUEUE EXISTS BEFORE LOOPING
+    // Fire-and-forget background delete — never blocks feeding
+    const bgDelete = (ids) => {
+        if (!ids || ids.length === 0) return;
+        const cleanIds = Array.from(new Set(ids));
+        ultarUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }).catch(() => {});
+    };
+
     zuQueue[chatId] = zuQueue[chatId] || [];
 
-    // Wait up to 15 seconds for the queue to populate
-let waitCount = 0;
-while ((!zuQueue[chatId] || zuQueue[chatId].length === 0) && waitCount < 30) {
-    await delay(500);
-    waitCount++;
-}
+    // Wait up to 60 seconds for queue to populate
+    let waitCount = 0;
+    while ((!zuQueue[chatId] || zuQueue[chatId].length === 0) && waitCount < 120) {
+        await delay(500);
+        waitCount++;
+    }
 
-if (!zuQueue[chatId] || zuQueue[chatId].length === 0) {
-    zuActive[chatId] = false;
-    bot.sendMessage(chatId, `[ZU] No numbers received in queue. Aborting.`);
-    return;
-}
+    if (!zuQueue[chatId] || zuQueue[chatId].length === 0) {
+        zuActive[chatId] = false;
+        userState[chatId + '_zu_active'] = false;
+        bot.sendMessage(chatId, `[ZU] No numbers received in queue. Aborting.`);
+        return;
+    }
 
-    // 🚀 WRAPPED zuQueue IN ( || [] ) TO PREVENT UNDEFINED CRASHES
-    while ((zuQueue[chatId] || []).length > 0 || Object.keys(activeTracker).length > 0 || Object.keys(backgroundTracker).length > 0) {
-        if (userState[chatId + '_zu_stop']) break; // Kill switch
-        
+    while (
+        (zuQueue[chatId] || []).length > 0 || 
+        Object.keys(activeTracker).length > 0 || 
+        Object.keys(backgroundTracker).length > 0
+    ) {
+        // Kill switch check
+        if (userState[chatId + '_zu_stop']) break;
+
         const isAuto = (zuState[chatId] === 'auto');
         const nowTime = Date.now();
         let instantNext = false;
 
-        // --- 1. THE 2.5 SEC FEEDER ---
-        // 🚀 ADDED SAFETY CHECK HERE TOO
-        if (nowTime - lastZuFeed >= 2500 && (zuQueue[chatId] || []).length > 0 && Object.keys(activeTracker).length < 100) {
+        // --- FEEDER: Same logic as WSOTP — send as soon as bot replies ---
+        let waitingForFirstReply = 0;
+        for (const num in activeTracker) {
+            if (
+                activeTracker[num].count === 0 && 
+                !activeTracker[num].hunterSpawned && 
+                !activeTracker[num].manualPromptSent &&
+                (nowTime - activeTracker[num].addedAt < 30000)
+            ) {
+                waitingForFirstReply++;
+            }
+        }
 
-            lastZuFeed = nowTime;
+        if (
+            waitingForFirstReply === 0 &&
+            Object.keys(activeTracker).length < 150 &&
+            (zuQueue[chatId] || []).length > 0
+        ) {
             const rawNum = zuQueue[chatId].shift();
             let formattedNum = rawNum.replace(/\D/g, '');
             
@@ -1394,27 +1422,37 @@ if (!zuQueue[chatId] || zuQueue[chatId].length === 0) {
             else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
             else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
 
-          stats.sent++;
+            stats.sent++;
             try {
-                // 🚀 REMOVED the fragile "SetTyping" animation that was crashing the queue
+                await delay(Math.floor(Math.random() * 150) + 100);
                 const sentMsg = await ultarUserBot.sendMessage(TARGET_BOT, { message: formattedNum });
                 
                 activeTracker[formattedNum] = {
-                    count: 0, seenUpdates: new Set(), usedCodes: new Set(), msgIdsToClean: [sentMsg.id], 
-                    addedAt: Date.now(), inProgressCounted: false, hunterSpawned: false, manualPromptSent: false 
+                    count: 0, 
+                    seenUpdates: new Set(), 
+                    usedCodes: new Set(), 
+                    msgIdsToClean: [sentMsg.id], 
+                    addedAt: Date.now(), 
+                    inProgressCounted: false, 
+                    hunterSpawned: false, 
+                    manualPromptSent: false 
                 };
+                instantNext = true; // Poll immediately for reply
             } catch (e) { 
-                stats.sent--; 
-                // 🚀 Added a live error alert so it never fails silently again!
-                console.error(`[ULTAR FEEDER ERROR] on ${formattedNum}:`, e.message);
+                stats.sent--;
+                console.error(`[ZU FEEDER ERROR] on ${formattedNum}:`, e.message);
                 
-                // If it fails to send, pause for 3 seconds so we don't spam errors
-                await delay(3000);
+                if (e.message && e.message.includes('wait of')) {
+                    const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 30;
+                    zuQueue[chatId].unshift(rawNum); // Put back in queue
+                    await delay((waitSeconds * 1000) + 1000);
+                } else {
+                    await delay(2000);
+                }
             }
         }
 
-
-        // --- 2. LISTENER & HUNTER DISPATCHER ---
+        // --- LISTENER ---
         try {
             const msgs = await ultarUserBot.getMessages(TARGET_BOT, { limit: 50 }); 
             for (const msg of msgs) {
@@ -1447,88 +1485,101 @@ if (!zuQueue[chatId] || zuQueue[chatId].length === 0) {
 
                     if (!isErrorCode && !isRewardOrWithdrawal) trackData.msgIdsToClean.push(msg.id); 
 
-                    // 🛑 TRASH
-     if (textLower.includes("already registered") || text.includes("🟡") || text.includes("⚫️") || 
-    textLower.includes("badnum") || textLower.includes("blocked") ||
-    textLower.includes("please submit this number again") ||
-    textLower.includes("try later") ||
-    (textLower.includes("error") && !isErrorCode)) {
-    
-    // ✅ DELETE FROM BOT CHAT
-    const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
-    try { await ultarUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
-    
-    stats.trash++;
-    if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
-    if (isBackground) delete backgroundTracker[botNum]; 
-    else delete activeTracker[botNum];
-}
-                    // 💰 PAID
+                    // 🛑 TRASH — fire and forget, never block
+                    if (
+                        textLower.includes("already registered") || 
+                        text.includes("🟡") || text.includes("⚫️") || 
+                        textLower.includes("badnum") || textLower.includes("blocked") ||
+                        textLower.includes("please submit this number again") ||
+                        textLower.includes("try later") ||
+                        (textLower.includes("error") && !isErrorCode)
+                    ) {
+                        bgDelete(trackData.msgIdsToClean);
+                        
+                        stats.trash++;
+                        if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
+                        if (isBackground) delete backgroundTracker[botNum]; 
+                        else delete activeTracker[botNum];
+                        
+                        continue; // Immediately process next message
+                    }
+
+                    // 💰 PAID — fire and forget
                     else if (text.includes("💰") || textLower.includes("new reward") || text.includes("🟢")) {
                         let amountStr = "0.00";
                         const amountMatch = text.match(/Amount:\s*([\d.]+)/i);
-                        if (amountMatch) { stats.earned += parseFloat(amountMatch[1]); amountStr = parseFloat(amountMatch[1]).toFixed(2); }
+                        if (amountMatch) { 
+                            stats.earned += parseFloat(amountMatch[1]); 
+                            amountStr = parseFloat(amountMatch[1]).toFixed(2); 
+                        }
 
-                        const cleanIds = Array.from(new Set(trackData.msgIdsToClean));
-                        try { await ultarUserBot.deleteMessages(TARGET_BOT, cleanIds, { revoke: true }); } catch (delErr) {}
+                        trackData.msgIdsToClean.push(msg.id);
+                        bgDelete(trackData.msgIdsToClean);
+
                         stats.completed++;
                         if (trackData.inProgressCounted) stats.inProgress = Math.max(0, stats.inProgress - 1);
-                        if (isBackground) delete backgroundTracker[botNum]; else delete activeTracker[botNum];
+                        if (isBackground) delete backgroundTracker[botNum]; 
+                        else delete activeTracker[botNum];
+                        
                         await addLog(`🎉 \`${botNum}\`: Paid (+$${amountStr})!`);
+                        continue;
                     }
             
                     // 🔵 IN PROGRESS / ERROR
-else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
-    if (!isErrorCode) trackData.count++;
+                    else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCode) {
+                        if (!isErrorCode) trackData.count++;
 
-    if (trackData.count === 2 || isErrorCode) {
-        if (trackData.count === 2 && !isErrorCode && !trackData.inProgressCounted) {
-            stats.inProgress++; 
-            trackData.inProgressCounted = true;
-            if (!isBackground) { 
-                backgroundTracker[botNum] = activeTracker[botNum]; 
-                delete activeTracker[botNum]; 
-                isBackground = true; 
-            }
-        }
+                        if (trackData.count === 2 || isErrorCode) {
+                            if (trackData.count === 2 && !isErrorCode && !trackData.inProgressCounted) {
+                                stats.inProgress++; 
+                                trackData.inProgressCounted = true;
+                                if (!isBackground) { 
+                                    backgroundTracker[botNum] = activeTracker[botNum]; 
+                                    delete activeTracker[botNum]; 
+                                    isBackground = true; 
+                                }
+                            }
 
-        // ✅ ALWAYS send manual prompt (for error retries too)
-        if (!trackData.manualPromptSent || isErrorCode) {
-            let promptText = `🔔 **ZU: MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
-            if (isErrorCode) promptText = `🔴 **ZU: WRONG CODE**\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
-            
-            try {
-                const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
-                manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: 'ultar' };
-                trackData.manualPromptSent = true;
-            } catch (spamErr) {}
-        }
+                            if (!trackData.manualPromptSent || isErrorCode) {
+                                let promptText = `🔔 **ZU: MANUAL OTP ENTRY**\nNumber: \`${botNum}\`\n\n_Reply to this message with the code._`;
+                                if (isErrorCode) promptText = `🔴 **ZU: WRONG CODE**\nNumber: \`${botNum}\`\n\n_Reply to this message with the CORRECT code!_`;
+                                
+                                try {
+                                    const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
+                                    manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id, useBot: 'ultar' };
+                                    trackData.manualPromptSent = true;
+                                } catch (spamErr) {}
+                            }
 
-                if (isErrorCode) {
-            await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next...`);
-            // ✅ Reset so hunter can fire again on error
-            trackData.hunterSpawned = false;
-            if (isAuto) huntZuOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu']);
-        } else if (!trackData.hunterSpawned) {
-            trackData.hunterSpawned = true;
-            if (isAuto) {
-                await addLog(`⚡ \`${botNum}\`: ZU Hunter Deployed...`);
-                huntZuOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu']);
-            } else {
-                await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for manual reply)...`);
-            }
-        }
-
-    }
-}
+                            if (isErrorCode) {
+                                await addLog(`🔄 \`${botNum}\`: Wrong code. Hunting next...`);
+                                trackData.hunterSpawned = false;
+                                if (isAuto) huntZuOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu']);
+                            } else if (!trackData.hunterSpawned) {
+                                trackData.hunterSpawned = true;
+                                if (isAuto) {
+                                    await addLog(`⚡ \`${botNum}\`: ZU Hunter Deployed...`);
+                                    huntZuOtpAsync(chatId, botNum, msg.id, trackData, addLog, sessionTargetBots[chatId + '_zu']);
+                                } else {
+                                    await addLog(`🖐 \`${botNum}\`: In Progress (Waiting for manual reply)...`);
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        } catch (e) {}
+        } catch (e) {
+            if (e.message && e.message.includes('wait of')) {
+                const waitSeconds = parseInt(e.message.match(/\d+/)[0]) || 30;
+                await delay((waitSeconds * 1000) + 1000);
+            }
+        }
 
         // Memory Cleanup
         for (const num in activeTracker) {
             if (Date.now() - activeTracker[num].addedAt > 900000) { 
-                backgroundTracker[num] = activeTracker[num]; delete activeTracker[num]; 
+                backgroundTracker[num] = activeTracker[num]; 
+                delete activeTracker[num]; 
             }
         }
         for (const num in backgroundTracker) {
@@ -1542,13 +1593,15 @@ else if (text.includes("🔵") || textLower.includes("in progress") || isErrorCo
         stats.bgCount = Object.keys(backgroundTracker).length;
         stats.left = zuQueue[chatId] ? zuQueue[chatId].length : 0;
 
-        if (!instantNext) await delay(800); 
+        // Fast loop when active, slow when idle
+        if (!instantNext) await delay(300); 
     }
 
     zuActive[chatId] = false;
-    bot.sendMessage(chatId, `**[ZU ENGINE OFFLINE]**\nQueue finished or halted.`, { parse_mode: 'Markdown' });
+    userState[chatId + '_zu_active'] = false;
+    userState[chatId + '_zu_stop'] = false;
+    bot.sendMessage(chatId, `**[ZU ENGINE OFFLINE]**\nQueue finished or stopped.`, { parse_mode: 'Markdown' });
 }
-
 
 
 
@@ -8162,49 +8215,46 @@ const cleanNumbers = matches.map(n => {
         }
 
 
-                // --- SMART WSOTP QUEUE (Manual & Bulk Forward Support) ---
-        if (userState[chatId] === 'WSOTP_MANUAL_MODE' || userState[chatId] === 'WSOTP_FILE_MODE') {
-            
-            // 1. Check for Exit Command
-            if (['stop', '/done', 'exit'].includes(text.toLowerCase())) {
-                userState[chatId] = null;
-                const remaining = wsotpQueue[chatId]?.length || 0;
-                
-                // Clear the queue memory
-                wsotpQueue[chatId] = [];
-                
-                return bot.sendMessage(chatId, `**[WSOTP MODE EXITED]**\nQueue stopped. ${remaining} numbers discarded from memory.`, { parse_mode: 'Markdown' });
-            }
+  if (
+    userState[chatId] === 'WSOTP_MANUAL_MODE' || 
+    userState[chatId] === 'WSOTP_FILE_MODE' ||
+    userState[chatId] === 'WSOTP_AUTO_MODE' ||
+    userState[chatId] === 'WSOTP_MAN_MODE'
+) {
+    // STOP command — kills daemon immediately
+    if (['stop', 'STOP', '/done', 'exit'].includes(text.trim())) {
+        const remaining = wsotpQueue[chatId]?.length || 0;
+        wsotpQueue[chatId] = [];
+        userState[chatId] = 'WSOTP_STOPPED'; // Breaks the while loop condition
+        wsotpActive[chatId] = false;
+        return bot.sendMessage(chatId, 
+            `**[WSOTP DAEMON KILLED]**\n\nQueue cleared: ${remaining} numbers discarded.\nEngine is shutting down...`, 
+            { parse_mode: 'Markdown' }
+        );
+    }
 
-            // 2. Extract all raw numbers from your message
-            const matches = text.match(/\d{9,15}/g);
-            if (!matches || matches.length === 0) return; // Ignore regular chat chatter
+    const matches = text.match(/\d{9,15}/g);
+    if (!matches || matches.length === 0) return;
 
-            // Ensure the queue array exists
-            if (!wsotpQueue[chatId]) wsotpQueue[chatId] = [];
-            
-            // 3. Smart Deduplication (Don't add numbers that are already waiting in the queue)
-            const uniqueMatches = [...new Set(matches)];
-            const newNumbers = uniqueMatches.filter(num => !wsotpQueue[chatId].includes(num));
-            
-            if (newNumbers.length === 0) {
-                return bot.sendMessage(chatId, `**Ignored:** All these numbers are already in the queue!`, { parse_mode: 'Markdown' });
-            }
+    if (!wsotpQueue[chatId]) wsotpQueue[chatId] = [];
+    
+    const uniqueMatches = [...new Set(matches)];
+    const newNumbers = uniqueMatches.filter(num => !wsotpQueue[chatId].includes(num));
+    
+    if (newNumbers.length === 0) {
+        return bot.sendMessage(chatId, `**Ignored:** All these numbers are already in the queue!`, { parse_mode: 'Markdown' });
+    }
 
-            // 4. Add the fresh, unique batch to the queue
-            wsotpQueue[chatId].push(...newNumbers);
-            
-            bot.sendMessage(chatId, `**Added ${newNumbers.length} new numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
+    wsotpQueue[chatId].push(...newNumbers);
+    
+    bot.sendMessage(chatId, `**Added ${newNumbers.length} new numbers to Queue.**\nTotal in line: ${wsotpQueue[chatId].length}`, { parse_mode: 'Markdown' });
 
-            // 5. If the background worker is asleep, wake it up!
-            if (!wsotpActive[chatId]) {
-                processWsotpQueue(chatId);
-            }
-            
-            return; // Stop other commands from firing while in this mode
-        }
-
-
+    if (!wsotpActive[chatId]) {
+        processWsotpQueue(chatId);
+    }
+    
+    return;
+}
 
 
                 // --- 🇿🇼 SMART ZIMBABWE SAVE (Bulk Forward Support) ---
@@ -8408,42 +8458,6 @@ const cleanNumbers = matches.map(n => {
             }
             return;
         }
-
-        // --- MOBILE API: STEP 2 (Receive SMS Code & Register) ---
-        if (userState[chatId] === 'WAITING_MOBILE_OTP') {
-            const otpCode = text.replace(/[^0-9]/g, '');
-            if (otpCode.length !== 6) return bot.sendMessage(chatId, 'The code must be exactly 6 digits. Try again:');
-            
-            const pendingData = pendingMobileSockets[chatId];
-            if (!pendingData || !pendingData.sock) {
-                userState[chatId] = null;
-                return bot.sendMessage(chatId, 'Session expired or lost. Please run /login again.');
-            }
-
-            userState[chatId] = null;
-            bot.sendMessage(chatId, `Verifying code ${otpCode}...`);
-
-            try {
-                // Submit the OTP to WhatsApp
-                const res = await pendingData.sock.register(otpCode);
-                
-                bot.sendMessage(chatId, `**MOBILE LOGIN SUCCESSFUL!**\n\n+${pendingData.phone} is now a Primary Device!`, { parse_mode: 'Markdown' });
-                
-                // Cleanup
-                delete pendingMobileSockets[chatId];
-                
-                // IMPORTANT: You now need to add this session to your active clients/database
-                // just like you do in your standard startClient() function.
-                
-            } catch (e) {
-                let errorMsg = e.message;
-                if (errorMsg.includes('code_incorrect')) errorMsg = "The SMS code was incorrect.";
-                bot.sendMessage(chatId, `Verification Failed: ${errorMsg}\n\nRun /login to try again.`);
-                delete pendingMobileSockets[chatId];
-            }
-            return;
-        }
-
 
 
                 // --- 🌍 SMART UNIVERSAL SAVE (Bulk Forward Support) ---

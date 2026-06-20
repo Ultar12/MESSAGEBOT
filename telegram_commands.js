@@ -2604,11 +2604,15 @@ bot.on('callback_query', async (query) => {
                     attempts++;
                     let initialVerified = verified;
 
-                    // 🚀 PARALLEL FETCH: Pulling from both accounts concurrently
-                    const fetch1 = userBot.getMessages(targetBot, { limit: 3 }).catch(() => []);
-                    const fetch2 = (telegram2UserBot && telegram2UserBot.connected) 
-                        ? telegram2UserBot.getMessages(targetBot, { limit: 3 }).catch(() => []) 
-                        : Promise.resolve([]);
+                    // Dynamic limit based on bot's page size
+    const botPageLimit = 
+    targetBot === 'ROCKETOTP_BOT' ? 2 :
+    targetBot === 'LolzFack_bot' ? 4 : 5; // Default 5 for others
+
+const fetch1 = userBot.getMessages(targetBot, { limit: botPageLimit }).catch(() => []);
+const fetch2 = (telegram2UserBot && telegram2UserBot.connected) 
+    ? telegram2UserBot.getMessages(targetBot, { limit: botPageLimit }).catch(() => []) 
+    : Promise.resolve([]);
 
                     const [msgs1, msgs2] = await Promise.all([fetch1, fetch2]);
                     const allMsgs = [...msgs1, ...msgs2];
@@ -10221,7 +10225,11 @@ const cleanNumbers = matches.map(n => {
             attempts++;
             let initialVerified = verified;
 
-            const allMsgs = await zuScraperBot.getMessages(targetBot, { limit: 5 }).catch(() => []);
+            const botPageLimit = 
+    targetBot === 'ROCKETOTP_BOT' ? 2 :
+    targetBot === 'LolzFack_bot' ? 4 : 5;
+
+const allMsgs = await zuScraperBot.getMessages(targetBot, { limit: botPageLimit }).catch(() => []);
             
             for (const msg of allMsgs) {
                 const text = msg.message || "";

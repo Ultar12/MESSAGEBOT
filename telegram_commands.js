@@ -2620,20 +2620,22 @@ const fetch2 = (telegram2UserBot && telegram2UserBot.connected)
                         if (text.includes("Choose a country:") || text.includes("Select service")) continue;
 
                         if (msg.replyMarkup?.rows) {
-                            for (const row of msg.replyMarkup.rows) {
-                                for (const btn of row.buttons) {
-                                    const bText = btn.text || "";
-                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
+        for (const row of msg.replyMarkup.rows) {
+        for (const btn of row.buttons) {
+            const bText = btn.text || "";
+            if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
 
-                                    const match = bText.match(/\d{9,15}/);
-                                    if (match) await processNumber(match[0]);
-                                }
-                            }
-                        }
-                        const textMatches = text.match(/\d{9,15}/g) || [];
-                        for (let raw of textMatches) {
-                            await processNumber(raw);
-                        }
+            // Grab full number including country code separated by space
+            const match = bText.match(/\+?\d[\d\s]{8,16}/);
+            if (match) await processNumber(match[0].replace(/\s/g, ''));
+        }
+    }
+}
+// Also extract from text body
+const textMatches = text.match(/\+?\d[\d\s]{8,16}/g) || [];
+for (let raw of textMatches) {
+    await processNumber(raw.replace(/[\s+]/g, ''));
+}
                     }
 
                     if (verified >= amount) break;
@@ -3106,7 +3108,8 @@ async function processWsotpQueue(chatId) {
             let formattedNum = rawNum.replace(/\D/g, '');
             
             if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
-            else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum; 
+            else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
+            else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
 
             // WA Check
             let isWaActive = true;

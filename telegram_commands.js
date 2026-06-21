@@ -2550,8 +2550,6 @@ bot.on('callback_query', async (query) => {
                 const processNumber = async (raw) => {
                     if (verified >= amount) return;
                     
-                    if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
-                    else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
                     
                     if (seen.has(raw)) return;
                     seen.add(raw);

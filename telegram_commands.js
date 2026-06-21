@@ -3106,8 +3106,7 @@ async function processWsotpQueue(chatId) {
             let formattedNum = rawNum.replace(/\D/g, '');
             
             if (formattedNum.length === 11 && formattedNum.startsWith('04')) formattedNum = '58' + formattedNum.substring(1); 
-            else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum;
-            else if (formattedNum.length === 9) formattedNum = '48' + formattedNum; 
+            else if (formattedNum.length === 10 && formattedNum.startsWith('4')) formattedNum = '58' + formattedNum; 
 
             // WA Check
             let isWaActive = true;

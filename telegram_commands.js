@@ -2550,6 +2550,8 @@ bot.on('callback_query', async (query) => {
                 const processNumber = async (raw) => {
                     if (verified >= amount) return;
                     
+                    if (raw.length === 10 && (raw.startsWith('09') || raw.startsWith('07'))) raw = '260' + raw.substring(1);
+                    else if (raw.length === 9 && (raw.startsWith('9') || raw.startsWith('7'))) raw = '260' + raw;
                     
                     if (seen.has(raw)) return;
                     seen.add(raw);
@@ -2620,22 +2622,20 @@ const fetch2 = (telegram2UserBot && telegram2UserBot.connected)
                         if (text.includes("Choose a country:") || text.includes("Select service")) continue;
 
                         if (msg.replyMarkup?.rows) {
-        for (const row of msg.replyMarkup.rows) {
-        for (const btn of row.buttons) {
-            const bText = btn.text || "";
-            if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
+                            for (const row of msg.replyMarkup.rows) {
+                                for (const btn of row.buttons) {
+                                    const bText = btn.text || "";
+                                    if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
 
-            // Grab full number including country code separated by space
-            const match = bText.match(/\+?\d[\d\s]{8,16}/);
-            if (match) await processNumber(match[0].replace(/\s/g, ''));
-        }
-    }
-}
-// Also extract from text body
-const textMatches = text.match(/\+?\d[\d\s]{8,16}/g) || [];
-for (let raw of textMatches) {
-    await processNumber(raw.replace(/[\s+]/g, ''));
-}
+                                    const match = bText.match(/\d{9,15}/);
+                                    if (match) await processNumber(match[0]);
+                                }
+                            }
+                        }
+                        const textMatches = text.match(/\d{9,15}/g) || [];
+                        for (let raw of textMatches) {
+                            await processNumber(raw);
+                        }
                     }
 
                     if (verified >= amount) break;

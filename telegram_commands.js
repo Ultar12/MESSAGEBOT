@@ -2547,8 +2547,8 @@ const fetch2 = (telegram2UserBot && telegram2UserBot.connected)
                                     const bText = btn.text || "";
                                     if (bText.includes("تغيير") || bText.includes("🔄") || bText.includes("رجوع") || bText.includes("New Numbers")) continue;
 
-                                    const match = bText.match(/\d{9,15}/);
-                                    if (match) await processNumber(match[0]);
+                                    const match = bText.match(/\+?\d{1,4}\s?\d{7,14}/);
+                                    if (match) await processNumber(match[0].replace(/\D/g, ''));
                                 }
                             }
                         }

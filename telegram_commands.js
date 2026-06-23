@@ -2552,10 +2552,10 @@ const fetch2 = (telegram2UserBot && telegram2UserBot.connected)
                                 }
                             }
                         }
-                        const textMatches = text.match(/\d{9,15}/g) || [];
+                        const textMatches = text.match(/\+?\d{1,4}\s?\d{7,14}/g) || [];
                         for (let raw of textMatches) {
-                            await processNumber(raw);
-                        }
+                        await processNumber(raw.replace(/\D/g, ''));
+                   }
                     }
 
                     if (verified >= amount) break;

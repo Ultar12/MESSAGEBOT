@@ -8013,24 +8013,25 @@ bot.onText(/\/pdf/, async (msg) => {
                 // Engage the manual override kill switch so the auto-hunter drops it
                 manualOverrideMap.add(otpData.botNum);
 
-                try {
-                    // Match the worker string name back to the exact client instance
+                                try {
+                    // Force lowercase for bulletproof matching
+                    const botName = (otpData.useBot || '').toLowerCase();
                     let botToUse;
-                    if (otpData.useBot === 'Main') botToUse = userBot;
-                    else if (otpData.useBot === 'Payme') botToUse = paymeUserBot;
-                    else if (otpData.useBot === 'TG2') botToUse = telegram2UserBot;
-                    else if (otpData.useBot === 'TG3') botToUse = telegram3UserBot;
-                    else if (otpData.useBot === 'Ultar') botToUse = ultarUserBot;
-                    else if (otpData.useBot === 'ZuScrape') botToUse = zuScraperBot;
-                    else if (otpData.useBot === 'Rocket') botToUse = rocketUserBot;
-                    else if (otpData.useBot === 'GetNum') botToUse = getnumUserBot;
+                    
+                    if (botName === 'main') botToUse = userBot;
+                    else if (botName === 'payme') botToUse = paymeUserBot;
+                    else if (botName === 'tg2') botToUse = telegram2UserBot;
+                    else if (botName === 'tg3') botToUse = telegram3UserBot;
+                    else if (botName === 'ultar') botToUse = ultarUserBot;
+                    else if (botName === 'zuscrape') botToUse = zuScraperBot;
+                    else if (botName === 'rocket') botToUse = rocketUserBot;
+                    else if (botName === 'getnum') botToUse = getnumUserBot;
                     else botToUse = paymeUserBot; // Safe fallback
 
                     await botToUse.sendMessage("wsotp200bot", { message: cleanOtp, replyTo: otpData.targetBotMsgId });
                 } catch (e) {
                     bot.sendMessage(chatId, `[ERROR] Failed to forward OTP: ${e.message}`);
                 }
-
 
                 // Cleanup prompt memory to prevent duplicate firing
                 delete manualOtpPrompts[msg.reply_to_message.message_id];

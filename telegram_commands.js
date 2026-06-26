@@ -8684,36 +8684,66 @@ const cleanNumbers = matches.map(n => {
                 break;
 
         
-            case "Stats":
+                        case "Stats":
                 if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
                 
-                // ONLY respond if the WSOTP/Getnu engine is actively running. 
-                // If it is off, break out silently so it ignores the word.
-                if (!wsotpActive[chatId] || !wsotpGlobalStats[chatId]) {
+                // ONLY respond if AT LEAST ONE engine is actively running. 
+                if (!wsotpActive[chatId] && !zuActive[chatId]) {
                     break; 
                 }
                 
-                const stats = wsotpGlobalStats[chatId];
-                // Force a quick tally update before displaying
-                stats.left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
-                
-                const logsText = stats.logs.join('\n');
-                
-                const txt = 
-                    `**[WSOTP LIVE DASHBOARD]**\n\n` +
-                    `Queue Remaining: ${stats.left}\n` +
-                    `Active Window: ${stats.activeCount} / 100\n` +
-                    `Background Waiting: ${stats.bgCount}\n` +
-                    `Total Sent to Bot: ${stats.sent}\n` +
-                    `Current In Progress (x2): ${stats.inProgress}\n` +
-                    `Completed/Paid: ${stats.completed}\n` +
-                    `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
-                    `Trash (Deleted): ${stats.trash}\n\n` +
-                    `**Recent Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
-                    `_Engine is running silently in the background..._`;
+                let dashboardText = "";
+
+                // --- 1. APPEND WSOTP STATS IF RUNNING ---
+                if (wsotpActive[chatId] && wsotpGlobalStats[chatId]) {
+                    const stats = wsotpGlobalStats[chatId];
+                    stats.left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+                    const logsText = stats.logs.join('\n');
                     
-                bot.sendMessage(chatId, txt, { parse_mode: 'Markdown' });
+                    dashboardText += 
+                        `[WSOTP LIVE DASHBOARD]\n\n` +
+                        `Queue Remaining: ${stats.left}\n` +
+                        `Active Window: ${stats.activeCount}\n` +
+                        `Background Waiting: ${stats.bgCount}\n` +
+                        `Total Sent to Bot: ${stats.sent}\n` +
+                        `Current In Progress (x2): ${stats.inProgress}\n` +
+                        `Completed/Paid: ${stats.completed}\n` +
+                        `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
+                        `Trash (Deleted): ${stats.trash}\n\n` +
+                        `Recent Activity Feed:\n${logsText || "Waiting for activity..."}\n\n`;
+                }
+
+                // --- 2. APPEND ZU STATS IF RUNNING ---
+                if (zuActive[chatId] && zuGlobalStats[chatId]) {
+                    const zStats = zuGlobalStats[chatId];
+                    zStats.left = zuQueue[chatId] ? zuQueue[chatId].length : 0;
+                    const zLogsText = zStats.logs.join('\n');
+                    
+                    // If WSOTP was also running, add a clean divider between the two reports
+                    if (dashboardText !== "") {
+                        dashboardText += `-------------------------\n\n`; 
+                    }
+
+                    dashboardText += 
+                        `[ZU LIVE DASHBOARD]\n\n` +
+                        `Queue Remaining: ${zStats.left}\n` +
+                        `Active Window: ${zStats.activeCount}\n` +
+                        `Background Waiting: ${zStats.bgCount}\n` +
+                        `Total Sent to Bot: ${zStats.sent}\n` +
+                        `Current In Progress (x2): ${zStats.inProgress}\n` +
+                        `Completed/Paid: ${zStats.completed}\n` +
+                        `Total Earned: $${zStats.earned.toFixed(2)} USD\n` +
+                        `Trash (Deleted): ${zStats.trash}\n\n` +
+                        `Recent Activity Feed:\n${zLogsText || "Waiting for activity..."}\n\n`;
+                }
+                
+                // --- 3. SEND THE UNIFIED MESSAGE ---
+                if (dashboardText !== "") {
+                    dashboardText += `Engines are running silently in the background...`;
+                    bot.sendMessage(chatId, dashboardText);
+                }
                 break;
+
  
 
             case "List All":
@@ -10188,7 +10218,7 @@ const cleanNumbers = matches.map(n => {
         
 
 
-        // --- ZU FILE: START ENGINE ---
+                // --- ZU FILE: START ENGINE ---
         if (data.startsWith('zu_file_mode_')) {
             await bot.answerCallbackQuery(query.id);
             const mode = data.includes('auto') ? 'auto' : 'manual';
@@ -10208,12 +10238,16 @@ const cleanNumbers = matches.map(n => {
                 zuQueue[chatId].push(...uniqueNumbers);
                 userState[chatId + '_zu_stop'] = false;
 
-                bot.editMessageText(`🚀 **[ZU FILE ENGINE ACTIVE]**\n\nLoaded: ${uniqueNumbers.length} numbers.\nMode: ${mode.toUpperCase()}\n\n_Type /zustats to view live progress, or /zustop to abort._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+                // 🔥 FIX: Explicitly lock the session to ULTAR so hunters and manual prompts never get confused!
+                sessionTargetBots[chatId + '_zu'] = 'ULTAR';
+
+                bot.editMessageText(`[ZU FILE ENGINE ACTIVE]\nLoaded: ${uniqueNumbers.length} numbers.\nMode: ${mode.toUpperCase()}\nTarget: ULTAR OTP Group (Default)\n\n_Engine is feeding in the background._`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
 
                 if (!zuActive[chatId]) processZuQueue(bot, chatId);
             } catch (err) { bot.sendMessage(chatId, `[ERROR] Failed to load file: ${err.message}`); }
             return;
         }
+
 
 
 

@@ -3345,6 +3345,13 @@ async function processWsotpQueue(chatId) {
                   
                                     
     
+
+
+                        
+
+// ==========================================
+// WSOTP / MASTER ENGINE OTP HUNTER (BULLETPROOF)
+// ==========================================
 async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null, activeWsotpBot = null) {
     const botToUse = activeWsotpBot || paymeUserBot; 
     const TARGET_BOT = "wsotp200bot";
@@ -3358,20 +3365,22 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     const isRocket = (sourceBot === 'ROCKETOTP_BOT' || getnumSelectedBot === 'ROCKETOTP_BOT');
     const isNokosx = (sourceBot === 'NokosxBot' || getnumSelectedBot === 'NokosxBot');
+    const isH2i = (sourceBot === 'h2iotp2bot' || getnumSelectedBot === 'h2iotp2bot');
     const isHxotp = (sourceBot === 'hxotpbot' || getnumSelectedBot === 'hxotpbot');
     
     // Dynamically set the target group based on mode
     let SCAN_GROUP;
     if (isRocket) SCAN_GROUP = -1003573619278;
-    else if (isNokosx) SCAN_GROUP = -1003633481131; // UXGROUP
+    else if (isNokosx || isH2i) SCAN_GROUP = -1003633481131; // UXGROUP
     else if (isHxotp) SCAN_GROUP = -1003871388849;
     else SCAN_GROUP = -1003645249777; // Ultar
 
-    await delay((isRocket || isNokosx) ? 8000 : 3000);
+    await delay((isRocket || isNokosx || isH2i) ? 8000 : 3000);
 
     while (Date.now() - startTime < MAX_TIME) {
         
-        if (userState[chatId + '_zu_stop']) return;  
+        // Stop flag check
+        if (userState[chatId] === 'WSOTP_STOPPED') return;  
         
         if (typeof manualOverrideMap !== 'undefined' && manualOverrideMap.has(cleanNum)) {
             await addLog(`[ABORT] \`${cleanNum}\`: Manual code entered. Hunter stopped.`);
@@ -3391,7 +3400,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
                 if (isRocket) {
                     // --- ROCKET PARSING ---
-                    const numRegex = new RegExp(`Number[^\n]*(?:${search4}|${search3})`, 'i');
+                    const numRegex = new RegExp(`Number[^\\n]*(?:${search4}|${search3})`, 'i');
                     if (numRegex.test(m.message)) {
                         
                         const serviceMatch = m.message.match(/Service:\s*([^\n]+)/i);
@@ -3416,85 +3425,38 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                             }
                         }
                     }
-                } else if (isNokosx) {
-                    // --- NOKOSX PARSING ---
-                    // Example: 🆕 🇬🇭 GH | 233XXXXX5382 | 🟢 WA
+                } else if (isNokosx || isH2i || isHxotp) {
+                    // --- UNIFIED NOKOSX, H2IOTP2BOT, & HXOTP PARSER ---
                     const numRegex = new RegExp(`(?:${search4}|${search3})`, 'i');
                     if (numRegex.test(m.message)) {
-                        
-                        // Smart Service Filter (Must be WhatsApp)
                         const msgLower = m.message.toLowerCase();
-                        if (!msgLower.includes('wa') && !msgLower.includes('whatsapp')) {
-                            continue; // Skip SMS or other services
-                        }
-
-                        let tempCode = null;
-
-                        // Grab the OTP code straight out of the inline buttons (e.g., 📜 659609)
-                        if (m.replyMarkup && m.replyMarkup.rows) {
-                            for (const row of m.replyMarkup.rows) {
-                                const btnArray = row.buttons || row; 
-                                for (const btn of btnArray) {
-                                    const btnText = btn.text || "";
-                                    const btnMatch = btnText.match(/(\d{4,8})/); // Extracts the digits
-                                    if (btnMatch) {
-                                        tempCode = btnMatch[1];
-                                        break;
-                                    }
-                                }
-                                if (tempCode) break;
-                            }
-                        }
-
-                        if (tempCode && !trackData.usedCodes.has(tempCode)) {
-                            foundCode = tempCode;
-                            break; // Found it! Stop looping through messages.
-                        }
-                    }
-
-
-                                    } else if (isHxotp) {
-                    // --- HXOTP PARSING ---
-                    // Format: 🇻🇪 #VE | 584168••••3870 | #12 #English
-                    // Smart match: Looks for your last 3-4 digits right before the " | " separator
-                    const numRegex = new RegExp(`(?:${search4}|${search3})\\s*\\|`, 'i');
-                    const fallbackRegex = new RegExp(`(?:${search4}|${search3})`, 'i'); 
-                    
-                    if (numRegex.test(m.message) || fallbackRegex.test(m.message)) {
                         
-                        let tempCode = null;
+                        // 🔥 Must contain "WA", "WhatsApp", or the standalone number "12"
+                        if (!/\b12\b/.test(m.message) && !msgLower.includes('wa') && !msgLower.includes('whatsapp')) continue;
 
-                        // 1. Grab the OTP code straight out of the inline buttons (e.g., 🔑 912623)
+                        let tempCode = null;
+                        
+                        // 🔥 Grabs ANY 5 to 8 digits from the inline buttons, completely ignoring all emojis
                         if (m.replyMarkup && m.replyMarkup.rows) {
                             for (const row of m.replyMarkup.rows) {
                                 const btnArray = row.buttons || row; 
                                 for (const btn of btnArray) {
-                                    const btnText = btn.text || "";
-                                    
-                                    // STRICT 6-DIGIT WHATSAPP MATCHER
-                                    const btnMatch = btnText.match(/🔑\s*(\d{6})/) || btnText.match(/(?:\b|^)(\d{6})(?:\b|$)/);
-                                    if (btnMatch) {
-                                        tempCode = btnMatch[1];
-                                        break;
-                                    }
+                                    const btnMatch = (btn.text || "").match(/(\d{5,8})/); 
+                                    if (btnMatch) { tempCode = btnMatch[1]; break; }
                                 }
                                 if (tempCode) break;
                             }
                         }
-
-                        // 2. Fallback to ripping it out of the text body (just in case the button fails)
+                        
+                        // Fallback: If no buttons exist, grab the code from the text body
                         if (!tempCode) {
-                            const codeMatch = m.message.match(/🔑\s*(\d{6})/);
-                            if (codeMatch) tempCode = codeMatch[1];
+                            const textClean = m.message.replace(/[-\s]/g, '');
+                            const textMatch = textClean.match(/(?:code|otp|kode)[^\d]*?(\d{4,8})/i) || textClean.match(/(?:\b|^)(\d{5,8})(?:\b|$)/);
+                            if (textMatch) tempCode = textMatch[1] || textMatch[0];
                         }
-
-                        if (tempCode && !trackData.usedCodes.has(tempCode)) {
-                            foundCode = tempCode;
-                            break; // Found it! Stop looping.
-                        }
+                        
+                        if (tempCode && !trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
                     }
-
-                    
                 } else {
                     // --- ULTAR PARSING ---
                     const numRegex = new RegExp(`Number.*?\\b(?:${search4}|${search3})\\b`, 'i');
@@ -3583,6 +3545,7 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
+
 
 
 

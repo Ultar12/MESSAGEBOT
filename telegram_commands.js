@@ -1525,7 +1525,9 @@ async function processZuQueue(bot, chatId) {
 
 
 
-// ==========================================
+
+                                
+    // ==========================================
 // DEDICATED ZU ENGINE OTP HUNTER
 // Uses zuScraperBot (Grabber) to scan, and ultarUserBot to send!
 // ==========================================
@@ -1547,7 +1549,7 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
 
     const isRocket = (effectiveSource === 'ROCKETOTP_BOT');
     const isNokosx = (effectiveSource === 'NokosxBot');
-    const isHxotp = (effectiveSource === 'hxotpbot');
+    const isHxotp = (effectiveSource === 'hxotpbot' || effectiveSource === 'h2iotp2bot');
     
     // Dynamically set the target group based on mode
     let SCAN_GROUP;
@@ -1596,43 +1598,36 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
                             if (!trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
                         }
                     }
-                } else if (isNokosx) {
+                } else if (isNokosx || isHxotp) {
+                    // --- UNIFIED NOKOSX & H2IOTP2BOT PARSER ---
                     const numRegex = new RegExp(`(?:${search4}|${search3})`, 'i');
                     if (numRegex.test(m.message)) {
                         const msgLower = m.message.toLowerCase();
-                        if (!msgLower.includes('wa') && !msgLower.includes('whatsapp')) continue;
+                        
+                        // 🔥 Must contain "WA", "WhatsApp", or the standalone number "12"
+                        if (!/\b12\b/.test(m.message) && !msgLower.includes('wa') && !msgLower.includes('whatsapp')) continue;
+
                         let tempCode = null;
+                        
+                        // 🔥 Grabs ANY 5 to 8 digits from the inline buttons, completely ignoring all emojis
                         if (m.replyMarkup && m.replyMarkup.rows) {
                             for (const row of m.replyMarkup.rows) {
                                 const btnArray = row.buttons || row; 
                                 for (const btn of btnArray) {
-                                    const btnMatch = (btn.text || "").match(/(\d{4,8})/); 
+                                    const btnMatch = (btn.text || "").match(/(\d{5,8})/); 
                                     if (btnMatch) { tempCode = btnMatch[1]; break; }
                                 }
                                 if (tempCode) break;
                             }
                         }
-                        if (tempCode && !trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
-                    }
-                } else if (isHxotp) {
-                    const numRegex = new RegExp(`(?:${search4}|${search3})\\s*\\|`, 'i');
-                    const fallbackRegex = new RegExp(`(?:${search4}|${search3})`, 'i'); 
-                    if (numRegex.test(m.message) || fallbackRegex.test(m.message)) {
-                        let tempCode = null;
-                        if (m.replyMarkup && m.replyMarkup.rows) {
-                            for (const row of m.replyMarkup.rows) {
-                                const btnArray = row.buttons || row; 
-                                for (const btn of btnArray) {
-                                    const btnMatch = (btn.text || "").match(/🔑\s*(\d{6})/) || (btn.text || "").match(/(?:\b|^)(\d{6})(?:\b|$)/);
-                                    if (btnMatch) { tempCode = btnMatch[1]; break; }
-                                }
-                                if (tempCode) break;
-                            }
-                        }
+                        
+                        // Fallback: If no buttons exist, grab the code from the text body
                         if (!tempCode) {
-                            const codeMatch = m.message.match(/🔑\s*(\d{6})/);
-                            if (codeMatch) tempCode = codeMatch[1];
+                            const textClean = m.message.replace(/[-\s]/g, '');
+                            const textMatch = textClean.match(/(?:code|otp|kode)[^\d]*?(\d{4,8})/i) || textClean.match(/(?:\b|^)(\d{5,8})(?:\b|$)/);
+                            if (textMatch) tempCode = textMatch[1] || textMatch[0];
                         }
+                        
                         if (tempCode && !trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
                     }
                 } else {
@@ -1701,6 +1696,7 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
     }
     await addLog(`❌ \`${cleanNum}\`: ZU Hunter gave up after 3 minutes.`);
 }
+
 
 
 

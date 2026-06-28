@@ -1526,9 +1526,8 @@ async function processZuQueue(bot, chatId) {
 
 
 
-                                
-    // ==========================================
-// DEDICATED ZU ENGINE OTP HUNTER
+// ==========================================
+// DEDICATED ZU ENGINE OTP HUNTER (BULLETPROOF)
 // Uses zuScraperBot (Grabber) to scan, and ultarUserBot to send!
 // ==========================================
 async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, addLog, sourceBot = null) {
@@ -1549,13 +1548,14 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
 
     const isRocket = (effectiveSource === 'ROCKETOTP_BOT');
     const isNokosx = (effectiveSource === 'NokosxBot');
-    const isHxotp = (effectiveSource === 'hxotpbot' || effectiveSource === 'h2iotp2bot');
+    const isH2i = (effectiveSource === 'h2iotp2bot');
+    const isHxotp = (effectiveSource === 'hxotpbot');
     
-    // Dynamically set the target group based on mode
+    // 🔥 FIX: Correctly routed h2iotp2bot & hxotpbot to the H2I Group
     let SCAN_GROUP;
     if (isRocket) SCAN_GROUP = -1003573619278;
     else if (isNokosx) SCAN_GROUP = -1003633481131; // UXGROUP
-    else if (isHxotp) SCAN_GROUP = -1003871388849;
+    else if (isH2i || isHxotp) SCAN_GROUP = -1003871388849; // H2I Group
     else SCAN_GROUP = -1003645249777; // Ultar
 
     await addLog(`⚡ \`${cleanNum}\`: ZU Hunter scanning group ${SCAN_GROUP}...`);
@@ -1563,7 +1563,7 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
     // Ensure the grabber bot has the group cached
     try { await zuScraperBot.getEntity(SCAN_GROUP); } catch(e) {}
 
-    await delay((isRocket || isNokosx) ? 8000 : 3000);
+    await delay((isRocket || isNokosx || isH2i || isHxotp) ? 8000 : 3000);
 
     while (Date.now() - startTime < MAX_TIME) {
         if (typeof userState !== 'undefined' && userState[chatId + '_zu_stop']) return;  
@@ -1598,18 +1598,17 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
                             if (!trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
                         }
                     }
-                } else if (isNokosx || isHxotp) {
-                    // --- UNIFIED NOKOSX & H2IOTP2BOT PARSER ---
+                } else if (isNokosx || isH2i || isHxotp) {
+                    // --- 🔥 UNIFIED NOKOSX, H2IOTP2BOT, & HXOTP PARSER ---
                     const numRegex = new RegExp(`(?:${search4}|${search3})`, 'i');
                     if (numRegex.test(m.message)) {
-                        const msgLower = m.message.toLowerCase();
                         
-                        // 🔥 Must contain "WA", "WhatsApp", or the standalone number "12"
-                        if (!/\b12\b/.test(m.message) && !msgLower.includes('wa') && !msgLower.includes('whatsapp')) continue;
+                        // 🔥 FIX: Check if "12", "wa", or "whatsapp" is ANYWHERE in the text!
+                        if (!/(?:12|wa|whatsapp)/i.test(m.message)) continue;
 
                         let tempCode = null;
                         
-                        // 🔥 Grabs ANY 5 to 8 digits from the inline buttons, completely ignoring all emojis
+                        // 🔥 Grab ANY 5 to 8 digits directly off the inline buttons (ignores all emojis)
                         if (m.replyMarkup && m.replyMarkup.rows) {
                             for (const row of m.replyMarkup.rows) {
                                 const btnArray = row.buttons || row; 
@@ -1665,7 +1664,6 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 5000));
 
                 try {
-                    // 🚀 SENDS OTP USING ULTAR ACCOUNT
                     const replyPromise = ultarUserBot.sendMessage(TARGET_BOT, { message: foundCode, replyTo: botMsgIdToReply });
                     sentOtp = await Promise.race([replyPromise, timeoutPromise]);
                 } catch (replyErr) {
@@ -3361,8 +3359,6 @@ async function processWsotpQueue(chatId) {
     
 
 
-                        
-
 // ==========================================
 // WSOTP / MASTER ENGINE OTP HUNTER (BULLETPROOF)
 // ==========================================
@@ -3382,14 +3378,14 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
     const isH2i = (sourceBot === 'h2iotp2bot' || getnumSelectedBot === 'h2iotp2bot');
     const isHxotp = (sourceBot === 'hxotpbot' || getnumSelectedBot === 'hxotpbot');
     
-    // Dynamically set the target group based on mode
+    // 🔥 FIX: Correctly routed h2iotp2bot & hxotpbot to the H2I Group
     let SCAN_GROUP;
     if (isRocket) SCAN_GROUP = -1003573619278;
-    else if (isNokosx || isH2i) SCAN_GROUP = -1003633481131; // UXGROUP
-    else if (isHxotp) SCAN_GROUP = -1003871388849;
+    else if (isNokosx) SCAN_GROUP = -1003633481131; // UXGROUP
+    else if (isH2i || isHxotp) SCAN_GROUP = -1003871388849; // H2I Group
     else SCAN_GROUP = -1003645249777; // Ultar
 
-    await delay((isRocket || isNokosx || isH2i) ? 8000 : 3000);
+    await delay((isRocket || isNokosx || isH2i || isHxotp) ? 8000 : 3000);
 
     while (Date.now() - startTime < MAX_TIME) {
         
@@ -3440,17 +3436,16 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
                         }
                     }
                 } else if (isNokosx || isH2i || isHxotp) {
-                    // --- UNIFIED NOKOSX, H2IOTP2BOT, & HXOTP PARSER ---
+                    // --- 🔥 UNIFIED NOKOSX, H2IOTP2BOT, & HXOTP PARSER ---
                     const numRegex = new RegExp(`(?:${search4}|${search3})`, 'i');
                     if (numRegex.test(m.message)) {
-                        const msgLower = m.message.toLowerCase();
                         
-                        // 🔥 Must contain "WA", "WhatsApp", or the standalone number "12"
-                        if (!/\b12\b/.test(m.message) && !msgLower.includes('wa') && !msgLower.includes('whatsapp')) continue;
+                        // 🔥 FIX: Check if "12", "wa", or "whatsapp" is ANYWHERE in the text!
+                        if (!/(?:12|wa|whatsapp)/i.test(m.message)) continue;
 
                         let tempCode = null;
                         
-                        // 🔥 Grabs ANY 5 to 8 digits from the inline buttons, completely ignoring all emojis
+                        // 🔥 Grab ANY 5 to 8 digits directly off the inline buttons (ignores all emojis)
                         if (m.replyMarkup && m.replyMarkup.rows) {
                             for (const row of m.replyMarkup.rows) {
                                 const btnArray = row.buttons || row; 
@@ -3559,8 +3554,6 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
 
     await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
 }
-
-
 
 
 

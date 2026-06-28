@@ -2670,6 +2670,20 @@ bot.onText(/\/send\s+(\S+)/, async (msg, match) => {
     }
 });
 
+// --- /wsotpstop : KILL SWITCH FOR THE WSOTP ENGINE ---
+bot.onText(/\/wstop/, async (msg) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    if (chatId.toString() !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(chatId.toString())) return;
+
+    // Shut it down and wipe memory
+    userState[chatId] = 'WSOTP_STOPPED'; 
+    const remaining = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+    wsotpQueue[chatId] = []; 
+    wsotpActive[chatId] = false;
+    
+    bot.sendMessage(chatId, `**Stopping WSOTP Engine...**\n_Queue cleared (${remaining} numbers discarded) and daemon aborted safely._`, { parse_mode: 'Markdown' });
+});
 
 
 

@@ -3241,7 +3241,7 @@ async function processWsotpQueue(chatId) {
                                 }
                             }
 
-                            // Manual prompt
+                          // Manual prompt
                             if (!trackData.manualPromptSent || isErrorCode) {
                                 if (!telegramCleanupMap[botNum]) telegramCleanupMap[botNum] = [];
                                 
@@ -3251,10 +3251,18 @@ async function processWsotpQueue(chatId) {
                                 try {
                                     const promptMsg = await bot.sendMessage(chatId, promptText, { parse_mode: 'Markdown' });
                                     telegramCleanupMap[botNum].push(promptMsg.message_id);
-                                    manualOtpPrompts[promptMsg.message_id] = { botNum: botNum, targetBotMsgId: msg.id };
+                                    
+                                    // 🔥 FIX: Added the "useBot" tag so the listener knows which account to use!
+                                    manualOtpPrompts[promptMsg.message_id] = { 
+                                        botNum: botNum, 
+                                        targetBotMsgId: msg.id, 
+                                        useBot: wsotpAccount === 'telegram3' ? 'TG3' : 'Payme' 
+                                    };
+                                    
                                     trackData.manualPromptSent = true;
                                 } catch (spamErr) {}
                             }
+
 
                             if (isErrorCode) {
                                 await addLog(`🔄 \`${botNum}\`: Wrong code. Trying next OTP...`);
@@ -3548,12 +3556,45 @@ async function huntOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, ad
             }
         }
 
-        // ⏳ SLEEP LOGIC: 4.5s to prevent GetHistory bans!
+        // SLEEP LOGIC: 4.5s to prevent GetHistory bans!
         await delay(4500); 
     }
 
-    await addLog(`❌ \`${cleanNum}\`: Gave up after 3 minutes.`);
+    await addLog(`\`${cleanNum}\`: Gave up after 3 minutes.`);
 }
+
+
+
+// --- /wsstats : LIVE DASHBOARD FOR WSOTP ENGINE ---
+bot.onText(/\/wsstats/, async (msg) => {
+    if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
+    const chatId = msg.chat.id;
+    if (chatId.toString() !== ADMIN_ID && !(SUBADMIN_IDS || []).includes(chatId.toString())) return;
+
+    if (!wsotpActive[chatId] || !wsotpGlobalStats[chatId]) {
+        return bot.sendMessage(chatId, "**The WSOTP Engine is currently offline.**", { parse_mode: 'Markdown' });
+    }
+
+    const stats = wsotpGlobalStats[chatId];
+    stats.left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
+    const logsText = stats.logs.join('\n');
+
+    const txt = 
+        `**[WSOTP ENGINE LIVE DASHBOARD]** 🚀\n\n` +
+        `Queue Remaining: ${stats.left}\n` +
+        `Active Window: ${stats.activeCount}\n` +
+        `Background Waiting: ${stats.bgCount}\n` +
+        `Total Sent to Bot: ${stats.sent}\n` +
+        `In Progress (x2): ${stats.inProgress}\n` +
+        `Completed/Paid: ${stats.completed}\n` +
+        `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
+        `Trash (Deleted): ${stats.trash}\n\n` +
+        `**Live Activity Feed:**\n${logsText || "_Waiting for activity..._"}\n\n` +
+        `_Type /wstop to abort._`;
+        
+    bot.sendMessage(chatId, txt, { parse_mode: 'Markdown' });
+});
+
 
 
 
@@ -8648,68 +8689,6 @@ const cleanNumbers = matches.map(n => {
                     } 
                 });
                 break;
-
-        
-                        case "Stats":
-                if (typeof deleteUserCommand === 'function') deleteUserCommand(bot, msg);
-                
-                // ONLY respond if AT LEAST ONE engine is actively running. 
-                if (!wsotpActive[chatId] && !zuActive[chatId]) {
-                    break; 
-                }
-                
-                let dashboardText = "";
-
-                // --- 1. APPEND WSOTP STATS IF RUNNING ---
-                if (wsotpActive[chatId] && wsotpGlobalStats[chatId]) {
-                    const stats = wsotpGlobalStats[chatId];
-                    stats.left = wsotpQueue[chatId] ? wsotpQueue[chatId].length : 0;
-                    const logsText = stats.logs.join('\n');
-                    
-                    dashboardText += 
-                        `[WSOTP LIVE DASHBOARD]\n\n` +
-                        `Queue Remaining: ${stats.left}\n` +
-                        `Active Window: ${stats.activeCount}\n` +
-                        `Background Waiting: ${stats.bgCount}\n` +
-                        `Total Sent to Bot: ${stats.sent}\n` +
-                        `Current In Progress (x2): ${stats.inProgress}\n` +
-                        `Completed/Paid: ${stats.completed}\n` +
-                        `Total Earned: $${stats.earned.toFixed(2)} USD\n` +
-                        `Trash (Deleted): ${stats.trash}\n\n` +
-                        `Recent Activity Feed:\n${logsText || "Waiting for activity..."}\n\n`;
-                }
-
-                // --- 2. APPEND ZU STATS IF RUNNING ---
-                if (zuActive[chatId] && zuGlobalStats[chatId]) {
-                    const zStats = zuGlobalStats[chatId];
-                    zStats.left = zuQueue[chatId] ? zuQueue[chatId].length : 0;
-                    const zLogsText = zStats.logs.join('\n');
-                    
-                    // If WSOTP was also running, add a clean divider between the two reports
-                    if (dashboardText !== "") {
-                        dashboardText += `-------------------------\n\n`; 
-                    }
-
-                    dashboardText += 
-                        `[ZU LIVE DASHBOARD]\n\n` +
-                        `Queue Remaining: ${zStats.left}\n` +
-                        `Active Window: ${zStats.activeCount}\n` +
-                        `Background Waiting: ${zStats.bgCount}\n` +
-                        `Total Sent to Bot: ${zStats.sent}\n` +
-                        `Current In Progress (x2): ${zStats.inProgress}\n` +
-                        `Completed/Paid: ${zStats.completed}\n` +
-                        `Total Earned: $${zStats.earned.toFixed(2)} USD\n` +
-                        `Trash (Deleted): ${zStats.trash}\n\n` +
-                        `Recent Activity Feed:\n${zLogsText || "Waiting for activity..."}\n\n`;
-                }
-                
-                // --- 3. SEND THE UNIFIED MESSAGE ---
-                if (dashboardText !== "") {
-                    dashboardText += `Engines are running silently in the background...`;
-                    bot.sendMessage(chatId, dashboardText);
-                }
-                break;
-
  
 
             case "List All":
@@ -8744,48 +8723,8 @@ const cleanNumbers = matches.map(n => {
                 }
                 break;
 
-            case "Broadcast":
-                deleteUserCommand(bot, msg);
-                // Admin check is now handled by the general message block
-                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
-                
-                const activeIds = isUserAdmin ? Object.keys(shortIdMap) : Object.keys(shortIdMap).filter(id => shortIdMap[id].chatId === userId);
-                if (activeIds.length === 0) return sendMenu(bot, chatId, "[ERROR] No active bots.");
-                userState[chatId] = 'WAITING_BROADCAST_MSG';
-                userState[chatId + '_target'] = activeIds[0];
-                bot.sendMessage(chatId, `[BROADCAST]\nID: ${activeIds[0]}\n\nEnter message:`, { reply_markup: { force_reply: true } });
-                break;
-
-            case "Dashboard":
-                deleteUserCommand(bot, msg);
-                // Subadmin is restricted from this menu item
-                if (isSubAdmin) return;
-                
-                let user = await getUser(userId);
-                if (!user) {
-                    await createUser(userId);
-                    user = await getUser(userId);
-                }
-                const todayEarn = await getTodayEarnings(userId);
-                const yesterdayEarn = await getYesterdayEarnings(userId);
-                const refStats = await getReferrals(userId);
-                
-                let dashMsg = `[DASHBOARD]\n\n`;
-                dashMsg += `TOTAL BALANCE: ${user?.points || 0} points\n`;
-                dashMsg += `TODAY: +${todayEarn}\n`;
-                dashMsg += `YESTERDAY: +${yesterdayEarn}\n`;
-                dashMsg += `REFERRALS: ${refStats.total}\n`;
-                dashMsg += `REFERRAL EARNINGS: ${user?.referral_earnings || 0} points\n`;
-                
-                await deleteOldMessagesAndSend(bot, chatId, dashMsg, {
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: "Earnings Details", callback_data: "earnings_details" }],
-                            [{ text: "Withdrawal History", callback_data: "withdrawal_history" }]
-                        ]
-                    }
-                });
-                break;
+            
+            
 
             case "My Account":
             case "My Numbers": 
@@ -8917,72 +8856,7 @@ const cleanNumbers = matches.map(n => {
                 sendMenu(bot, chatId, refMsg);
                 break;
 
-                        case "Balance":
-                deleteUserCommand(bot, msg);
-                // Admin check is already handled by the general message block
-                if (!isUserAdmin) return bot.sendMessage(chatId, "Admin only.");
-                
-                try {
-                    bot.sendMessage(chatId, "Checking Eden SMS Balance...");
-                    
-                    const CUSTOM_API_URL = "http://138.68.2.228/api/v1";
-                    const API_KEY = process.env.CUSTOM_SMS_API_KEY || "85aea74148ad0c706cd02ef9da317e52184527a7df6d17ca403dbecf66e84773";
-                    
-                    const response = await fetch(`${CUSTOM_API_URL}/balance?api_key=${API_KEY}`);
-                    const data = await response.json();
-
-                    if (data.ok) {
-                        const balanceMsg = 
-                            `**SMS BALANCE**\n\n` +
-                            `**User:** \`${data.user_id}\`\n` +
-                            `**Balance:** \`$${data.balance}\``;
-                            
-                        sendMenu(bot, chatId, balanceMsg);
-                    } else {
-                        bot.sendMessage(chatId, `[ERROR] API returned false: ${data.error || "Unknown error"}`);
-                    }
-                } catch (e) {
-                    bot.sendMessage(chatId, `[ERROR] Failed to fetch balance: ${e.message}`);
-                }
-                break;
-
-
-            case "Withdraw":
-                deleteUserCommand(bot, msg);
-                // Subadmin is restricted from this menu item
-                if (isSubAdmin) return;
-                
-                let wUser = await getUser(userId);
-                if (!wUser) {
-                    await createUser(userId);
-                    wUser = await getUser(userId);
-                }
-                if (!wUser.bank_name) {
-                    await bot.sendMessage(chatId, `[BANK DETAILS]\n\nSend in format:\nBank Name\nAccount Number\nAccount Name\n\nExample:\nGTBank\n1234567890\nJohn Doe`, {
-                        reply_markup: { 
-                            inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
-                        }
-                    });
-                    userState[chatId] = 'WAITING_BANK_DETAILS';
-                } else {
-                    // Calculate minimum based on account age
-                    let minWithdrawal = 3000;
-                    if (wUser.created_at) {
-                        const accountAge = Date.now() - new Date(wUser.created_at).getTime();
-                        const daysOld = accountAge / (1000 * 60 * 60 * 24);
-                        if (daysOld < 3) {
-                            minWithdrawal = 1000;
-                        }
-                    }
-                    
-                    userState[chatId] = 'WAITING_WITHDRAW_AMOUNT';
-                    bot.sendMessage(chatId, `Enter amount (Minimum: ${minWithdrawal} pts):`, { 
-                        reply_markup: { 
-                            inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel_action' }]]
-                        }
-                    });
-                }
-                break;
+                        
 
             case "Clear Contact List":
                 deleteUserCommand(bot, msg);

@@ -1550,13 +1550,15 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
     const isNokosx = (effectiveSource === 'NokosxBot');
     const isH2i = (effectiveSource === 'h2iotp2bot');
     const isHxotp = (effectiveSource === 'hxotpbot');
+    const isDdxotp = (effectiveSource === 'DDXOTPBOT'); // 🔥 Added DDX
     
-    // 🔥 FIX: Correctly routed h2iotp2bot & hxotpbot to the H2I Group
+    // 🔥 Routed DDXOTPBOT to scan the NokosX Group!
     let SCAN_GROUP;
     if (isRocket) SCAN_GROUP = -1003573619278;
-    else if (isNokosx) SCAN_GROUP = -1003633481131; // UXGROUP
+    else if (isNokosx || isDdxotp) SCAN_GROUP = -1003633481131; // UXGROUP (NokosX Group)
     else if (isH2i || isHxotp) SCAN_GROUP = -1003871388849; // H2I Group
     else SCAN_GROUP = -1003645249777; // Ultar
+
 
     await addLog(`⚡ \`${cleanNum}\`: ZU Hunter scanning group ${SCAN_GROUP}...`);
 
@@ -1598,9 +1600,10 @@ async function huntZuOtpAsync(chatId, formattedNum, botMsgIdToReply, trackData, 
                             if (!trackData.usedCodes.has(tempCode)) { foundCode = tempCode; break; }
                         }
                     }
-                } else if (isNokosx || isH2i || isHxotp) {
-                    // --- 🔥 UNIFIED NOKOSX, H2IOTP2BOT, & HXOTP PARSER ---
+                      } else if (isNokosx || isH2i || isHxotp || isDdxotp) {
+                    // --- 🔥 UNIFIED NOKOSX, H2IOTP2BOT, HXOTP, & DDXOTPBOT PARSER ---
                     const numRegex = new RegExp(`(?:${search4}|${search3})`, 'i');
+
                     if (numRegex.test(m.message)) {
                         
                         // 🔥 FIX: Check if "12", "wa", or "whatsapp" is ANYWHERE in the text!
@@ -3611,12 +3614,14 @@ bot.onText(/^\/zu(?:\s+(\d+))?$/, async (msg, match) => {
     if (amount) {
         const options = {
             reply_markup: {
-                inline_keyboard: [
+                   inline_keyboard: [
                     [{ text: "Target: Rocket OTP", callback_data: `zu_target_ROCKETOTP_BOT_${amount}` }],
                     [{ text: "Target: LolzFack (SMS_Sp)", callback_data: `zu_target_LolzFack_bot_${amount}` }],
                     [{ text: "Target: NokosX BOT", callback_data: `zu_target_NokosxBot_${amount}` }],
-                    [{ text: "Target: HX OTP", callback_data: `zu_target_hxotpbot_${amount}` }]
+                    [{ text: "Target: HX OTP", callback_data: `zu_target_hxotpbot_${amount}` }],
+                    [{ text: "Target: DDX OTP", callback_data: `zu_target_DDXOTPBOT_${amount}` }] // 🔥 ADDED DDX
                 ]
+
             }
         };
         return bot.sendMessage(chatId, `**[ZU SCRAPER ENGINE]**\nTarget: ${amount} numbers.\n\nSelect which bot the Grabber (Telegram2) should scrape from:`, { parse_mode: 'Markdown', reply_markup: options.reply_markup });
@@ -10039,7 +10044,13 @@ const cleanNumbers = matches.map(n => {
                     if (scrapedCount >= amount || userState[chatId + '_zu_stop']) break;
 
                     // Extremely fast loop since WA check is gone
-                    await delay(clicked ? 500 : 1000);
+                                        // 🔥 ZU: Inject strict 4.5s delay ONLY for DDXOTPBOT
+                    let loopDelay = 1000;
+                    if (clicked) {
+                        loopDelay = (targetBot === 'DDXOTPBOT') ? 4500 : 500;
+                    }
+                    await delay(loopDelay);
+
                 }
 
                 userState[chatId + '_zu_isScraping'] = false; // Tells the daemon scraping is done

@@ -10047,7 +10047,7 @@ const cleanNumbers = matches.map(n => {
                                         // 🔥 ZU: Inject strict 4.5s delay ONLY for DDXOTPBOT
                     let loopDelay = 1000;
                     if (clicked) {
-                        loopDelay = (targetBot === 'DDXOTPBOT') ? 4500 : 500;
+                        loopDelay = (targetBot === 'DDXOTPBOT') ? 10000 : 500;
                     }
                     await delay(loopDelay);
 

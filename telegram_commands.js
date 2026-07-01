@@ -2592,8 +2592,14 @@ const fetch2 = (telegram2UserBot && telegram2UserBot.connected)
                         clickPagination(telegram2UserBot && telegram2UserBot.connected ? telegram2UserBot : null, msgs2)
                     ]);
 
-                    // Faster cycle times since Rocket yields 2 numbers per scrape
-                    (clicked1 || clicked2) ? await delay(2500) : await delay(1500);
+                    // ⚡ INSTANT cycle times for Nokos, H21, and HX
+              const isFastBot = targetBot === 'NokosxBot' || targetBot === 'h2iotp2bot' || targetBot === 'hxotpbot';
+              if (isFastBot) {
+              await delay((clicked1 || clicked2) ? 0 : 50); 
+              } else {
+              await delay((clicked1 || clicked2) ? 2500 : 1500);
+                  }      
+
                 }
                 
                 if (outMode === 'chat' && currentBatch.length > 0) {
@@ -10043,13 +10049,24 @@ const cleanNumbers = matches.map(n => {
 
                     if (scrapedCount >= amount || userState[chatId + '_zu_stop']) break;
 
-                    // Extremely fast loop since WA check is gone
-                                        // 🔥 ZU: Inject strict 4.5s delay ONLY for DDXOTPBOT
-                    let loopDelay = 1000;
-                    if (clicked) {
-                        loopDelay = (targetBot === 'DDXOTPBOT') ? 10000 : 500;
-                    }
-                    await delay(loopDelay);
+                    // 🔥 ZU: Instant click for fast bots, delay for DDX and others
+let loopDelay = 1000;
+if (clicked) {
+    if (targetBot === 'DDXOTPBOT') {
+        loopDelay = 10000;
+    } else if (targetBot === 'NokosxBot' || targetBot === 'h2iotp2bot' || targetBot === 'hxotpbot') {
+        loopDelay = 0; // ⚡ ZERO WAIT TIME FOR HX, H21, AND NOKOS ⚡
+    } else {
+        loopDelay = 500;
+    }
+} else {
+    // If it didn't click, still speed up the refresh for fast bots
+    if (targetBot === 'NokosxBot' || targetBot === 'h2iotp2bot' || targetBot === 'hxotpbot') {
+        loopDelay = 50; // 50ms micro-delay just to prevent Telegram API crash if a click fails
+    }
+}
+await delay(loopDelay);
+
 
                 }
 
